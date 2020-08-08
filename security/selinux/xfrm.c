@@ -340,7 +340,7 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 {
 	int rc;
 	struct xfrm_sec_ctx *ctx;
-	char *ctx_str = NULL;
+	char ctx_str[SELINUX_LABEL_LENGTH];
 	u32 str_len;
 
 	if (!polsec)
@@ -349,7 +349,7 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 	if (secid == 0)
 		return -EINVAL;
 
-	rc = security_sid_to_context(secid, &ctx_str,
+	rc = security_sid_to_context_stack(secid, &ctx_str,
 				     &str_len);
 	if (rc)
 		return rc;
@@ -369,7 +369,6 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 	x->security = ctx;
 	atomic_inc(&selinux_xfrm_refcount);
 out:
-	kfree(ctx_str);
 	return rc;
 }
 
