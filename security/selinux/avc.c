@@ -696,21 +696,22 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 {
 	struct common_audit_data *ad = a;
 	struct selinux_audit_data *sad = ad->selinux_audit_data;
-	char *scontext = NULL;
-	char *tcontext = NULL;
+	char sbuf[SELINUX_LABEL_LENGTH], tbuf[SELINUX_LABEL_LENGTH];
+	char *scontext = sbuf;
+	char *tcontext = tbuf;
 	const char *tclass = NULL;
 	u32 scontext_len;
 	u32 tcontext_len;
 	int rc;
 
-	rc = security_sid_to_context(sad->ssid, &scontext,
+	rc = security_sid_to_context_stack(sad->ssid, &scontext,
 				     &scontext_len);
 	if (rc)
 		audit_log_format(ab, " ssid=%d", sad->ssid);
 	else
 		audit_log_format(ab, " scontext=%s", scontext);
 
-	rc = security_sid_to_context(sad->tsid, &tcontext,
+	rc = security_sid_to_context_stack(sad->tsid, &tcontext,
 				     &tcontext_len);
 	if (rc)
 		audit_log_format(ab, " tsid=%d", sad->tsid);
@@ -728,24 +729,22 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 	kfree(scontext);
 
 	/* in case of invalid context report also the actual context string */
-	rc = security_sid_to_context_inval(sad->ssid, &scontext,
+	rc = security_sid_to_context_inval_stack(sad->ssid, &scontext,
 					   &scontext_len);
 	if (!rc && scontext) {
 		if (scontext_len && scontext[scontext_len - 1] == '\0')
 			scontext_len--;
 		audit_log_format(ab, " srawcon=");
 		audit_log_n_untrustedstring(ab, scontext, scontext_len);
-		kfree(scontext);
 	}
 
-	rc = security_sid_to_context_inval(sad->tsid, &scontext,
+	rc = security_sid_to_context_inval_stack(sad->tsid, &scontext,
 					   &scontext_len);
 	if (!rc && scontext) {
 		if (scontext_len && scontext[scontext_len - 1] == '\0')
 			scontext_len--;
 		audit_log_format(ab, " trawcon=");
 		audit_log_n_untrustedstring(ab, scontext, scontext_len);
-		kfree(scontext);
 	}
 }
 
