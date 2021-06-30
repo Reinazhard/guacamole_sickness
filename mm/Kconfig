@@ -1193,6 +1193,11 @@ config MEMFD_ASHMEM_SHIM
 
 	  Unless you are running Android, say N.
 
+# Some architectures want callbacks for all IO mappings in order to
+# track the physical addresses that get used as devices.
+config ARCH_HAS_IOREMAP_PHYS_HOOKS
+	bool
+
 config SECRETMEM
 	def_bool ARCH_HAS_SET_DIRECT_MAP && !EMBEDDED
 
