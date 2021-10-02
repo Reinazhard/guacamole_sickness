@@ -1362,21 +1362,15 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 static int inode_doinit_use_xattr(struct inode *inode, struct dentry *dentry,
 				  u32 def_sid, u32 *sid)
 {
-#define INITCONTEXTLEN 255
-	char *context;
+	char buf[SELINUX_LABEL_LENGTH + 1];
+	char *context = buf;
 	unsigned int len;
 	int rc;
 
-	len = INITCONTEXTLEN;
-	context = kmalloc(len + 1, GFP_NOFS);
-	if (!context)
-		return -ENOMEM;
-
+	len = SELINUX_LABEL_LENGTH;
 	context[len] = '\0';
 	rc = __vfs_getxattr(dentry, inode, XATTR_NAME_SELINUX, context, len);
-	if (rc == -ERANGE) {
-		kfree(context);
-
+	if (unlikely(rc == -ERANGE)) {
 		/* Need a larger buffer.  Query for the right size. */
 		rc = __vfs_getxattr(dentry, inode, XATTR_NAME_SELINUX, NULL, 0);
 		if (rc < 0)
@@ -1392,7 +1386,8 @@ static int inode_doinit_use_xattr(struct inode *inode, struct dentry *dentry,
 				    context, len);
 	}
 	if (rc < 0) {
-		kfree(context);
+		if (unlikely(context != buf))
+			kfree(context);
 		if (rc != -ENODATA) {
 			pr_warn("SELinux: %s:  getxattr returned %d for dev=%s ino=%ld\n",
 				__func__, -rc, inode->i_sb->s_id, inode->i_ino);
@@ -1416,7 +1411,8 @@ static int inode_doinit_use_xattr(struct inode *inode, struct dentry *dentry,
 				__func__, context, -rc, dev, ino);
 		}
 	}
-	kfree(context);
+	if (unlikely(context != buf))
+		kfree(context);
 	return 0;
 }
 
