@@ -605,8 +605,8 @@ out_unlock:
 	kfree_rcu(victim, rcu_member);
 }
 
-int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry, char **out,
-		       u32 *out_len)
+int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry,
+		       char **out, u32 *out_len, bool alloc)
 {
 	struct sidtab_str_cache *cache;
 	int rc = 0;
@@ -622,9 +622,13 @@ int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry, char **out,
 	} else {
 		*out_len = cache->len;
 		if (out) {
-			*out = kmemdup(cache->str, cache->len, GFP_ATOMIC);
-			if (!*out)
-				rc = -ENOMEM;
+			if (alloc) {
+				*out = kmemdup(cache->str, cache->len, GFP_ATOMIC);
+				if (!*out)
+					rc = -ENOMEM;
+			} else {
+				strncpy(*out, cache->str, cache->len);
+			}
 		}
 	}
 
