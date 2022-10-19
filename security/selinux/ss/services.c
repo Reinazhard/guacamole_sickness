@@ -2030,7 +2030,8 @@ static inline int convert_context_handle_invalid_context(
  * context is valid under the new policy.
  */
 int services_convert_context(struct convert_context_args *args,
-			     struct context *oldc, struct context *newc)
+			     struct context *oldc, struct context *newc,
+			     gfp_t gfp_flags)
 {
 	struct ocontext *oc;
 	struct role_datum *role;
@@ -2041,7 +2042,7 @@ int services_convert_context(struct convert_context_args *args,
 	int rc;
 
 	if (oldc->str) {
-		s = kstrdup(oldc->str, GFP_KERNEL);
+		s = kstrdup(oldc->str, gfp_flags);
 		if (!s)
 			return -ENOMEM;
 
