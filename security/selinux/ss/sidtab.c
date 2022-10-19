@@ -330,7 +330,8 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
 		}
 
 		rc = services_convert_context(convert->args, context,
-					      &dst_convert->context);
+					      &dst_convert->context,
+					      GFP_ATOMIC);
 		if (rc) {
 			context_destroy(&dst->context);
 			goto out_unlock;
@@ -410,7 +411,8 @@ static int sidtab_convert_tree(union sidtab_entry_inner *edst,
 			rc = services_convert_context(
 				convert->args,
 				&esrc->ptr_leaf->entries[i].context,
-				&edst->ptr_leaf->entries[i].context);
+				&edst->ptr_leaf->entries[i].context,
+				GFP_KERNEL);
 			if (rc)
 				return rc;
 			(*pos)++;
