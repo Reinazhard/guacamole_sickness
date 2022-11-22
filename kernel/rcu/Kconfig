@@ -55,13 +55,13 @@ config RCU_EXPERT
 
 config TINY_SRCU
 	bool
-	default y if SRCU && TINY_RCU
+	default y if TINY_RCU
 	help
 	  This option selects the single-CPU non-preemptible version of SRCU.
 
 config TREE_SRCU
 	bool
-	default y if SRCU && !TINY_RCU
+	default y if !TINY_RCU
 	help
 	  This option selects the full-fledged version of SRCU.
 
@@ -70,7 +70,6 @@ config NEED_SRCU_NMI_SAFE
 
 config TASKS_RCU_GENERIC
 	def_bool TASKS_RCU || TASKS_RUDE_RCU || TASKS_TRACE_RCU
-	select SRCU
 	help
 	  This option enables generic infrastructure code supporting
 	  task-based RCU implementations.  Not for manual selection.
