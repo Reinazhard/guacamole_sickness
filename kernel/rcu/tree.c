@@ -3065,7 +3065,7 @@ need_offload_krc(struct kfree_rcu_cpu *krcp)
 		if (!list_empty(&krcp->bulk_head[i]))
 			return true;
 
-	return !!krcp->head;
+	return !!READ_ONCE(krcp->head);
 }
 
 static bool
