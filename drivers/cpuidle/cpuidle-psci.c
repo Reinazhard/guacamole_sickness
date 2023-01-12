@@ -84,7 +84,7 @@ static int __psci_enter_domain_idle_state(struct cpuidle_device *dev,
 	else
 		pm_runtime_put_sync_suspend(pd_dev);
 
-	ct_idle_enter();
+	ct_cpuidle_enter();
 
 	state = psci_get_domain_state();
 	if (!state)
@@ -93,7 +93,7 @@ static int __psci_enter_domain_idle_state(struct cpuidle_device *dev,
 	ret = psci_cpu_suspend_enter(state) ? -1 : idx;
 	cpuidle_clear_idle_cpu(dev->cpu);
 
-	ct_idle_exit();
+	ct_cpuidle_exit();
 
 	if (s2idle)
 		dev_pm_genpd_resume(pd_dev);
