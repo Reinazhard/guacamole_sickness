@@ -390,7 +390,7 @@ MULTI_stack_switch(struct multicall_entry *mcl,
 }
 #endif
 
-static inline int
+static __always_inline int
 HYPERVISOR_sched_op(int cmd, void *arg)
 {
 	return _hypercall2(int, sched_op, cmd, arg);
