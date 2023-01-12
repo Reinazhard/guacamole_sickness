@@ -76,16 +76,15 @@ static int __psci_enter_domain_idle_state(struct cpuidle_device *dev,
 	}
 
 
-	/* Do runtime PM to manage a hierarchical CPU toplogy. */
-	ct_irq_enter_irqson();
-
 	trace_android_vh_cpuidle_psci_enter(dev, s2idle);
 
+	/* Do runtime PM to manage a hierarchical CPU toplogy. */
 	if (s2idle)
 		dev_pm_genpd_suspend(pd_dev);
 	else
 		pm_runtime_put_sync_suspend(pd_dev);
-	ct_irq_exit_irqson();
+
+	ct_idle_enter();
 
 	state = psci_get_domain_state();
 	if (!state)
@@ -94,15 +93,14 @@ static int __psci_enter_domain_idle_state(struct cpuidle_device *dev,
 	ret = psci_cpu_suspend_enter(state) ? -1 : idx;
 	cpuidle_clear_idle_cpu(dev->cpu);
 
-	ct_irq_enter_irqson();
+	ct_idle_exit();
+
 	if (s2idle)
 		dev_pm_genpd_resume(pd_dev);
 	else
 		pm_runtime_get_sync(pd_dev);
 
 	trace_android_vh_cpuidle_psci_exit(dev, s2idle);
-
-	ct_irq_exit_irqson();
 
 	cpu_pm_exit();
 
@@ -255,6 +253,7 @@ static int psci_dt_cpu_init_topology(struct cpuidle_driver *drv,
 	 * of a shared state for the domain, assumes the domain states are all
 	 * deeper states.
 	 */
+	drv->states[state_count - 1].flags |= CPUIDLE_FLAG_RCU_IDLE;
 	drv->states[state_count - 1].enter = psci_enter_domain_idle_state;
 	drv->states[state_count - 1].enter_s2idle = psci_enter_s2idle_domain_idle_state;
 	psci_cpuidle_use_cpuhp = true;
