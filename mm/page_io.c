@@ -452,21 +452,17 @@ static void swap_readpage_fs(struct page *page,
 		*plug = sio;
 }
 
-int swap_readpage(struct page *page, bool synchronous,
-		  struct swap_iocb **plug)
+void swap_readpage(struct page *page, bool synchronous, struct swap_iocb **plug)
 {
 	struct bio *bio;
-	int ret = 0;
 	struct swap_info_struct *sis = page_swap_info(page);
 	bool workingset = PageWorkingset(page);
 	unsigned long pflags;
 	bool in_thrashing;
-	unsigned long swapin_start;
 
 	VM_BUG_ON_PAGE(!PageSwapCache(page) && !synchronous, page);
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageUptodate(page), page);
-	trace_android_vh_swapin_start(&swapin_start);
 
 	/*
 	 * Count submission time as memory stall and delay. When the device
@@ -490,15 +486,12 @@ int swap_readpage(struct page *page, bool synchronous,
 		goto out;
 	}
 
-	if (sis->flags & SWP_SYNCHRONOUS_IO) {
-		ret = bdev_read_page(sis->bdev, swap_page_sector(page), page);
-		if (!ret) {
-			count_vm_event(PSWPIN);
-			goto out;
-		}
+	if ((sis->flags & SWP_SYNCHRONOUS_IO) &&
+	    !bdev_read_page(sis->bdev, swap_page_sector(page), page)) {
+		count_vm_event(PSWPIN);
+		goto out;
 	}
 
-	ret = 0;
 	bio = bio_alloc(sis->bdev, 1, REQ_OP_READ, GFP_KERNEL);
 	bio->bi_iter.bi_sector = swap_page_sector(page);
 	bio->bi_end_io = end_swap_bio_read;
@@ -530,8 +523,6 @@ out:
 		psi_memstall_leave(&pflags);
 	}
 	delayacct_swapin_end();
-	trace_android_vh_swapin_end(page_folio(page), swapin_start, ret);
-	return ret;
 }
 
 void __swap_read_unplug(struct swap_iocb *sio)
