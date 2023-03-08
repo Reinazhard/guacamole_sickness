@@ -2634,10 +2634,10 @@ int security_key_permission(key_ref_t key_ref, const struct cred *cred,
 	return call_int_hook(key_permission, 0, key_ref, cred, need_perm);
 }
 
-int security_key_getsecurity(struct key *key, char **_buffer)
+int security_key_getsecurity(struct key *key, char **buffer)
 {
-	*_buffer = NULL;
-	return call_int_hook(key_getsecurity, 0, key, _buffer);
+	*buffer = NULL;
+	return call_int_hook(key_getsecurity, 0, key, buffer);
 }
 
 #endif	/* CONFIG_KEYS */
