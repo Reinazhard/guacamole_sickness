@@ -169,8 +169,9 @@ static bool bpf_selem_unlink_storage_nolock(struct bpf_local_storage *local_stor
 	    SDATA(selem))
 		RCU_INIT_POINTER(local_storage->cache[smap->cache_idx], NULL);
 
+	bpf_obj_free_fields(smap->map.record, SDATA(selem)->data);
 	if (!reuse_now)
-		call_rcu_tasks_trace(&selem->rcu, bpf_selem_free_rcu);
+		call_rcu_tasks_trace(&selem->rcu, bpf_selem_free_trace_rcu);
 	else
 		kfree_rcu(selem, rcu);
 
