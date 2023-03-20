@@ -1068,7 +1068,6 @@ All: lockdep-checked RCU utility APIs::
 
 	RCU_LOCKDEP_WARN
 	rcu_sleep_check
-	RCU_NONIDLE
 
 All: Unchecked RCU-protected pointer access::
 
