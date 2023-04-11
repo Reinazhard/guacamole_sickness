@@ -1395,35 +1395,6 @@ static void zram_bio_discard(struct zram *zram, struct bio *bio)
 	bio_endio(bio);
 }
 
-/*
- * Returns errno if it has some problem. Otherwise return 0 or 1.
- * Returns 0 if IO request was done synchronously
- * Returns 1 if IO request was successfully submitted.
- */
-static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
-			int offset, enum req_op op, struct bio *bio)
-{
-	int ret;
-
-	if (!op_is_write(op)) {
-		ret = zram_bvec_read(zram, bvec, index, offset, bio, true);
-		if (unlikely(ret < 0)) {
-			this_cpu_inc(zram->pcp_stats->items[NR_READ]);
-			return ret;
-		}
-		flush_dcache_page(bvec->bv_page);
-	} else {
-		this_cpu_inc(zram->pcp_stats->items[NR_WRITE]);
-		ret = zram_bvec_write(zram, bvec, index, offset, bio);
-		if (unlikely(ret < 0)) {
-			atomic64_inc(&zram->stats.failed_writes);
-			return ret;
-		}
-	}
-
-	return 0;
-}
-
 void zram_bio_endio(struct zram *zram, struct bio *bio, bool is_write, int err)
 {
 	if (unlikely(err < 0)) {
@@ -1452,7 +1423,7 @@ void zram_page_write_endio(struct zram *zram, struct page *page, int err)
 	page_endio(page, true, err);
 }
 
-static void __zram_make_request(struct zram *zram, struct bio *bio)
+static void zram_bio_read(struct zram *zram, struct bio *bio)
 {
 	struct bvec_iter iter;
 	struct bio_vec bv;
@@ -1466,8 +1437,35 @@ static void __zram_make_request(struct zram *zram, struct bio *bio)
 		u32 offset = (iter.bi_sector & (SECTORS_PER_PAGE - 1)) <<
 				SECTOR_SHIFT;
 
-		ret = zram_bvec_rw(zram, &bv, index, offset, op, bio);
+		ret = zram_bvec_read(zram, &bv, index, offset, bio, true);
 		if (ret < 0) {
+			this_cpu_inc(zram->pcp_stats->items[NR_FAILED_READ]);
+			bio->bi_status = BLK_STS_IOERR;
+			break;
+		}
+		flush_dcache_page(bv.bv_page);
+	}
+	bio_end_io_acct(bio, start_time);
+	zram_bio_endio(zram, bio, op_is_write(op), ret);
+}
+
+static void zram_bio_write(struct zram *zram, struct bio *bio)
+{
+	struct bvec_iter iter;
+	struct bio_vec bv;
+	unsigned long start_time;
+	int ret = 0;
+	const int op = bio_op(bio);
+
+	start_time = bio_start_io_acct(bio);
+	bio_for_each_segment(bv, bio, iter) {
+		u32 index = iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
+		u32 offset = (iter.bi_sector & (SECTORS_PER_PAGE - 1)) <<
+				SECTOR_SHIFT;
+
+		ret = zram_bvec_write(zram, &bv, index, offset, bio);
+		if (ret < 0) {
+			this_cpu_inc(zram->pcp_stats->items[NR_WRITE]);
 			bio->bi_status = BLK_STS_IOERR;
 			break;
 		}
@@ -1485,8 +1483,10 @@ static void zram_submit_bio(struct bio *bio)
 
 	switch (bio_op(bio)) {
 	case REQ_OP_READ:
+		zram_bio_read(zram, bio);
+		break;
 	case REQ_OP_WRITE:
-		__zram_make_request(zram, bio);
+		zram_bio_write(zram, bio);
 		break;
 	case REQ_OP_DISCARD:
 	case REQ_OP_WRITE_ZEROES:
