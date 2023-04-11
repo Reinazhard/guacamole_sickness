@@ -1406,15 +1406,22 @@ static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
 	int ret;
 
 	if (!op_is_write(op)) {
-		this_cpu_inc(zram->pcp_stats->items[NR_READ]);
 		ret = zram_bvec_read(zram, bvec, index, offset, bio, true);
+		if (unlikely(ret < 0)) {
+			this_cpu_inc(zram->pcp_stats->items[NR_READ]);
+			return ret;
+		}
 		flush_dcache_page(bvec->bv_page);
 	} else {
 		this_cpu_inc(zram->pcp_stats->items[NR_WRITE]);
 		ret = zram_bvec_write(zram, bvec, index, offset, bio);
+		if (unlikely(ret < 0)) {
+			atomic64_inc(&zram->stats.failed_writes);
+			return ret;
+		}
 	}
 
-	return ret;
+	return 0;
 }
 
 void zram_bio_endio(struct zram *zram, struct bio *bio, bool is_write, int err)
