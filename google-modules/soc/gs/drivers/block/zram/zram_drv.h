@@ -71,7 +71,6 @@ enum zram_stat_item {
 	NR_WRITE,		/* No. of writes: --do-- */
 	NR_FAILED_READ,		/* can happen when memory is too low */
 	NR_FAILED_WRITE,	/* can happen when memory is too low */
-	NR_INVALID_IO, 		/* non-page-aligned I/O requests */
 	NR_NOTIFY_FREE,		/* no. of swap slot free notifications */
 	NR_SAME_PAGE,		/* no. of same element filled pages */
 	NR_HUGE_PAGE,		/* no. of huge pages */
