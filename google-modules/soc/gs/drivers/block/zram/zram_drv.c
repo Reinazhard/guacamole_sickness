@@ -1294,11 +1294,9 @@ static int zram_bvec_read(struct zram *zram, struct bio_vec *bvec,
 	return zram_read_page(zram, bvec->bv_page, index, bio, false, access);
 }
 
-static int __zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
-				u32 index, struct bio *bio)
+static int zram_write_page(struct zram *zram, struct page *page,
+						   u32 index, struct bio *bio)
 {
-	struct page *page = bvec->bv_page;
-
 	if (zram->limit_pages &&
 			zs_get_total_pages(zram->mem_pool) > zram->limit_pages)
 		return -ENOMEM;
@@ -1309,11 +1307,9 @@ static int __zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 				u32 index, int offset, struct bio *bio)
 {
+	struct page *page = bvec->bv_page;
 	int ret;
-	struct page *page = NULL;
-	struct bio_vec vec;
 
-	vec = *bvec;
 	if (is_partial_io(bvec)) {
 		/*
 		 * This is a partial IO. We need to read the full page
@@ -1328,13 +1324,9 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 			goto out;
 
 		memcpy_from_bvec(page_address(page) + offset, bvec);
-
-		vec.bv_page = page;
-		vec.bv_len = PAGE_SIZE;
-		vec.bv_offset = 0;
 	}
 
-	ret = __zram_bvec_write(zram, &vec, index, bio);
+	ret = zram_write_page(zram, page, index, bio);
 out:
 	if (is_partial_io(bvec))
 		__free_page(page);
