@@ -157,30 +157,6 @@ static inline bool is_partial_io(struct bio_vec *bvec)
 }
 #endif
 
-/*
- * Check if request is within bounds and aligned on zram logical blocks.
- */
-static inline bool valid_io_request(struct zram *zram,
-		sector_t start, unsigned int size)
-{
-	u64 end, bound;
-
-	/* unaligned request */
-	if (unlikely(start & (ZRAM_SECTOR_PER_LOGICAL_BLOCK - 1)))
-		return false;
-	if (unlikely(size & (ZRAM_LOGICAL_BLOCK_SIZE - 1)))
-		return false;
-
-	end = start + (size >> SECTOR_SHIFT);
-	bound = zram->disksize >> SECTOR_SHIFT;
-	/* out of range range */
-	if (unlikely(start >= bound || end > bound || start > end))
-		return false;
-
-	/* I/O request is valid */
-	return true;
-}
-
 static void update_position(u32 *index, int *offset, struct bio_vec *bvec)
 {
 	*index  += (*offset + bvec->bv_len) / PAGE_SIZE;
@@ -1050,18 +1026,17 @@ static ssize_t io_stat_show(struct device *dev,
 {
 	struct zram *zram = dev_to_zram(dev);
 	ssize_t ret;
-	unsigned long failed_reads, failed_writes, invalid_io, notify_free;
+	unsigned long failed_reads, failed_writes, notify_free;
 
 	down_read(&zram->init_lock);
 
 	failed_reads = zram_stat_read(zram, NR_FAILED_READ);
 	failed_writes = zram_stat_read(zram, NR_FAILED_WRITE);
-	invalid_io = zram_stat_read(zram, NR_INVALID_IO);
 	notify_free = zram_stat_read(zram, NR_NOTIFY_FREE);
 
 	ret = scnprintf(buf, PAGE_SIZE,
-			"%8lu %8lu %8lu %8lu\n",
-			failed_reads, failed_writes, invalid_io, notify_free);
+			"%8lu %8lu %8lu\n",
+			failed_reads, failed_writes, notify_free);
 	up_read(&zram->init_lock);
 
 	return ret;
@@ -1531,13 +1506,6 @@ static void __zram_make_request(struct zram *zram, struct bio *bio)
 static void zram_submit_bio(struct bio *bio)
 {
 	struct zram *zram = bio->bi_bdev->bd_disk->private_data;
-
-	if (!valid_io_request(zram, bio->bi_iter.bi_sector,
-					bio->bi_iter.bi_size)) {
-		this_cpu_inc(zram->pcp_stats->items[NR_INVALID_IO]);
-		bio_io_error(bio);
-		return;
-	}
 
 	__zram_make_request(zram, bio);
 }
