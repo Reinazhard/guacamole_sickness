@@ -5300,6 +5300,16 @@ static int fts_interrupt_install(struct fts_ts_info *info)
 		return error;
 	}
 
+	/*
+	* This *must* be done before request_threaded_irq is called.
+	* Otherwise, if an interrupt is received before request is added,
+	* but after the interrupt has been subscribed to, pm_qos_req
+	* may be accessed before initialization in the interrupt handler.
+	*/
+	info->pm_qos_req.type = PM_QOS_REQ_AFFINE_IRQ;
+	info->pm_qos_req.irq = info->client->irq;
+	cpu_latency_qos_add_request(&info->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+
 	error = request_threaded_irq(info->client->irq, fts_isr,
 			fts_interrupt_handler, IRQF_ONESHOT | IRQF_TRIGGER_LOW,
 			FTS_TS_DRV_NAME, info);
@@ -6830,14 +6840,6 @@ static int fts_probe(struct spi_device *client)
 #endif
 	/* init motion filter mode */
 	info->use_default_mf = false;
-
-	/*
-	 * This *must* be done before request_threaded_irq is called.
-	 * Otherwise, if an interrupt is received before request is added,
-	 * but after the interrupt has been subscribed to, pm_qos_req
-	 * may be accessed before initialization in the interrupt handler.
-	 */
-	cpu_latency_qos_add_request(&info->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 
 	dev_info(info->dev, "Init Core Lib:\n");
 	initCore(info);
