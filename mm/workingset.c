@@ -249,38 +249,34 @@ static void *lru_gen_eviction(struct folio *folio)
 static void lru_gen_refault(struct folio *folio, void *shadow)
 {
 	int hist, tier, refs;
-	int memcg_id;
 	bool workingset;
 	unsigned long token;
-	unsigned long min_seq;
 	struct lruvec *lruvec;
 	struct lru_gen_folio *lrugen;
 	struct mem_cgroup *memcg;
 	struct pglist_data *pgdat;
+	int memcg_id;
 	int type = folio_is_file_lru(folio);
 	int delta = folio_nr_pages(folio);
 
-	unpack_shadow(shadow, &memcg_id, &pgdat, &token, &workingset);
-
-	if (pgdat != folio_pgdat(folio))
-		return;
-
 	rcu_read_lock();
 
-	memcg = folio_memcg_rcu(folio);
-	if (memcg_id != mem_cgroup_id(memcg))
+	unpack_shadow(shadow, &memcg_id, &pgdat, &token, &workingset);
+
+	memcg = mem_cgroup_from_id(memcg_id);
+	lruvec = mem_cgroup_lruvec(memcg, pgdat);
+
+	if (lruvec != folio_lruvec(folio))
 		goto unlock;
 
-	lruvec = mem_cgroup_lruvec(memcg, pgdat);
 	lrugen = &lruvec->lrugen;
 
 	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
 
-	min_seq = READ_ONCE(lrugen->min_seq[type]);
-	if ((token >> LRU_REFS_WIDTH) != (min_seq & (EVICTION_MASK >> LRU_REFS_WIDTH)))
+	if ((token >> LRU_REFS_WIDTH) != (READ_ONCE(lrugen->min_seq[type]) & (EVICTION_MASK >> LRU_REFS_WIDTH)))
 		goto unlock;
 
-	hist = lru_hist_from_seq(min_seq);
+	hist = lru_hist_from_seq(READ_ONCE(lrugen->min_seq[type]));
 	/* see the comment in folio_lru_refs() */
 	refs = (token & (BIT(LRU_REFS_WIDTH) - 1)) + workingset;
 	tier = lru_tier_from_refs(refs);
@@ -295,7 +291,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	 * 2. For pages accessed multiple times through file descriptors,
 	 *    they would have been protected by sort_folio().
 	 */
-	if (lru_gen_in_fault() || refs >= BIT(LRU_REFS_WIDTH) - 1) {
+	if (lru_gen_in_fault() || refs == BIT(LRU_REFS_WIDTH)) {
 		set_mask_bits(&folio->flags, 0, LRU_REFS_MASK | BIT(PG_workingset));
 		mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + type, delta);
 	}
