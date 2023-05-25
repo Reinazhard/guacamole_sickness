@@ -1149,6 +1149,9 @@ void wq_worker_tick(struct task_struct *task)
 
 	pwq->stats[PWQ_STAT_CPU_TIME] += TICK_USEC;
 
+	if (!wq_cpu_intensive_thresh_us)
+		return;
+
 	/*
 	 * If the current worker is concurrency managed and hogged the CPU for
 	 * longer than wq_cpu_intensive_thresh_us, it's automatically marked
