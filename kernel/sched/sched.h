@@ -2146,6 +2146,8 @@ extern const u32		sched_prio_to_wmult[40];
 #else
 #define ENQUEUE_MIGRATED	0x00
 #endif
+#define ENQUEUE_INITIAL		0x100
+#define ENQUEUE_REL_DEADLINE	0x200
 
 #define ENQUEUE_WAKEUP_SYNC	0x80
 
