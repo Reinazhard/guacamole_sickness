@@ -24,6 +24,7 @@
  * the CPU.
  */
 #define ARCH_DMA_MINALIGN	(64)
+#define ARCH_KMALLOC_MINALIGN	(8)
 
 #ifndef __ASSEMBLY__
 
@@ -80,6 +81,8 @@ static inline int cache_line_size_of_cpu(void)
 }
 
 int cache_line_size(void);
+
+#define dma_get_cache_alignment	cache_line_size
 
 /*
  * Read the effective value of CTR_EL0.
