@@ -153,7 +153,7 @@ int kbase_ipa_control_unregister(struct kbase_device *kbdev, const void *client)
  * Return: 0 on success, negative -errno on error
  */
 int kbase_ipa_control_query(struct kbase_device *kbdev, const void *client, u64 *values,
-			    size_t num_values, u64 *protected_time);
+			    size_t num_values, u64 *protected_time, ktime_t *now);
 
 /**
  * kbase_ipa_control_handle_gpu_power_on - Handle the GPU power on event
