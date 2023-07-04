@@ -1295,8 +1295,7 @@ static void update_tasks_cpumask(struct cpuset *cs, struct cpumask *new_cpus)
 		/*
 		 * Percpu kthreads in top_cpuset are ignored
 		 */
-		if (top_cs && (task->flags & PF_KTHREAD) &&
-		    kthread_is_per_cpu(task))
+		if (top_cs && kthread_is_per_cpu(task))
 			continue;
 
 		cpumask_and(new_cpus, cs->effective_cpus,
