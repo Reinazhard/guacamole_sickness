@@ -83,6 +83,7 @@ static uint64 last_resched_cnt_check_time_ns = 0;
 static uint64 last_affinity_update_time_ns = 0;
 /* force to switch to small core at beginning */
 static bool is_irq_on_big_core = TRUE;
+static bool is_plat_pcie_resume = FALSE;
 
 static int pcie_ch_num = EXYNOS_PCIE_CH_NUM;
 #if defined(CONFIG_SOC_GOOGLE)
@@ -756,11 +757,13 @@ irq_affinity_hysteresis_control(struct pci_dev *pdev, int resched_streak_max,
 		return;
 	}
 
-	if (!is_irq_on_big_core && (resched_streak_max >= RESCHED_STREAK_MAX_HIGH) &&
-		!has_recent_affinity_update) {
+	if (is_plat_pcie_resume ||
+            (is_irq_on_big_core && (resched_streak_max <= RESCHED_STREAK_MAX_LOW) &&
+             !has_recent_affinity_update)) {
 		err = set_affinity(pdev->irq, cpumask_of(IRQ_AFFINITY_BIG_CORE));
 		if (!err) {
 			is_irq_on_big_core = TRUE;
+                        is_plat_pcie_resume = FALSE;
 			last_affinity_update_time_ns = curr_time_ns;
 			DHD_INFO(("%s switches to big core successfully\n", __FUNCTION__));
 		} else {
@@ -963,7 +966,7 @@ int dhd_plat_pcie_resume(void *plat_info)
 {
 	int ret = 0;
 	ret = exynos_pcie_pm_resume(pcie_ch_num);
-	is_irq_on_big_core = true;
+        is_plat_pcie_resume = TRUE;
 	return ret;
 }
 
