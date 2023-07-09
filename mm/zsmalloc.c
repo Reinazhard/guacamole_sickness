@@ -858,8 +858,8 @@ static unsigned long handle_to_obj(unsigned long handle)
 	return *(unsigned long *)handle;
 }
 
-static bool obj_tagged(struct page *page, void *obj, unsigned long *phandle,
-		int tag)
+static inline bool obj_allocated(struct page *page, void *obj,
+				 unsigned long *phandle)
 {
 	unsigned long handle;
 	struct zspage *zspage = get_zspage(page);
@@ -870,7 +870,7 @@ static bool obj_tagged(struct page *page, void *obj, unsigned long *phandle,
 	} else
 		handle = *(unsigned long *)obj;
 
-	if (!(handle & tag))
+	if (!(handle & OBJ_ALLOCATED_TAG))
 		return false;
 
 	/* Clear all tags before returning the handle */
@@ -878,16 +878,24 @@ static bool obj_tagged(struct page *page, void *obj, unsigned long *phandle,
 	return true;
 }
 
-static inline bool obj_allocated(struct page *page, void *obj, unsigned long *phandle)
-{
-	return obj_tagged(page, obj, phandle, OBJ_ALLOCATED_TAG);
-}
-
 #ifdef CONFIG_ZPOOL
 static bool obj_stores_deferred_handle(struct page *page, void *obj,
 		unsigned long *phandle)
 {
-	return obj_tagged(page, obj, phandle, OBJ_DEFERRED_HANDLE_TAG);
+	unsigned long handle;
+	struct zspage *zspage = get_zspage(page);
+
+	if (unlikely(ZsHugePage(zspage))) {
+		VM_BUG_ON_PAGE(!is_first_page(page), page);
+		handle = page->index;
+	} else
+		handle = *(unsigned long *)obj;
+
+	if (!(handle & OBJ_DEFERRED_HANDLE_TAG))
+		return false;
+
+	*phandle = handle & ~OBJ_TAG_MASK;
+	return true;
 }
 #endif
 
@@ -1703,11 +1711,11 @@ static void zs_object_copy(struct size_class *class, unsigned long dst,
 }
 
 /*
- * Find object with a certain tag in zspage from index object and
+ * Find alloced object in zspage from index object and
  * return handle.
  */
-static unsigned long find_tagged_obj(struct size_class *class,
-					struct page *page, int *obj_idx, int tag)
+static unsigned long find_alloced_obj(struct size_class *class,
+				      struct page *page, int *obj_idx)
 {
 	unsigned int offset;
 	int index = *obj_idx;
@@ -1718,7 +1726,7 @@ static unsigned long find_tagged_obj(struct size_class *class,
 	offset += class->size * index;
 
 	while (offset < PAGE_SIZE) {
-		if (obj_tagged(page, addr + offset, &handle, tag))
+		if (obj_allocated(page, addr + offset, &handle))
 			break;
 
 		offset += class->size;
@@ -1730,16 +1738,6 @@ static unsigned long find_tagged_obj(struct size_class *class,
 	*obj_idx = index;
 
 	return handle;
-}
-
-/*
- * Find alloced object in zspage from index object and
- * return handle.
- */
-static unsigned long find_alloced_obj(struct size_class *class,
-					struct page *page, int *obj_idx)
-{
-	return find_tagged_obj(class, page, obj_idx, OBJ_ALLOCATED_TAG);
 }
 
 #ifdef CONFIG_ZPOOL
