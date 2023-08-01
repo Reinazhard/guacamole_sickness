@@ -6326,19 +6326,19 @@ static bool try_steal_cookie(int this, int that)
 	unsigned long cookie;
 	bool success = false;
 
-	local_irq_disable();
-	double_rq_lock(dst, src);
+	guard(irq)();
+	guard(double_rq_lock)(dst, src);
 
 	cookie = dst->core->core_cookie;
 	if (!cookie)
-		goto unlock;
+		return false;
 
 	if (dst->curr != dst->idle)
-		goto unlock;
+		return false;
 
 	p = sched_core_find(src, cookie);
 	if (p == src->idle)
-		goto unlock;
+		return false;
 
 	do {
 		if (p == src->core_pick || p == src->curr)
@@ -6362,10 +6362,6 @@ static bool try_steal_cookie(int this, int that)
 next:
 		p = sched_core_next(p, cookie);
 	} while (p);
-
-unlock:
-	double_rq_unlock(dst, src);
-	local_irq_enable();
 
 	return success;
 }
