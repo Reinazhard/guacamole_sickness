@@ -205,12 +205,6 @@ static inline bool selinux_android_nlroute_getneigh(void)
 	return state->android_netlink_getneigh;
 }
 
-static inline bool selinux_policycap_userspace_initial_context(void)
-{
-	return READ_ONCE(
-		selinux_state.policycap[POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT]);
-}
-
 struct selinux_policy_convert_data;
 
 struct selinux_load_state {
