@@ -5,6 +5,8 @@
 
 obj-$(CONFIG_SECURITY_SELINUX) := selinux.o
 
+ccflags-$(CONFIG_SECURITY_SELINUX_DEBUG) += -DDEBUG
+
 selinux-y := avc.o hooks.o selinuxfs.o netlink.o nlmsgtab.o netif.o \
 	     netnode.o netport.o status.o \
 	     ss/ebitmap.o ss/hashtab.o ss/symtab.o ss/sidtab.o ss/avtab.o \
