@@ -1122,7 +1122,14 @@ static int takedown_cpu(unsigned int cpu)
 	__cpu_die(cpu);
 
 	tick_cleanup_dead_cpu(cpu);
+
+	/*
+	 * Callbacks must be re-integrated right away to the RCU state machine.
+	 * Otherwise an RCU callback could block a further teardown function
+	 * waiting for its completion.
+	 */
 	rcutree_migrate_callbacks(cpu);
+
 	return 0;
 }
 
