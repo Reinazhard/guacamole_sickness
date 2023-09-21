@@ -911,6 +911,8 @@ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
 __SYSCALL(__NR_futex_wake, sys_futex_wake)
 #define __NR_futex_wait 452
 __SYSCALL(__NR_futex_wait, sys_futex_wait)
+#define __NR_futex_requeue 454
+__SYSCALL(__NR_futex_requeue, sys_futex_requeue)
 
 /*
  * Please add new compat syscalls above this comment and update
