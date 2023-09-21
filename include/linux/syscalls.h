@@ -627,6 +627,10 @@ asmlinkage long sys_futex_waitv(struct futex_waitv *waiters,
 
 asmlinkage long sys_futex_wake(void __user *uaddr, unsigned long mask, int nr, unsigned int flags);
 
+asmlinkage long sys_futex_wait(void __user *uaddr, unsigned long val, unsigned long mask,
+			       unsigned int flags, struct __kernel_timespec __user *timespec,
+			       clockid_t clockid);
+
 /* kernel/hrtimer.c */
 asmlinkage long sys_nanosleep(struct __kernel_timespec __user *rqtp,
 			      struct __kernel_timespec __user *rmtp);

@@ -888,9 +888,11 @@ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
 
 #define __NR_futex_wake 451
 __SYSCALL(__NR_futex_wake, sys_futex_wake)
+#define __NR_futex_wait 452
+__SYSCALL(__NR_futex_wait, sys_futex_wait)
 
 #undef __NR_syscalls
-#define __NR_syscalls 452
+#define __NR_syscalls 453
 
 /*
  * 32 bit systems traditionally used different

@@ -152,6 +152,7 @@ COND_SYSCALL(get_robust_list);
 COND_SYSCALL_COMPAT(get_robust_list);
 COND_SYSCALL(futex_waitv);
 COND_SYSCALL(futex_wake);
+COND_SYSCALL(futex_wait);
 
 /* kernel/hrtimer.c */
 
