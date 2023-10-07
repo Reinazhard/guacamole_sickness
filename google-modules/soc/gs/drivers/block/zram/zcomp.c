@@ -411,7 +411,9 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 	src_len = zram_get_obj_size(zram, index);
 	if (src_len == PAGE_SIZE) {
 		src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
-		memcpy_to_page(page, 0, src, PAGE_SIZE);
+		dst = kmap_local_page(page);
+		copy_page(dst, src);
+		kunmap_local(dst);
 		zs_unmap_object(zram->mem_pool, handle);
 		goto out;
 	}
