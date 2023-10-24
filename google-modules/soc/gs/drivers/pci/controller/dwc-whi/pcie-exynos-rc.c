@@ -889,20 +889,21 @@ static void link_stats_init(struct exynos_pcie *pcie)
 	pcie->link_stats.link_up_time_avg = 0;
 }
 
-static void link_stats_log_pll_lock(struct exynos_pcie *pcie, u32 pll_lock_time)
-{
-	pcie->link_stats.pll_lock_time_avg =
-	    DIV_ROUND_CLOSEST(pcie->link_stats.pll_lock_time_avg *
-			      (100 - NEW_DATA_AVERAGE_WEIGHT) +
-			      pll_lock_time * NEW_DATA_AVERAGE_WEIGHT, 100);
-}
-
 static void link_stats_log_link_up(struct exynos_pcie *pcie, u32 link_up_time)
 {
 	pcie->link_stats.link_up_time_avg =
 	    DIV_ROUND_CLOSEST(pcie->link_stats.link_up_time_avg *
 			      (100 - NEW_DATA_AVERAGE_WEIGHT) +
 			      link_up_time * NEW_DATA_AVERAGE_WEIGHT, 100);
+}
+
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
+static void link_stats_log_pll_lock(struct exynos_pcie *pcie, u32 pll_lock_time)
+{
+	pcie->link_stats.pll_lock_time_avg =
+	    DIV_ROUND_CLOSEST(pcie->link_stats.pll_lock_time_avg *
+			      (100 - NEW_DATA_AVERAGE_WEIGHT) +
+			      pll_lock_time * NEW_DATA_AVERAGE_WEIGHT, 100);
 }
 
 static int check_exynos_pcie_reg_status(struct exynos_pcie *exynos_pcie,
@@ -939,6 +940,7 @@ static int check_exynos_pcie_reg_status(struct exynos_pcie *exynos_pcie,
 
 	return status;
 }
+#endif
 
 static ssize_t link_down_irqs_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -3104,13 +3106,16 @@ static int exynos_pcie_rc_establish_link(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
-	void __iomem *phy_base_regs = exynos_pcie->phy_base;
 	struct device *dev = pci->dev;
 	u32 val, busdev;
 	int count = 0, try_cnt = 0;
 	unsigned int save_before_state = 0xff;
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
+	void __iomem *phy_base_regs = exynos_pcie->phy_base;
 	bool pll_lock, cdr_lock, oc_done;
 	int lock_cnt;
+#endif
+
 retry:
 	logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "OC Initial Status check: 0x5FC(0x%x)\n",
 			exynos_phy_read(exynos_pcie, 0x5FC));
@@ -3118,6 +3123,7 @@ retry:
 	/* to call eyxnos_pcie_rc_pcie_phy_config() in cal.c file */
 	exynos_pcie_rc_assert_phy_reset(pp);
 
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
 	/* check pll lock */
 	pll_lock = check_exynos_pcie_reg_status(exynos_pcie, phy_base_regs,
 						0x03F0, BIT(3), BIT(3), &lock_cnt);
@@ -3138,6 +3144,7 @@ retry:
 	logbuffer_log(exynos_pcie->log,
 		      "PLL_LOCK:%d, CDR_LOCK:%d, OC:%d",
 		      pll_lock, cdr_lock, oc_done);
+#endif
 
 	/* Soft Power RST */
 	val = exynos_elbi_read(exynos_pcie, PCIE_SOFT_RESET);
