@@ -1524,6 +1524,10 @@ ifneq ($(wildcard $(srctree)/arch/$(SRCARCH)/boot/dts/),)
 dtstree ?= arch/$(SRCARCH)/boot/dts
 endif
 
+dtstree := google-devices/gs101/dts
+DTC_INCLUDE := $(srctree)/google-modules/soc/gs/include/dtc
+export DTC_INCLUDE
+
 ifneq ($(dtstree),)
 
 %.dtb: dtbs_prepare
