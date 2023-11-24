@@ -7214,8 +7214,22 @@ dhd_bus_perform_flr(dhd_bus_t *bus, bool force_fail)
 	DHD_INFO(("Read Device Capability: reg=0x%x read val=0x%x flr_capab=0x%x\n",
 		PCIE_CFG_DEVICE_CAPABILITY, val, flr_capab));
 	if (!flr_capab) {
-	       DHD_ERROR(("Chip does not support FLR\n"));
-	       return BCME_UNSUPPORTED;
+		if (bus->sih->buscorerev < 64) {
+			DHD_ERROR(("%s: Chip does not support FLR\n",
+				__FUNCTION__));
+			return BCME_UNSUPPORTED;
+
+		} else {
+			/* Some strange error has occurred, as buscorerev
+			 * supports FLR but config space does not.
+			 * returning BCME_UNSUPPORTED will lead to
+			 * watchdogreset from the caller causing kernel panic.
+			 * Hence return BCME_ERROR
+			 */
+			DHD_ERROR(("%s: buscorerev supports FLR but cfgspace not!\n",
+				__FUNCTION__));
+			return BCME_ERROR;
+		}
 	}
 	/* Check if we are already in FLR, if we are then just go to restore part of it  */
 	val = OSL_PCI_READ_CONFIG(bus->osh, PCIE_CFG_SUBSYSTEM_CONTROL, sizeof(val));
@@ -7537,11 +7551,15 @@ dhd_bus_devreset(dhd_pub_t *dhdp, uint8 flag)
 	dhd_bus_t *bus = dhdp->bus;
 	int bcmerror = 0;
 	unsigned long flags;
-	int retry = POWERUP_MAX_RETRY;
 
 	if (flag == TRUE) { /* Turn off WLAN */
 		/* Removing Power */
 		DHD_ERROR(("%s: == Power OFF ==\n", __FUNCTION__));
+		if (bus->enumeration_fail) {
+			DHD_ERROR(("%s: Enumeration failed. Skip devreset\n",
+				__FUNCTION__));
+			goto done;
+		}
 
 		/* wait for other contexts to finish -- if required a call
 		* to OSL_DELAY for 1s can be added to give other contexts
@@ -7673,20 +7691,13 @@ dhd_bus_devreset(dhd_pub_t *dhdp, uint8 flag)
 			/* Powering On */
 			DHD_ERROR(("%s: == Power ON ==\n", __FUNCTION__));
 			/* PCIe RC Turn on */
-			do {
-				bcmerror = dhdpcie_bus_start_host_dev(bus);
-				if (!bcmerror) {
-					DHD_ERROR_MEM(("%s: dhdpcie_bus_start_host_dev OK\n",
-						__FUNCTION__));
-					break;
-				} else {
-					OSL_SLEEP(10);
-				}
-			} while (retry--);
-
+			bus->enumeration_fail = FALSE;
+			bcmerror = dhdpcie_bus_start_host_dev(bus);
 			if (bcmerror) {
 				DHD_ERROR(("%s: host pcie clock enable failed: %d\n",
 					__FUNCTION__, bcmerror));
+				bus->enumeration_fail = TRUE;
+				bcmerror = BCME_NOTREADY;
 				goto done;
 			}
 #if defined(DHD_CONTROL_PCIE_ASPM_WIFI_TURNON)
