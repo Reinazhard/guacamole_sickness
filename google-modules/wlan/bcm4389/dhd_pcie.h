@@ -391,6 +391,7 @@ typedef struct dhd_bus {
 	uint8 force_suspend;
 	uint8 is_linkdown;
 	uint8 no_bus_init;
+	bool enumeration_fail;
 #ifdef IDLE_TX_FLOW_MGMT
 	bool enable_idle_flowring_mgmt;
 #endif /* IDLE_TX_FLOW_MGMT */
