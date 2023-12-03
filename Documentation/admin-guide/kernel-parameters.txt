@@ -4951,6 +4951,11 @@
 			delay, memory pressure or callback list growing too
 			big.
 
+	rcutree.enable_rcu_lazy= [KNL]
+			To save power, batch RCU callbacks and flush after
+			delay, memory pressure or callback list growing too
+			big.
+
 	rcuscale.gp_async= [KNL]
 			Measure performance of asynchronous
 			grace-period primitives such as call_rcu().
