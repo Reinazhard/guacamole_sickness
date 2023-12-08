@@ -5395,22 +5395,17 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool 
 	return try_to_inc_max_seq(lruvec, max_seq, sc, can_swap, false) ? -1 : 0;
 }
 
-static unsigned long get_nr_to_reclaim(struct scan_control *sc)
-{
-	/* don't abort memcg reclaim to ensure fairness */
-	if (!global_reclaim(sc))
-		return -1;
-
-	return max(sc->nr_to_reclaim, compact_gap(sc->order));
-}
-
 static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
 {
-	unsigned long nr_to_reclaim = get_nr_to_reclaim(sc);
-	bool check_wmarks = false;
 	int i;
+	enum zone_watermarks mark;
+	bool check_wmarks = false;
 
-	if (sc->nr_reclaimed >= nr_to_reclaim)
+	/* don't abort memcg reclaim to ensure fairness */
+	if (!global_reclaim(sc))
+		return false;
+
+	if (sc->nr_reclaimed >= max(sc->nr_to_reclaim, compact_gap(sc->order)))
 		return true;
 
 	trace_android_vh_scan_abort_check_wmarks(&check_wmarks);
@@ -5418,30 +5413,22 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
 	if (!check_wmarks)
 		return false;
 
-	if (!current_is_kswapd())
+	/* check the order to exclude compaction-induced reclaim */
+	if (!current_is_kswapd() || sc->order)
 		return false;
 
+	mark = sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING ?
+	       WMARK_PROMO : WMARK_HIGH;
+
 	for (i = 0; i <= sc->reclaim_idx; i++) {
-		unsigned long wmark;
 		struct zone *zone = lruvec_pgdat(lruvec)->node_zones + i;
+		unsigned long size = wmark_pages(zone, mark) + MIN_LRU_BATCH;
 
-		if (!managed_zone(zone))
-			continue;
-
-		if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING)
-			wmark = wmark_pages(zone, WMARK_PROMO);
-		else
-			wmark = high_wmark_pages(zone);
-
-		/*
-		 * Abort scan once the target number of order zero pages are met.
-		 * Reclaim MIN_LRU_BATCH << 2 to facilitate immediate kswapd sleep.
-		 */
-		wmark += MIN_LRU_BATCH << 2;
-		if (!zone_watermark_ok_safe(zone, 0, wmark, sc->reclaim_idx))
+		if (managed_zone(zone) && !zone_watermark_ok(zone, 0, size, sc->reclaim_idx, 0))
 			return false;
 	}
 
+	/* kswapd should abort if all eligible zones are safe */
 	return true;
 }
 
@@ -5579,12 +5566,10 @@ restart:
 	if (op)
 		lru_gen_rotate_memcg(lruvec, op);
 
-	if (lruvec && should_abort_scan(lruvec, sc)) {
-		mem_cgroup_put(memcg);
-		return;
-	}
-
 	mem_cgroup_put(memcg);
+
+	if (!is_a_nulls(pos))
+		return;
 
 	/* restart if raced with lru_gen_rotate_memcg() */
 	if (gen != get_nulls_value(pos))
