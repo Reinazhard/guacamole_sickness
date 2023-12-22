@@ -17,6 +17,10 @@ struct bpf_mem_alloc {
 };
 
 int bpf_mem_alloc_init(struct bpf_mem_alloc *ma, int size, bool percpu);
+/* Initialize a non-fix-size percpu memory allocator */
+int bpf_mem_alloc_percpu_init(struct bpf_mem_alloc *ma, struct obj_cgroup *objcg);
+/* The percpu allocation with a specific unit size. */
+int bpf_mem_alloc_percpu_unit_init(struct bpf_mem_alloc *ma, int size);
 void bpf_mem_alloc_destroy(struct bpf_mem_alloc *ma);
 
 /* kmalloc/kfree equivalent: */
