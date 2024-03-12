@@ -61,7 +61,7 @@ void *zpool_map_handle(struct zpool *pool, unsigned long handle,
 
 void zpool_unmap_handle(struct zpool *pool, unsigned long handle);
 
-u64 zpool_get_total_size(struct zpool *pool);
+u64 zpool_get_total_pages(struct zpool *pool);
 
 
 /**
@@ -106,7 +106,7 @@ struct zpool_driver {
 				enum zpool_mapmode mm);
 	void (*unmap)(void *pool, unsigned long handle);
 
-	u64 (*total_size)(void *pool);
+	u64 (*total_pages)(void *pool);
 };
 
 void zpool_register_driver(struct zpool_driver *driver);
