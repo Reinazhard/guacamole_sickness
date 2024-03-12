@@ -255,12 +255,12 @@ static bool zswap_can_accept(void)
 static void zswap_update_total_size(void)
 {
 	struct zswap_pool *pool;
-	u64 total = 0;
+	unsigned long total = 0;
 
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(pool, &zswap_pools, list)
-		total += zpool_get_total_size(pool->zpool);
+		total += zpool_get_total_pages(pool->zpool);
 
 	rcu_read_unlock();
 
