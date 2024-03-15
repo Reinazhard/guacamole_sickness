@@ -2969,7 +2969,7 @@ static int selinux_inode_init_security_anon(struct inode *inode,
 					    const struct qstr *name,
 					    const struct inode *context_inode)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	u32 sid = current_sid();
 	struct common_audit_data ad;
 	struct inode_security_struct *isec;
 	int rc;
@@ -2998,7 +2998,7 @@ static int selinux_inode_init_security_anon(struct inode *inode,
 	} else {
 		isec->sclass = SECCLASS_ANON_INODE;
 		rc = security_transition_sid(
-			tsec->sid, tsec->sid,
+			sid, sid,
 			isec->sclass, name, &isec->sid);
 		if (rc)
 			return rc;
@@ -3013,7 +3013,7 @@ static int selinux_inode_init_security_anon(struct inode *inode,
 	ad.type = LSM_AUDIT_DATA_ANONINODE;
 	ad.u.anonclass = name ? (const char *)name->name : "?";
 
-	return avc_has_perm(tsec->sid,
+	return avc_has_perm(sid,
 			    isec->sid,
 			    isec->sclass,
 			    FILE__CREATE,
@@ -3071,10 +3071,9 @@ static int selinux_inode_readlink(struct dentry *dentry)
 static int selinux_inode_follow_link(struct dentry *dentry, struct inode *inode,
 				     bool rcu)
 {
-	const struct cred *cred = current_cred();
 	struct common_audit_data ad;
 	struct inode_security_struct *isec;
-	u32 sid;
+	u32 sid = current_sid();
 
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	validate_creds(cred);
@@ -3082,7 +3081,6 @@ static int selinux_inode_follow_link(struct dentry *dentry, struct inode *inode,
 
 	ad.type = LSM_AUDIT_DATA_DENTRY;
 	ad.u.dentry = dentry;
-	sid = cred_sid(cred);
 	isec = inode_security_rcu(inode, rcu);
 	if (IS_ERR(isec))
 		return PTR_ERR(isec);
@@ -3106,12 +3104,11 @@ static noinline int audit_inode_permission(struct inode *inode,
 
 static int selinux_inode_permission(struct inode *inode, int mask)
 {
-	const struct cred *cred = current_cred();
 	u32 perms;
 	bool from_access;
 	bool no_block = mask & MAY_NOT_BLOCK;
 	struct inode_security_struct *isec;
-	u32 sid;
+	u32 sid = current_sid();
 	struct av_decision avd;
 	int rc, rc2;
 	u32 audited, denied;
@@ -3132,7 +3129,6 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 
 	perms = file_mask_to_av(inode->i_mode, mask);
 
-	sid = cred_sid(cred);
 	isec = inode_security_rcu(inode, no_block);
 	if (IS_ERR(isec))
 		return PTR_ERR(isec);
@@ -5548,13 +5544,7 @@ static void selinux_inet_conn_established(struct sock *sk, struct sk_buff *skb)
 
 static int selinux_secmark_relabel_packet(u32 sid)
 {
-	const struct task_security_struct *tsec;
-	u32 tsid;
-
-	tsec = selinux_cred(current_cred());
-	tsid = tsec->sid;
-
-	return avc_has_perm(tsid, sid, SECCLASS_PACKET, PACKET__RELABELTO,
+	return avc_has_perm(current_sid(), sid, SECCLASS_PACKET, PACKET__RELABELTO,
 			    NULL);
 }
 
