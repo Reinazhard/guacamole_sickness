@@ -2388,10 +2388,6 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 		rq = cpu_rq(i);
 		sd = *per_cpu_ptr(d.sd, i);
 
-		/* Use READ_ONCE()/WRITE_ONCE() to avoid load/store tearing: */
-		if (rq->cpu_capacity_orig > READ_ONCE(d.rd->max_cpu_capacity))
-			WRITE_ONCE(d.rd->max_cpu_capacity, rq->cpu_capacity_orig);
-
 		cpu_attach_domain(sd, d.rd, i);
 	}
 	rcu_read_unlock();
@@ -2399,10 +2395,9 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 	if (has_asym)
 		static_branch_inc_cpuslocked(&sched_asym_cpucapacity);
 
-	if (rq && sched_debug_verbose) {
-		pr_info("root domain span: %*pbl (max cpu_capacity = %lu)\n",
-			cpumask_pr_args(cpu_map), rq->rd->max_cpu_capacity);
-	}
+	if (rq && sched_debug_verbose)
+		pr_info("root domain span: %*pbl\n", cpumask_pr_args(cpu_map));
+
 	trace_android_vh_build_sched_domains(has_asym);
 
 	ret = 0;
