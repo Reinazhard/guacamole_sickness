@@ -10123,7 +10123,7 @@ next_group:
 
 	if (!env->sd->parent) {
 		/* update overload indicator if we are at root domain */
-		set_rd_overload(env->dst_rq->rd, sg_status & SG_OVERLOAD);
+		set_rd_overloaded(env->dst_rq->rd, sg_status & SG_OVERLOAD);
 
 		/* Update over-utilization (tipping point, U >= 0) indicator */
 		set_rd_overutilized_status(env->dst_rq->rd,
@@ -11771,7 +11771,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
 		goto out;
 	}
 
-	if (!get_rd_overload(this_rq->rd) ||
+	if (!get_rd_overloaded(this_rq->rd) ||
 	    this_rq->avg_idle < sd->max_newidle_lb_cost) {
 		update_next_balance(sd, &next_balance);
 		rcu_read_unlock();
