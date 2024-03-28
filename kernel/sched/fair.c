@@ -6120,7 +6120,7 @@ static inline int is_rd_overutilized(struct root_domain *rd)
 	return READ_ONCE(rd->overutilized);
 }
 
-static inline void set_rd_overutilized_status(struct root_domain *rd,
+static inline void set_rd_overutilized(struct root_domain *rd,
 					      unsigned int status)
 {
 	if (!sched_energy_enabled())
@@ -6140,7 +6140,7 @@ static inline void check_update_overutilized_status(struct rq *rq)
 		return;
 
 	if (!is_rd_overutilized(rq->rd) && cpu_overutilized(rq->cpu))
-		set_rd_overutilized_status(rq->rd, SG_OVERUTILIZED);
+		set_rd_overutilized(rq->rd, SG_OVERUTILIZED);
 }
 #else
 static inline void check_update_overutilized_status(struct rq *rq) { }
@@ -10126,10 +10126,10 @@ next_group:
 		set_rd_overloaded(env->dst_rq->rd, sg_status & SG_OVERLOADED);
 
 		/* Update over-utilization (tipping point, U >= 0) indicator */
-		set_rd_overutilized_status(env->dst_rq->rd,
+		set_rd_overutilized(env->dst_rq->rd,
 					   sg_status & SG_OVERUTILIZED);
 	} else if (sg_status & SG_OVERUTILIZED) {
-		set_rd_overutilized_status(env->dst_rq->rd, SG_OVERUTILIZED);
+		set_rd_overutilized(env->dst_rq->rd, SG_OVERUTILIZED);
 	}
 
 	update_idle_cpu_scan(env, sum_util);
