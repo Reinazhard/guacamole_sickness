@@ -2164,6 +2164,12 @@ static int __init init_sel_fs(void)
 		return err;
 	}
 
+	/*
+	 * Try to pre-allocate the status page, so the sequence number of the
+	 * initial policy load can be stored.
+	 */
+	(void) selinux_kernel_status_page();
+
 	return err;
 }
 
