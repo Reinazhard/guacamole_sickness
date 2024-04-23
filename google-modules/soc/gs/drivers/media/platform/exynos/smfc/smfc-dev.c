@@ -18,9 +18,6 @@
 #include <linux/mutex.h>
 #include <linux/wait.h>
 #include <linux/iommu.h>
-#if IS_ENABLED(CONFIG_EXYNOS_BTS)
-#include <soc/google/bts.h>
-#endif
 
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-dma-sg.h>
@@ -873,19 +870,6 @@ static void g2d_pm_qos_remove_request(struct smfc_dev *smfc)
 	exynos_pm_qos_remove_request(&smfc->qosreq_mif);
 }
 
-#if IS_ENABLED(CONFIG_EXYNOS_BTS)
-void smfc_get_bandwidth(struct smfc_dev *smfc, struct bts_bw *bw)
-{
-	unsigned int bpc = smfc->bpc;
-	unsigned int core_clk = smfc->core_clk;
-	unsigned int bw_khz = bpc * core_clk / SZ_1K / BITS_PER_BYTE;
-
-	bw->read = bw_khz * 1000;
-	bw->write = bw->read;
-	bw->peak = (bw->read + bw->write) / 2;
-}
-#endif
-
 /* Helper function to request PM QoS */
 static void g2d_pm_qos_update_request(struct smfc_dev *smfc)
 {
@@ -1048,13 +1032,6 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&smfc->qos_work, smfc_qos_release);
 	pm_runtime_enable(&pdev->dev);
 
-#if IS_ENABLED(CONFIG_EXYNOS_BTS)
-	smfc->bts_id = bts_get_bwindex("jpeg");
-#else
-	smfc->bts_id = -1;
-#endif
-	dev_info(&pdev->dev, "bts_id = %d\n", smfc->bts_id);
-
 	if (of_property_read_u32(pdev->dev.of_node, "smfc,int_qos_minlock",
 				 (u32 *)&smfc->qosreq_int_level))
 		smfc->qosreq_int_level = 0;
@@ -1062,18 +1039,6 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	if (of_property_read_u32(pdev->dev.of_node, "smfc,mif_qos_minlock",
 				 (u32 *)&smfc->qosreq_mif_level))
 		smfc->qosreq_mif_level = 0;
-
-	if (of_property_read_u32(pdev->dev.of_node, "smfc_core_clk",
-				&smfc->core_clk)) {
-		smfc->core_clk = 0;
-		dev_err(&pdev->dev, "Failed to get core_clk for smfc BTS support\n");
-	}
-
-	if (of_property_read_u32(pdev->dev.of_node, "smfc_bpc",
-				&smfc->bpc)) {
-		smfc->bpc = 0;
-		dev_err(&pdev->dev, "Failed to get bpc for smfc BTS support\n");
-	}
 
 	platform_set_drvdata(pdev, smfc);
 
@@ -1096,9 +1061,9 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 
 	dev_info(
 		&pdev->dev,
-		"Probed H/W Version: %02x.%02x.%04x int_level=%d mif_level=%d Core(%d), BPC(%d) \n",
+		"Probed H/W Version: %02x.%02x.%04x int_level=%d mif_level=%d \n",
 		(smfc->hwver >> 24) & 0xFF, (smfc->hwver >> 16) & 0xFF, smfc->hwver & 0xFFFF,
-		smfc->qosreq_int_level, smfc->qosreq_mif_level, smfc->core_clk, smfc->bpc);
+		smfc->qosreq_int_level, smfc->qosreq_mif_level);
 	return 0;
 
 err_hwver:
