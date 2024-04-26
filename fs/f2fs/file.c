@@ -4733,7 +4733,8 @@ static int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *iter,
 
 	map.m_may_create = true;
 	if (dio) {
-		map.m_seg_type = f2fs_rw_hint_to_seg_type(inode->i_write_hint);
+		map.m_seg_type = f2fs_rw_hint_to_seg_type(sbi,
+						inode->i_write_hint);
 		flag = F2FS_GET_BLOCK_PRE_DIO;
 	} else {
 		map.m_seg_type = NO_CHECK_TYPE;
