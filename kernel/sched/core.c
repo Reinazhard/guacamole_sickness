@@ -2149,9 +2149,13 @@ EXPORT_SYMBOL_GPL(activate_task);
 
 void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 {
-	p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
-
-	dequeue_task(rq, p, flags);
+	if (flags & DEQUEUE_SLEEP) {
+		if (dequeue_task(rq, p, flags))
+			smp_store_release(&p->on_rq, 0);
+	} else {
+		p->on_rq = TASK_ON_RQ_MIGRATING;
+		dequeue_task(rq, p, flags);
+	}
 }
 EXPORT_SYMBOL_GPL(deactivate_task);
 
@@ -6699,6 +6703,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		if (signal_pending_state(prev_state, prev)) {
 			WRITE_ONCE(prev->__state, TASK_RUNNING);
 		} else {
+			int deactivate_flags = DEQUEUE_SLEEP | DEQUEUE_NOCLOCK;
 			prev->sched_contributes_to_load =
 				(prev_state & TASK_UNINTERRUPTIBLE) &&
 				!(prev_state & TASK_NOLOAD) &&
@@ -6706,6 +6711,9 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 
 			if (prev->sched_contributes_to_load)
 				rq->nr_uninterruptible++;
+
+			if (unlikely(is_special_task_state(prev_state)))
+				deactivate_flags |= DEQUEUE_SPECIAL;
 
 			/*
 			 * __schedule()			ttwu()
@@ -6718,7 +6726,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			 *
 			 * After this, schedule() must not care about p->state any more.
 			 */
-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+			deactivate_task(rq, prev, deactivate_flags);
 
 			if (prev->in_iowait) {
 				atomic_inc(&rq->nr_iowait);
