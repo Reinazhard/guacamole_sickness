@@ -1144,6 +1144,7 @@ int rcu_nocb_cpu_deoffload(int cpu)
 	int ret = 0;
 
 	cpus_read_lock();
+	mutex_lock(&rcu_state.nocb_mutex);
 	mutex_lock(&rcu_state.barrier_mutex);
 	if (rcu_rdp_is_offloaded(rdp)) {
 		if (cpu_online(cpu)) {
@@ -1156,6 +1157,7 @@ int rcu_nocb_cpu_deoffload(int cpu)
 		}
 	}
 	mutex_unlock(&rcu_state.barrier_mutex);
+	mutex_unlock(&rcu_state.nocb_mutex);
 	cpus_read_unlock();
 
 	return ret;
@@ -1231,6 +1233,7 @@ int rcu_nocb_cpu_offload(int cpu)
 	int ret = 0;
 
 	cpus_read_lock();
+	mutex_lock(&rcu_state.nocb_mutex);
 	mutex_lock(&rcu_state.barrier_mutex);
 	if (!rcu_rdp_is_offloaded(rdp)) {
 		if (cpu_online(cpu)) {
@@ -1243,6 +1246,7 @@ int rcu_nocb_cpu_offload(int cpu)
 		}
 	}
 	mutex_unlock(&rcu_state.barrier_mutex);
+	mutex_unlock(&rcu_state.nocb_mutex);
 	cpus_read_unlock();
 
 	return ret;
@@ -1259,7 +1263,7 @@ lazy_rcu_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
 		return 0;
 
 	/*  Protect rcu_nocb_mask against concurrent (de-)offloading. */
-	if (!mutex_trylock(&rcu_state.barrier_mutex))
+	if (!mutex_trylock(&rcu_state.nocb_mutex))
 		return 0;
 
 	/* Snapshot count of all CPUs */
@@ -1269,7 +1273,7 @@ lazy_rcu_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
 		count +=  READ_ONCE(rdp->lazy_len);
 	}
 
-	mutex_unlock(&rcu_state.barrier_mutex);
+	mutex_unlock(&rcu_state.nocb_mutex);
 
 	return count ? count : SHRINK_EMPTY;
 }
@@ -1287,9 +1291,9 @@ lazy_rcu_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
 	 * Protect against concurrent (de-)offloading. Otherwise nocb locking
 	 * may be ignored or imbalanced.
 	 */
-	if (!mutex_trylock(&rcu_state.barrier_mutex)) {
+	if (!mutex_trylock(&rcu_state.nocb_mutex)) {
 		/*
-		 * But really don't insist if barrier_mutex is contended since we
+		 * But really don't insist if nocb_mutex is contended since we
 		 * can't guarantee that it will never engage in a dependency
 		 * chain involving memory allocation. The lock is seldom contended
 		 * anyway.
@@ -1328,7 +1332,7 @@ lazy_rcu_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
 			break;
 	}
 
-	mutex_unlock(&rcu_state.barrier_mutex);
+	mutex_unlock(&rcu_state.nocb_mutex);
 
 	return count ? count : SHRINK_STOP;
 }
@@ -1483,15 +1487,15 @@ err:
 	 * No need to protect against concurrent rcu_barrier()
 	 * because the number of callbacks should be 0 for a non-boot CPU,
 	 * therefore rcu_barrier() shouldn't even try to grab the nocb_lock.
-	 * But hold barrier_mutex to avoid nocb_lock imbalance from shrinker.
+	 * But hold nocb_mutex to avoid nocb_lock imbalance from shrinker.
 	 */
 	WARN_ON_ONCE(system_state > SYSTEM_BOOTING && rcu_segcblist_n_cbs(&rdp->cblist));
-	mutex_lock(&rcu_state.barrier_mutex);
+	mutex_lock(&rcu_state.nocb_mutex);
 	if (rcu_rdp_is_offloaded(rdp)) {
 		rcu_nocb_rdp_deoffload(rdp);
 		cpumask_clear_cpu(cpu, rcu_nocb_mask);
 	}
-	mutex_unlock(&rcu_state.barrier_mutex);
+	mutex_unlock(&rcu_state.nocb_mutex);
 }
 
 /* How many CB CPU IDs per GP kthread?  Default of -1 for sqrt(nr_cpu_ids). */
