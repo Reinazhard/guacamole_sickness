@@ -2135,6 +2135,16 @@ static void unbind_worker(struct worker *worker)
 		WARN_ON_ONCE(set_cpus_allowed_ptr(worker->task, cpu_possible_mask) < 0);
 }
 
+
+static void detach_worker(struct worker *worker)
+{
+	lockdep_assert_held(&wq_pool_attach_mutex);
+
+	unbind_worker(worker);
+	list_del(&worker->node);
+	worker->pool = NULL;
+}
+
 /**
  * worker_detach_from_pool() - detach a worker from its pool
  * @worker: worker which is attached to its pool
@@ -2146,11 +2156,7 @@ static void unbind_worker(struct worker *worker)
 static void worker_detach_from_pool(struct worker *worker)
 {
 	mutex_lock(&wq_pool_attach_mutex);
-
-	unbind_worker(worker);
-	list_del(&worker->node);
-	worker->pool = NULL;
-
+	detach_worker(worker);
 	mutex_unlock(&wq_pool_attach_mutex);
 
 	/* clear leftover flags without pool->lock after it is detached */
@@ -2243,24 +2249,12 @@ fail:
 	return NULL;
 }
 
-static void wake_dying_workers(struct list_head *cull_list)
+static void detach_dying_workers(struct list_head *cull_list)
 {
 	struct worker *worker;
 
-	list_for_each_entry(worker, cull_list, entry) {
-		unbind_worker(worker);
-		/*
-		 * If the worker was somehow already running, then it had to be
-		 * in pool->idle_list when set_worker_dying() happened or we
-		 * wouldn't have gotten here.
-		 *
-		 * Thus, the worker must either have observed the WORKER_DIE
-		 * flag, or have set its state to TASK_IDLE. Either way, the
-		 * below will be observed by the worker and is safe to do
-		 * outside of pool->lock.
-		 */
-		wake_up_process(worker->task);
-	}
+	list_for_each_entry(worker, cull_list, entry)
+		detach_worker(worker);
 }
 
 static void reap_dying_workers(struct list_head *cull_list)
@@ -2367,9 +2361,9 @@ static void idle_cull_fn(struct work_struct *work)
 
 	/*
 	 * Grabbing wq_pool_attach_mutex here ensures an already-running worker
-	 * cannot proceed beyong worker_detach_from_pool() in its self-destruct
-	 * path. This is required as a previously-preempted worker could run after
-	 * set_worker_dying() has happened but before wake_dying_workers() did.
+	 * cannot proceed beyong set_pf_worker() in its self-destruct path.
+	 * This is required as a previously-preempted worker could run after
+	 * set_worker_dying() has happened but before detach_dying_workers() did.
 	 */
 	mutex_lock(&wq_pool_attach_mutex);
 	raw_spin_lock_irq(&pool->lock);
@@ -2390,7 +2384,7 @@ static void idle_cull_fn(struct work_struct *work)
 	}
 
 	raw_spin_unlock_irq(&pool->lock);
-	wake_dying_workers(&cull_list);
+	detach_dying_workers(&cull_list);
 	mutex_unlock(&wq_pool_attach_mutex);
 
 	reap_dying_workers(&cull_list);
@@ -2759,7 +2753,6 @@ woke_up:
 
 		set_task_comm(worker->task, "kworker/dying");
 		ida_free(&pool->worker_ida, worker->id);
-		worker_detach_from_pool(worker);
 		WARN_ON_ONCE(!list_empty(&worker->entry));
 		return 0;
 	}
@@ -4025,7 +4018,7 @@ static void put_unbound_pool(struct worker_pool *pool)
 	WARN_ON(pool->nr_workers || pool->nr_idle);
 	raw_spin_unlock_irq(&pool->lock);
 
-	wake_dying_workers(&cull_list);
+	detach_dying_workers(&cull_list);
 
 	mutex_unlock(&wq_pool_attach_mutex);
 
