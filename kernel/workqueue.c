@@ -221,7 +221,6 @@ struct worker_pool {
 	struct worker		*manager;	/* L: purely informational */
 	struct list_head	workers;	/* A: attached workers */
 	struct list_head        dying_workers;  /* A: workers about to die */
-	struct completion	*detach_completion; /* all workers detached */
 
 	struct ida		worker_ida;	/* worker IDs for task name */
 
@@ -2704,7 +2703,6 @@ static void worker_attach_to_pool(struct worker *worker,
 static void worker_detach_from_pool(struct worker *worker)
 {
 	struct worker_pool *pool = worker->pool;
-	struct completion *detach_completion = NULL;
 
 	/* there is one permanent BH worker per CPU which should never detach */
 	WARN_ON_ONCE(pool->flags & POOL_BH);
@@ -2715,15 +2713,10 @@ static void worker_detach_from_pool(struct worker *worker)
 	list_del(&worker->node);
 	worker->pool = NULL;
 
-	if (list_empty(&pool->workers) && list_empty(&pool->dying_workers))
-		detach_completion = pool->detach_completion;
 	mutex_unlock(&wq_pool_attach_mutex);
 
 	/* clear leftover flags without pool->lock after it is detached */
 	worker->flags &= ~(WORKER_UNBOUND | WORKER_REBOUND);
-
-	if (detach_completion)
-		complete(detach_completion);
 }
 
 static int format_worker_id(char *buf, size_t size, struct worker *worker,
@@ -2843,10 +2836,9 @@ static void unbind_worker(struct worker *worker)
 
 static void wake_dying_workers(struct list_head *cull_list)
 {
-	struct worker *worker, *tmp;
+	struct worker *worker;
 
-	list_for_each_entry_safe(worker, tmp, cull_list, entry) {
-		list_del_init(&worker->entry);
+	list_for_each_entry(worker, cull_list, entry) {
 		unbind_worker(worker);
 		/*
 		 * If the worker was somehow already running, then it had to be
@@ -2859,6 +2851,17 @@ static void wake_dying_workers(struct list_head *cull_list)
 		 * outside of pool->lock.
 		 */
 		wake_up_process(worker->task);
+	}
+}
+
+static void reap_dying_workers(struct list_head *cull_list)
+{
+	struct worker *worker, *tmp;
+
+	list_for_each_entry_safe(worker, tmp, cull_list, entry) {
+		list_del_init(&worker->entry);
+		kthread_stop_put(worker->task);
+		kfree(worker);
 	}
 }
 
@@ -2893,6 +2896,9 @@ static void set_worker_dying(struct worker *worker, struct list_head *list)
 
 	list_move(&worker->entry, list);
 	list_move(&worker->node, &pool->dying_workers);
+
+	/* get an extra task struct reference for later kthread_stop_put() */
+	get_task_struct(worker->task);
 }
 
 /**
@@ -2976,6 +2982,8 @@ static void idle_cull_fn(struct work_struct *work)
 	raw_spin_unlock_irq(&pool->lock);
 	wake_dying_workers(&cull_list);
 	mutex_unlock(&wq_pool_attach_mutex);
+
+	reap_dying_workers(&cull_list);
 }
 
 static void send_mayday(struct work_struct *work)
@@ -3356,7 +3364,6 @@ woke_up:
 		ida_free(&pool->worker_ida, worker->id);
 		worker_detach_from_pool(worker);
 		WARN_ON_ONCE(!list_empty(&worker->entry));
-		kfree(worker);
 		return 0;
 	}
 
@@ -4891,7 +4898,6 @@ static void rcu_free_pool(struct rcu_head *rcu)
  */
 static void put_unbound_pool(struct worker_pool *pool)
 {
-	DECLARE_COMPLETION_ONSTACK(detach_completion);
 	struct worker *worker;
 	LIST_HEAD(cull_list);
 
@@ -4945,12 +4951,9 @@ static void put_unbound_pool(struct worker_pool *pool)
 
 	wake_dying_workers(&cull_list);
 
-	if (!list_empty(&pool->workers) || !list_empty(&pool->dying_workers))
-		pool->detach_completion = &detach_completion;
 	mutex_unlock(&wq_pool_attach_mutex);
 
-	if (pool->detach_completion)
-		wait_for_completion(pool->detach_completion);
+	reap_dying_workers(&cull_list);
 
 	/* shut down the timers */
 	del_timer_sync(&pool->idle_timer);
