@@ -3341,15 +3341,9 @@ static int selinux_inode_listxattr(struct dentry *dentry)
 static int selinux_inode_removexattr(struct user_namespace *mnt_userns,
 				     struct dentry *dentry, const char *name)
 {
-	if (strcmp(name, XATTR_NAME_SELINUX)) {
-		int rc = cap_inode_removexattr(mnt_userns, dentry, name);
-		if (rc)
-			return rc;
-
-		/* Not an attribute we recognize, so just check the
-		   ordinary setattr permission. */
+	/* if not a selinux xattr, only check the ordinary setattr perm */
+	if (strcmp(name, XATTR_NAME_SELINUX))
 		return dentry_has_perm(current_cred(), dentry, FILE__SETATTR);
-	}
 
 	if (!selinux_initialized())
 		return 0;
