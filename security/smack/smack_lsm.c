@@ -1423,8 +1423,7 @@ static int smack_inode_removexattr(struct user_namespace *mnt_userns,
 	    strcmp(name, XATTR_NAME_SMACKMMAP) == 0) {
 		if (!smack_privileged(CAP_MAC_ADMIN))
 			rc = -EPERM;
-	} else
-		rc = cap_inode_removexattr(mnt_userns, dentry, name);
+		}
 
 	if (rc != 0)
 		return rc;
