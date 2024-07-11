@@ -422,6 +422,9 @@ static struct rcuwait manager_wait = __RCUWAIT_INITIALIZER(manager_wait);
 static LIST_HEAD(workqueues);		/* PR: list of all workqueues */
 static bool workqueue_freezing;		/* PL: have wqs started freezing? */
 
+/* PL: mirror the cpu_online_mask excluding the CPU in the midst of hotplugging */
+static cpumask_var_t wq_online_cpumask;
+
 /* PL&A: allowable cpus for unbound wqs and work items */
 static cpumask_var_t wq_unbound_cpumask;
 
@@ -6201,6 +6204,8 @@ int workqueue_online_cpu(unsigned int cpu)
 
 	mutex_lock(&wq_pool_mutex);
 
+	cpumask_set_cpu(cpu, wq_online_cpumask);
+
 	for_each_pool(pool, pi) {
 		mutex_lock(&wq_pool_attach_mutex);
 
@@ -6245,6 +6250,9 @@ int workqueue_offline_cpu(unsigned int cpu)
 
 	/* update pod affinity of unbound workqueues */
 	mutex_lock(&wq_pool_mutex);
+
+	cpumask_clear_cpu(cpu, wq_online_cpumask);
+
 	list_for_each_entry(wq, &workqueues, list) {
 		struct workqueue_attrs *attrs = wq->unbound_attrs;
 
@@ -7182,9 +7190,12 @@ void __init workqueue_init_early(void)
 
 	BUILD_BUG_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
 
+	BUG_ON(!alloc_cpumask_var(&wq_online_cpumask, GFP_KERNEL));
 	BUG_ON(!alloc_cpumask_var(&wq_unbound_cpumask, GFP_KERNEL));
 	cpumask_copy(wq_unbound_cpumask, housekeeping_cpumask(HK_TYPE_WQ));
 	cpumask_and(wq_unbound_cpumask, wq_unbound_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN));
+
+	cpumask_copy(wq_online_cpumask, cpu_online_mask);
 
 	if (!cpumask_empty(&wq_cmdline_cpumask))
 		cpumask_and(wq_unbound_cpumask, wq_unbound_cpumask, &wq_cmdline_cpumask);
