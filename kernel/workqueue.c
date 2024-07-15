@@ -4983,16 +4983,12 @@ static int apply_workqueue_attrs_locked(struct workqueue_struct *wq,
  *
  * Performs GFP_KERNEL allocations.
  *
- * Assumes caller has CPU hotplug read exclusion, i.e. cpus_read_lock().
- *
  * Return: 0 on success and -errno on failure.
  */
 int apply_workqueue_attrs(struct workqueue_struct *wq,
 			  const struct workqueue_attrs *attrs)
 {
 	int ret;
-
-	lockdep_assert_cpus_held();
 
 	mutex_lock(&wq_pool_mutex);
 	ret = apply_workqueue_attrs_locked(wq, attrs);
@@ -5077,7 +5073,6 @@ static int alloc_and_link_pwqs(struct workqueue_struct *wq)
 	int cpu, ret;
 	bool skip = false;
 
-	lockdep_assert_cpus_held();
 	lockdep_assert_held(&wq_pool_mutex);
 
 	wq->cpu_pwq = alloc_percpu(struct pool_workqueue *);
@@ -5317,8 +5312,7 @@ struct workqueue_struct *alloc_workqueue(const char *fmt,
 
 	/*
 	 * wq_pool_mutex protects the workqueues list, allocations of PWQs,
-	 * and the global freeze state.  alloc_and_link_pwqs() also requires
-	 * cpus_read_lock() for PWQs' affinities.
+	 * and the global freeze state.
 	 */
 	apply_wqattrs_lock();
 
