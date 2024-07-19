@@ -43,6 +43,7 @@ struct s51xx_pcie {
 	struct exynos_pcie_register_event pcie_event;
 	struct exynos_pcie_register_event pcie_cpl_timeout_event;
 	struct pci_saved_state *pci_saved_configs;
+	struct pci_saved_state *first_pci_saved_configs;
 };
 
 //extern struct s51xx_pcie s5100pcie;
