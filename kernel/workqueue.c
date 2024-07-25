@@ -3370,7 +3370,6 @@ woke_up:
 		set_pf_worker(false);
 
 		ida_free(&pool->worker_ida, worker->id);
-		WARN_ON_ONCE(!list_empty(&worker->entry));
 		return 0;
 	}
 
