@@ -574,6 +574,9 @@ static int mct_init_dt(struct device_node *np, unsigned int int_type)
 	/* This driver uses only one global timer interrupt */
 	mct_irqs[MCT_G0_IRQ] = irq_of_parse_and_map(np, MCT_G0_IRQ);
 
+	if (of_clk_get_by_name(np, "fin_pll") == ERR_PTR(-EPROBE_DEFER))
+		return -EPROBE_DEFER;
+
 	/*
 	 * Find out the number of local irqs specified. The local
 	 * timer irqs are specified after the four global timer
