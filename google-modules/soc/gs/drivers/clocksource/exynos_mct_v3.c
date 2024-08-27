@@ -365,6 +365,9 @@ static int mct_init_dt(struct device_node *np)
 	struct of_phandle_args irq;
 	int ret;
 
+	if (of_clk_get_by_name(np, "fin_pll") == ERR_PTR(-EPROBE_DEFER))
+		return -EPROBE_DEFER;
+
 	/*
 	 * Find out the total number of irqs which can be produced by comparators.
 	 */
