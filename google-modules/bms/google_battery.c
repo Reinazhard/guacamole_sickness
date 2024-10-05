@@ -5240,7 +5240,7 @@ static int batt_init_aafv_profile(struct batt_drv *batt_drv)
 
 	/* NOTE: might need to be BRID specific */
 	ret = of_property_read_u32(node, "google,aafv-config",
-				   &batt_drv->aafv_state);
+				   (u32 *)&batt_drv->aafv_state);
 	if (ret < 0)
 		batt_drv->aafv_state = profile->aafv_nb_limits ?
 			BATT_AAFV_DISABLED : BATT_AAFV_UNKNOWN;
