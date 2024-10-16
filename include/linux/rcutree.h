@@ -39,7 +39,6 @@ void kvfree_call_rcu(struct rcu_head *head, void *ptr);
 void rcu_barrier(void);
 void rcu_momentary_eqs(void);
 void kfree_rcu_scheduler_running(void);
-bool rcu_gp_might_be_stalled(void);
 
 struct rcu_gp_oldstate {
 	unsigned long rgos_norm;
