@@ -181,6 +181,7 @@
 		qos_weight_gpb = <50>;
 		qos_weight_num_of_tile = <75>;
 		qos_weight_super64_bframe = <60>;
+		qos_weight_mbaff = <60>;
 
 		/* core balance(%) for resource managing */
 		core_balance = <100>;
