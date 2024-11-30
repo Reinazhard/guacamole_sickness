@@ -103,7 +103,6 @@
 
 	pixel-suspend-diag {
 		compatible = "google,pixel-suspend-diag";
-		memory-region = <&suspend_diag_log_reserved>;
 	};
 
 	gs101-itmon {
@@ -141,8 +140,6 @@
 			   <0x25c20000>, <0x25d20000>, <0x25e20000>, <0x25f20000>;
 		pmu_base = <0x25830000>, <0x25930000>, <0x25a30000>, <0x25b30000>,
 			   <0x25c30000>, <0x25d30000>, <0x25e30000>, <0x25f30000>;
-		sgi_base = <0x10450000>, <0x10470000>, <0x10490000>, <0x104b0000>,
-			   <0x104d0000>, <0x104f0000>, <0x10510000>, <0x10530000>;
 		gpr_base = <0x25001000>;
 		dbgack-mask = <0xff00000>;
 		halt = <1>;
@@ -730,8 +727,6 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		cs_base = <0x25000000>;
-		sgi_base = <0x10450000>, <0x10470000>, <0x10490000>, <0x104b0000>,
-			   <0x104d0000>, <0x104f0000>, <0x10510000>, <0x10530000>;
 		status = "ok";
 
 		dbgc {
