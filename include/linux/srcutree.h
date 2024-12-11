@@ -47,6 +47,8 @@ struct srcu_data {
 #define SRCU_READ_FLAVOR_NORMAL	0x1		// srcu_read_lock().
 #define SRCU_READ_FLAVOR_NMI	0x2		// srcu_read_lock_nmisafe().
 #define SRCU_READ_FLAVOR_LITE	0x4		// srcu_read_lock_lite().
+#define SRCU_READ_FLAVOR_ALL	(SRCU_READ_FLAVOR_NORMAL | SRCU_READ_FLAVOR_NMI | \
+				 SRCU_READ_FLAVOR_LITE) // All of the above.
 
 /*
  * Node in SRCU combining tree, similar in function to rcu_data.
