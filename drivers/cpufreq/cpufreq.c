@@ -1461,7 +1461,7 @@ static int cpufreq_policy_online(struct cpufreq_policy *policy,
 
 		/*
 		 * Register with the energy model before
-		 * sugov_eas_rebuild_sd() is called, which will result
+		 * em_rebuild_sched_domains() is called, which will result
 		 * in rebuilding of the sched domains, which should only be done
 		 * once the energy model is properly initialized for the policy
 		 * first.
