@@ -1132,7 +1132,6 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 			cache_free_zspage(pool, zspage);
 			return NULL;
 		}
-
 		zpdesc_inc_zone_page_state(zpdesc);
 		zpdescs[i] = zpdesc;
 	}
