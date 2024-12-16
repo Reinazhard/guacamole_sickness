@@ -1173,7 +1173,7 @@ static inline void __zs_cpu_down(struct mapping_area *area)
 }
 
 static void *__zs_map_object(struct mapping_area *area,
-			struct page *pages[2], int off, int size)
+			struct zpdesc *zpdescs[2], int off, int size)
 {
 	size_t sizes[2];
 	char *buf = area->vm_buf;
@@ -1189,14 +1189,14 @@ static void *__zs_map_object(struct mapping_area *area,
 	sizes[1] = size - sizes[0];
 
 	/* copy object to per-cpu buffer */
-	memcpy_from_page(buf, pages[0], off, sizes[0]);
-	memcpy_from_page(buf + sizes[0], pages[1], 0, sizes[1]);
+	memcpy_from_page(buf, zpdesc_page(zpdescs[0]), off, sizes[0]);
+	memcpy_from_page(buf + sizes[0], zpdesc_page(zpdescs[1]), 0, sizes[1]);
 out:
 	return area->vm_buf;
 }
 
 static void __zs_unmap_object(struct mapping_area *area,
-			struct page *pages[2], int off, int size)
+			struct zpdesc *zpdescs[2], int off, int size)
 {
 	size_t sizes[2];
 	char *buf;
@@ -1214,8 +1214,8 @@ static void __zs_unmap_object(struct mapping_area *area,
 	sizes[1] = size - sizes[0];
 
 	/* copy per-cpu buffer to object */
-	memcpy_to_page(pages[0], off, buf, sizes[0]);
-	memcpy_to_page(pages[1], 0, buf + sizes[0], sizes[1]);
+	memcpy_to_page(zpdesc_page(zpdescs[0]), off, buf, sizes[0]);
+	memcpy_to_page(zpdesc_page(zpdescs[1]), 0, buf + sizes[0], sizes[1]);
 
 out:
 	/* enable page faults to match kunmap_local() return conditions */
@@ -1354,7 +1354,7 @@ void *zs_map_object(struct zs_pool *pool, unsigned long handle,
 	pages[1] = get_next_page(page);
 	BUG_ON(!pages[1]);
 
-	ret = __zs_map_object(area, pages, off, class->size);
+	ret = __zs_map_object(area, (struct zpdesc **)pages, off, class->size);
 out:
 	if (likely(!ZsHugePage(zspage)))
 		ret += ZS_HANDLE_SIZE;
@@ -1389,7 +1389,7 @@ void zs_unmap_object(struct zs_pool *pool, unsigned long handle)
 		pages[1] = get_next_page(page);
 		BUG_ON(!pages[1]);
 
-		__zs_unmap_object(area, pages, off, class->size);
+		__zs_unmap_object(area, (struct zpdesc **)pages, off, class->size);
 	}
 	local_unlock(&zs_map_area.lock);
 
