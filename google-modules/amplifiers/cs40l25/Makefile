@@ -10,7 +10,7 @@ obj-$(CONFIG_SND_SOC_CS40L2X)	+= snd_soc_cs40l2x.o
 
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 M ?= $(shell pwd)
-CUSTOM_INCLUDE ?= -I$(shell pwd)/include/
+CUSTOM_INCLUDE ?= -I$(srctree)/$(src)/include/
 
 KBUILD_OPTIONS += CONFIG_HAPTICS_CS40L2X=m \
 		  CONFIG_SND_SOC_CS40L2X=m \
