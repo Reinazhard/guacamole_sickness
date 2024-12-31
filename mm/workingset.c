@@ -246,6 +246,7 @@ static void *lru_gen_eviction(struct folio *folio)
 	return pack_shadow(mem_cgroup_id(memcg), pgdat, token, refs);
 }
 
+
 static void lru_gen_refault(struct folio *folio, void *shadow)
 {
 	int hist, tier, refs;
@@ -258,6 +259,8 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	int memcg_id;
 	int type = folio_is_file_lru(folio);
 	int delta = folio_nr_pages(folio);
+
+	unsigned long max_seq;
 
 	rcu_read_lock();
 
@@ -273,7 +276,10 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 
 	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
 
-	if ((token >> LRU_REFS_WIDTH) != (READ_ONCE(lrugen->min_seq[type]) & (EVICTION_MASK >> LRU_REFS_WIDTH)))
+	max_seq = READ_ONCE(lrugen->max_seq);
+	max_seq &= EVICTION_MASK >> LRU_REFS_WIDTH;
+
+	if (abs_diff(max_seq, token >> LRU_REFS_WIDTH) >= MAX_NR_GENS)
 		goto unlock;
 
 	hist = lru_hist_from_seq(READ_ONCE(lrugen->min_seq[type]));
@@ -305,6 +311,7 @@ static void *lru_gen_eviction(struct folio *folio)
 {
 	return NULL;
 }
+
 
 static void lru_gen_refault(struct folio *folio, void *shadow)
 {
