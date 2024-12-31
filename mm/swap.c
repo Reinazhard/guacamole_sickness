@@ -431,24 +431,20 @@ static void folio_inc_refs(struct folio *folio)
 	if (folio_test_unevictable(folio))
 		return;
 
+	/* see the comment on LRU_REFS_FLAGS */
 	if (!folio_test_referenced(folio)) {
-		folio_set_referenced(folio);
+		set_mask_bits(&folio->flags, LRU_REFS_MASK, BIT(PG_referenced));
 		return;
 	}
 
-	if (!folio_test_workingset(folio)) {
-		folio_set_workingset(folio);
-		return;
-	}
-
-	/* see the comment on MAX_NR_TIERS */
 	do {
-		new_flags = old_flags & LRU_REFS_MASK;
-		if (new_flags == LRU_REFS_MASK)
-			break;
+		if ((old_flags & LRU_REFS_MASK) == LRU_REFS_MASK) {
+			if (!folio_test_workingset(folio))
+				folio_set_workingset(folio);
+			return;
+		}
 
-		new_flags += BIT(LRU_REFS_PGOFF);
-		new_flags |= old_flags & ~LRU_REFS_MASK;
+		new_flags = old_flags + BIT(LRU_REFS_PGOFF);
 	} while (!try_cmpxchg(&folio->flags, &old_flags, new_flags));
 }
 #else
@@ -520,7 +516,7 @@ void folio_add_lru(struct folio *folio)
 	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
 
 	trace_android_vh_folio_add_lru(folio);
-	/* see the comment in lru_gen_add_folio() */
+	/* see the comment in lru_gen_folio_seq() */
 	if (lru_gen_enabled() && !folio_test_unevictable(folio) &&
 	    lru_gen_in_fault() && !(current->flags & PF_MEMALLOC)) {
 		bool bypass = false;
