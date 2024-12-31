@@ -398,6 +398,7 @@ void workingset_refault(struct folio *folio, void *shadow)
 	int memcgid;
 	long nr;
 
+	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	trace_android_vh_count_workingset_refault(folio);
 
 	if (lru_gen_enabled()) {
