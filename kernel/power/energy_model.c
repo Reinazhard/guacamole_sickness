@@ -662,8 +662,7 @@ EXPORT_SYMBOL_GPL(em_dev_unregister_perf_domain);
  * are correctly calculated.
  */
 static void em_adjust_new_capacity(struct device *dev,
-				   struct em_perf_domain *pd,
-				   u64 max_cap)
+				   struct em_perf_domain *pd)
 {
 	struct em_perf_table __rcu *em_table;
 	struct em_perf_state *ps, *new_ps;
@@ -761,7 +760,7 @@ static void em_check_capacity_update(void)
 			 cpu, cpu_capacity, em_max_perf);
 
 		dev = get_cpu_device(cpu);
-		em_adjust_new_capacity(dev, pd, cpu_capacity);
+		em_adjust_new_capacity(dev, pd);
 	}
 
 	free_cpumask_var(cpu_done_mask);
