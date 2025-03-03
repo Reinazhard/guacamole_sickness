@@ -909,10 +909,10 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 			break;
 #endif
 		case Opt_lazytime:
-			sb->s_flags |= SB_LAZYTIME;
+			set_opt(sbi, LAZYTIME);
 			break;
 		case Opt_nolazytime:
-			sb->s_flags &= ~SB_LAZYTIME;
+			clear_opt(sbi, LAZYTIME);
 			break;
 #ifdef CONFIG_QUOTA
 		case Opt_quota:
@@ -2201,8 +2201,8 @@ static void default_options(struct f2fs_sb_info *sbi, bool remount)
 	set_opt(sbi, INLINE_DATA);
 	set_opt(sbi, INLINE_DENTRY);
 	set_opt(sbi, MERGE_CHECKPOINT);
+	set_opt(sbi, LAZYTIME);
 	F2FS_OPTION(sbi).unusable_cap = 0;
-	sbi->sb->s_flags |= SB_LAZYTIME;
 	if (!f2fs_is_readonly(sbi))
 		set_opt(sbi, FLUSH_MERGE);
 	if (f2fs_sb_has_blkzoned(sbi))
@@ -4605,6 +4605,11 @@ try_onemore:
 		(test_opt(sbi, POSIX_ACL) ? SB_POSIXACL : 0);
 	if (test_opt(sbi, INLINECRYPT))
 		sb->s_flags |= SB_INLINECRYPT;
+
+	if (test_opt(sbi, LAZYTIME))
+		sb->s_flags |= SB_LAZYTIME;
+	else
+		sb->s_flags &= ~SB_LAZYTIME;
 
         memcpy(&sb->s_uuid, raw_super->uuid, sizeof(raw_super->uuid));
 	sb->s_iflags |= SB_I_CGROUPWB;
