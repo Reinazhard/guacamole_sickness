@@ -1245,7 +1245,7 @@ int f2fs_truncate_xattr_node(struct inode *inode)
 	if (!nid)
 		return 0;
 
-	npage = f2fs_get_node_page(sbi, nid);
+	npage = f2fs_get_xnode_page(sbi, nid);
 	if (IS_ERR(npage))
 		return PTR_ERR(npage);
 
@@ -1460,7 +1460,9 @@ static int sanity_check_node_footer(struct f2fs_sb_info *sbi,
 					enum node_type ntype)
 {
 	if (unlikely(nid != nid_of_node(page) ||
-		(ntype == NODE_TYPE_INODE && !IS_INODE(page)))) {
+		(ntype == NODE_TYPE_INODE && !IS_INODE(page)) ||
+		(ntype == NODE_TYPE_XATTR &&
+		!f2fs_has_xattr_block(ofs_of_node(page))))) {
 		f2fs_warn(sbi, "inconsistent node block, node_type:%d, nid:%lu, "
 			  "node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
 			  ntype, nid, nid_of_node(page), ino_of_node(page),
@@ -1538,6 +1540,11 @@ struct page *f2fs_get_node_page(struct f2fs_sb_info *sbi, pgoff_t nid)
 struct page *f2fs_get_inode_page(struct f2fs_sb_info *sbi, pgoff_t ino)
 {
 	return __get_node_page(sbi, ino, NULL, 0, NODE_TYPE_INODE);
+}
+
+struct page *f2fs_get_xnode_page(struct f2fs_sb_info *sbi, pgoff_t xnid)
+{
+	return __get_node_page(sbi, xnid, NULL, 0, NODE_TYPE_XATTR);
 }
 
 struct page *f2fs_get_node_page_ra(struct page *parent, int start)
