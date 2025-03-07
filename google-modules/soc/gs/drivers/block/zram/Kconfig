@@ -55,3 +55,13 @@ config ZRAM_GS_MEMORY_TRACKING
 	  /sys/kernel/debug/zram/zramX/block_state.
 
 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
+
+config KCOMPRESSD
+	tristate "Kcompressd: Accelerated zram compression"
+	depends on ZRAM_GS
+	help
+	  Kcompressd creates multiple daemons to accelerate the compression of pages
+	  in zram, offloading this time-consuming task from the zram driver.
+
+	  This approach improves system efficiency by handling page compression separately,
+	  which was originally done by kswapd or direct reclaim.

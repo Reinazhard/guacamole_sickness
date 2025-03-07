@@ -35,6 +35,7 @@
 #include <linux/part_stat.h>
 #include <soc/google/meminfo.h>
 
+#include "kcompressd.h"
 #include "zram_drv.h"
 
 #undef CREATE_TRACE_POINTS
@@ -1422,6 +1423,15 @@ static void zram_bio_write(struct zram *zram, struct bio *bio)
 	zram_bio_endio(zram, bio, op_is_write(op), ret);
 }
 
+#if IS_ENABLED(CONFIG_KCOMPRESSD)
+static void zram_bio_write_callback(void *mem, struct bio *bio)
+{
+	struct zram *zram = (struct zram *)mem;
+
+	zram_bio_write(zram, bio);
+}
+#endif
+
 /*
  * Handler function for all zram I/O requests.
  */
@@ -1434,6 +1444,10 @@ static void zram_submit_bio(struct bio *bio)
 		zram_bio_read(zram, bio);
 		break;
 	case REQ_OP_WRITE:
+#if IS_ENABLED(CONFIG_KCOMPRESSD)
+		if (kcompressd_enabled() && !schedule_bio_write(zram, bio, zram_bio_write_callback))
+			break;
+#endif
 		zram_bio_write(zram, bio);
 		break;
 	case REQ_OP_DISCARD:
@@ -1691,7 +1705,9 @@ static int zram_add(void)
 	/* zram devices sort of resembles non-rotational disks */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, zram->disk->queue);
 	blk_queue_flag_set(QUEUE_FLAG_READ_SYNCHRONOUS, zram->disk->queue);
+#if !IS_ENABLED(CONFIG_KCOMPRESSD)
 	blk_queue_flag_set(QUEUE_FLAG_WRITE_SYNCHRONOUS, zram->disk->queue);
+#endif
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, zram->disk->queue);
 
 	/*
