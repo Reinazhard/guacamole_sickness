@@ -3925,7 +3925,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	swapcache = folio;
 
 	if (!folio) {
-		if (data_race(si->flags & SWP_SYNCHRONOUS_IO) &&
+		if (data_race(si->flags & SWP_READ_SYNCHRONOUS_IO) &&
 		    __swap_count(entry) == 1) {
 			/*
 			 * Prevent parallel swapin from proceeding with
