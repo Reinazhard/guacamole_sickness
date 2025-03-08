@@ -384,6 +384,8 @@ lookup_mode=%s		 Control the directory lookup behavior for casefolded
 					    on-disk `SB_ENC_NO_COMPAT_FALLBACK_FL`
 					    flag.
 			 ================== ========================================
+nat_bits		 Enable nat_bits feature to enhance full/empty nat blocks access,
+			 by default it's disabled.
 ======================== ============================================================
 
 Debugfs Entries
