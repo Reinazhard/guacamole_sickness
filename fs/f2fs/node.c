@@ -1460,12 +1460,11 @@ repeat:
 		return ERR_PTR(-ENOMEM);
 
 	err = read_node_page(page, 0);
-	if (err < 0) {
+	if (err < 0)
 		goto out_put_err;
-	} else if (err == LOCKED_PAGE) {
-		err = 0;
+
+	if (err == LOCKED_PAGE)
 		goto page_hit;
-	}
 
 	if (parent)
 		f2fs_ra_node_pages(parent, start + 1, MAX_RA_NODE);
