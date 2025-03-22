@@ -6,6 +6,7 @@ EXTRAVERSION =
 NAME = Curry Ramen
 
 export KCONFIG_EXT_PREFIX := google-devices/gs101/
+export KCONFIG_EXT_SUFFIX := .gs101
 export KCONFIG_SOC_GS_PREFIX := google-modules/soc/gs/
 export KCONFIG_EXT_MODULES_PREFIX := ./
 
