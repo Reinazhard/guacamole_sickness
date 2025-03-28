@@ -2626,6 +2626,21 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 }
 EXPORT_TRACEPOINT_SYMBOL_GPL(cpu_frequency_limits);
 
+static void cpufreq_policy_refresh(struct cpufreq_policy *policy)
+{
+	guard(cpufreq_policy_write)(policy);
+
+	/*
+	 * BIOS might change freq behind our back
+	 * -> ask driver for current freq and notify governors about a change
+	 */
+	if (cpufreq_driver->get && has_target() &&
+	    (cpufreq_suspended || WARN_ON(!cpufreq_verify_current_freq(policy, false))))
+		return;
+
+	refresh_frequency_limits(policy);
+}
+
 /**
  * cpufreq_update_policy - Re-evaluate an existing cpufreq policy.
  * @cpu: CPU to re-evaluate the policy for.
@@ -2643,17 +2658,7 @@ void cpufreq_update_policy(unsigned int cpu)
 	if (!policy)
 		return;
 
-	guard(cpufreq_policy_write)(policy);
-
-	/*
-	 * BIOS might change freq behind our back
-	 * -> ask driver for current freq and notify governors about a change
-	 */
-	if (cpufreq_driver->get && has_target() &&
-	    (cpufreq_suspended || WARN_ON(!cpufreq_verify_current_freq(policy, false))))
-		return;
-
-	refresh_frequency_limits(policy);
+	cpufreq_policy_refresh(policy);
 }
 EXPORT_SYMBOL(cpufreq_update_policy);
 
@@ -2662,7 +2667,7 @@ EXPORT_SYMBOL(cpufreq_update_policy);
  * @cpu: CPU to update the policy limits for.
  *
  * Invoke the driver's ->update_limits callback if present or call
- * cpufreq_update_policy() for @cpu.
+ * cpufreq_policy_refresh() for @cpu.
  */
 void cpufreq_update_limits(unsigned int cpu)
 {
@@ -2675,7 +2680,7 @@ void cpufreq_update_limits(unsigned int cpu)
 	if (cpufreq_driver->update_limits)
 		cpufreq_driver->update_limits(cpu);
 	else
-		cpufreq_update_policy(cpu);
+		cpufreq_policy_refresh(policy);
 
 	cpufreq_cpu_put(policy);
 }
