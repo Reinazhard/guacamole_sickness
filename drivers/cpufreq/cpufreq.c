@@ -1749,27 +1749,26 @@ static unsigned int cpufreq_verify_current_freq(struct cpufreq_policy *policy, b
  */
 unsigned int cpufreq_quick_get(unsigned int cpu)
 {
-	struct cpufreq_policy *policy;
-	unsigned int ret_freq = 0;
+	struct cpufreq_policy *policy __free(put_cpufreq_policy) = NULL;
 	unsigned long flags;
 
 	read_lock_irqsave(&cpufreq_driver_lock, flags);
 
 	if (cpufreq_driver && cpufreq_driver->setpolicy && cpufreq_driver->get) {
-		ret_freq = cpufreq_driver->get(cpu);
+		unsigned int ret_freq = cpufreq_driver->get(cpu);
+
 		read_unlock_irqrestore(&cpufreq_driver_lock, flags);
+
 		return ret_freq;
 	}
 
 	read_unlock_irqrestore(&cpufreq_driver_lock, flags);
 
 	policy = cpufreq_cpu_get(cpu);
-	if (policy) {
-		ret_freq = policy->cur;
-		cpufreq_cpu_put(policy);
-	}
+	if (policy)
+		return policy->cur;
 
-	return ret_freq;
+	return 0;
 }
 EXPORT_SYMBOL(cpufreq_quick_get);
 
@@ -1781,15 +1780,13 @@ EXPORT_SYMBOL(cpufreq_quick_get);
  */
 unsigned int cpufreq_quick_get_max(unsigned int cpu)
 {
-	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	unsigned int ret_freq = 0;
+	struct cpufreq_policy *policy __free(put_cpufreq_policy);
 
-	if (policy) {
-		ret_freq = policy->max;
-		cpufreq_cpu_put(policy);
-	}
+	policy = cpufreq_cpu_get(cpu);
+	if (policy)
+		return policy->max;
 
-	return ret_freq;
+	return 0;
 }
 EXPORT_SYMBOL(cpufreq_quick_get_max);
 
@@ -1801,15 +1798,13 @@ EXPORT_SYMBOL(cpufreq_quick_get_max);
  */
 __weak unsigned int cpufreq_get_hw_max_freq(unsigned int cpu)
 {
-	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	unsigned int ret_freq = 0;
+	struct cpufreq_policy *policy __free(put_cpufreq_policy);
 
-	if (policy) {
-		ret_freq = policy->cpuinfo.max_freq;
-		cpufreq_cpu_put(policy);
-	}
+	policy = cpufreq_cpu_get(cpu);
+	if (policy)
+		return policy->cpuinfo.max_freq;
 
-	return ret_freq;
+	return 0;
 }
 EXPORT_SYMBOL(cpufreq_get_hw_max_freq);
 
@@ -1829,20 +1824,18 @@ static unsigned int __cpufreq_get(struct cpufreq_policy *policy)
  */
 unsigned int cpufreq_get(unsigned int cpu)
 {
-	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	unsigned int ret_freq = 0;
+	struct cpufreq_policy *policy __free(put_cpufreq_policy);
 
+	policy = cpufreq_cpu_get(cpu);
 	if (!policy)
 		return 0;
 
-	scoped_guard(cpufreq_policy_read, policy) {
-		if (cpufreq_driver->get)
-			ret_freq = __cpufreq_get(policy);
-	}
+	guard(cpufreq_policy_read)(policy);
 
-	cpufreq_cpu_put(policy);
+	if (cpufreq_driver->get)
+		return __cpufreq_get(policy);
 
-	return ret_freq;
+	return 0;
 }
 EXPORT_SYMBOL(cpufreq_get);
 
@@ -2504,7 +2497,8 @@ EXPORT_SYMBOL_GPL(cpufreq_unregister_governor);
  */
 int cpufreq_get_policy(struct cpufreq_policy *policy, unsigned int cpu)
 {
-	struct cpufreq_policy *cpu_policy;
+	struct cpufreq_policy *cpu_policy __free(put_cpufreq_policy);
+
 	if (!policy)
 		return -EINVAL;
 
@@ -2514,7 +2508,6 @@ int cpufreq_get_policy(struct cpufreq_policy *policy, unsigned int cpu)
 
 	memcpy(policy, cpu_policy, sizeof(*policy));
 
-	cpufreq_cpu_put(cpu_policy);
 	return 0;
 }
 EXPORT_SYMBOL(cpufreq_get_policy);
