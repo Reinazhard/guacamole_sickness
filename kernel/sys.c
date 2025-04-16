@@ -51,6 +51,7 @@
 #include <linux/user_namespace.h>
 #include <linux/time_namespace.h>
 #include <linux/binfmts.h>
+#include <linux/futex.h>
 
 #include <linux/sched.h>
 #include <linux/sched/autogroup.h>
@@ -2678,6 +2679,9 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 #endif
 	case PR_SET_VMA:
 		error = prctl_set_vma(arg2, arg3, arg4, arg5);
+		break;
+	case PR_FUTEX_HASH:
+		error = futex_hash_prctl(arg2, arg3, arg4);
 		break;
 	default:
 		error = -EINVAL;
