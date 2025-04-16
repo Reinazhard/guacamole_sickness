@@ -663,7 +663,9 @@ struct mm_struct {
 		int mm_lock_seq;
 #endif
 #ifdef CONFIG_FUTEX_PRIVATE_HASH
-		struct futex_private_hash	*futex_phash;
+		struct mutex			futex_hash_lock;
+		struct futex_private_hash	__rcu *futex_phash;
+		struct futex_private_hash	*futex_phash_new;
 #endif
 
 		unsigned long hiwater_rss; /* High-watermark of RSS usage */
