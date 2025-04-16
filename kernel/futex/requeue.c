@@ -457,8 +457,8 @@ retry_private:
 			ret = futex_get_value_locked(&curval, uaddr1);
 
 			if (unlikely(ret)) {
-				double_unlock_hb(hb1, hb2);
 				futex_hb_waiters_dec(hb2);
+				double_unlock_hb(hb1, hb2);
 
 				ret = get_user(curval, uaddr1);
 				if (ret)
@@ -543,8 +543,8 @@ retry_private:
 				 * waiter::requeue_state is correct.
 				 */
 			case -EFAULT:
-				double_unlock_hb(hb1, hb2);
 				futex_hb_waiters_dec(hb2);
+				double_unlock_hb(hb1, hb2);
 				ret = fault_in_user_writeable(uaddr2);
 				if (!ret)
 					goto retry;
@@ -557,8 +557,8 @@ retry_private:
 				 *   exit to complete.
 				 * - EAGAIN: The user space value changed.
 				 */
-				double_unlock_hb(hb1, hb2);
 				futex_hb_waiters_dec(hb2);
+				double_unlock_hb(hb1, hb2);
 				/*
 				 * Handle the case where the owner is in the middle of
 				 * exiting. Wait for the exit to complete otherwise
@@ -675,8 +675,8 @@ retry_private:
 		put_pi_state(pi_state);
 
 out_unlock:
-		double_unlock_hb(hb1, hb2);
 		futex_hb_waiters_dec(hb2);
+		double_unlock_hb(hb1, hb2);
 	}
 	wake_up_q(&wake_q);
 	return ret ? ret : task_count;
