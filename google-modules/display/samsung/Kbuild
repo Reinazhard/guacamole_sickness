@@ -59,7 +59,7 @@ exynos-drm-$(CONFIG_DRM_SAMSUNG_TUI)		+= exynos_drm_tui.o
 exynos-drm-$(CONFIG_DRM_SAMSUNG_WB)		+= exynos_drm_writeback.o
 
 ccflags-$(CONFIG_DRM_SAMSUNG_DP)		+= -I$(srctree)/drivers/usb
-ccflags-$(CONFIG_DRM_SAMSUNG_DP)		+= -I$(ROOT_DIR)/private/google-modules/soc/gs/include
+subdir-ccflags-y				+= -I$(ROOT_DIR)/private/google-modules/soc/gs/include
 
 ifeq ($(CONFIG_SOC_ZUMA),y)
 exynos-drm-$(CONFIG_DRM_SAMSUNG_DP)		+= exynos_drm_dp.o
