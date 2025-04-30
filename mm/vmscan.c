@@ -8128,6 +8128,26 @@ void kswapd_run(int nid)
 			pgdat->kswapd = NULL;
 			kthread_stop(pgdat->kshrinkd);
 			pgdat->kshrinkd = NULL;
+		} else {
+			int ret;
+
+			ret = kfifo_alloc(&pgdat->kcompress_fifo,
+					KCOMPRESS_FIFO_SIZE * sizeof(struct page *),
+					GFP_KERNEL);
+			if (ret) {
+				pr_err("Failed to allocate kcompress_fifo on node %d\n", nid);
+			} else {
+				pgdat->kcompressd = kthread_create_on_node(kcompressd, pgdat, nid,
+						"kcompressd%d", nid);
+				if (IS_ERR(pgdat->kcompressd)) {
+					pr_err("Failed to start kcompressd on node %d, ret=%ld\n",
+							nid, PTR_ERR(pgdat->kcompressd));
+					pgdat->kcompressd = NULL;
+					kfifo_free(&pgdat->kcompress_fifo);
+				} else {
+					wake_up_process(pgdat->kcompressd);
+				}
+			}
 		}
 	}
 	pgdat_kswapd_unlock(pgdat);
@@ -8160,6 +8180,11 @@ void kswapd_stop(int nid)
 	if (kshrinkd) {
 		kthread_stop(kshrinkd);
 		pgdat->kshrinkd = NULL;
+	}
+	if (pgdat->kcompressd) {
+		kthread_stop(pgdat->kcompressd);
+		pgdat->kcompressd = NULL;
+		kfifo_free(&pgdat->kcompress_fifo);
 	}
 	pgdat_kswapd_unlock(pgdat);
 }
