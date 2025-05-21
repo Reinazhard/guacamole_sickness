@@ -46,10 +46,11 @@
 #define POLICYDB_VERSION_INFINIBAND	     31
 #define POLICYDB_VERSION_GLBLUB		     32
 #define POLICYDB_VERSION_COMP_FTRANS	     33 /* compressed filename transitions */
+#define POLICYDB_VERSION_NEVERAUDIT	     34 /* neveraudit types */
 
 /* Range of policy versions we understand*/
 #define POLICYDB_VERSION_MIN POLICYDB_VERSION_BASE
-#define POLICYDB_VERSION_MAX POLICYDB_VERSION_COMP_FTRANS
+#define POLICYDB_VERSION_MAX POLICYDB_VERSION_NEVERAUDIT
 
 /* Mask for just the mount related flags */
 #define SE_MNTMASK 0x0f
@@ -261,6 +262,7 @@ struct extended_perms {
 
 /* definitions of av_decision.flags */
 #define AVD_FLAGS_PERMISSIVE 0x0001
+#define AVD_FLAGS_NEVERAUDIT  0x0002
 
 void security_compute_av(u32 ssid, u32 tsid, u16 tclass,
 			 struct av_decision *avd,
