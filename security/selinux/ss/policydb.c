@@ -155,6 +155,11 @@ static const struct policydb_compat_info policydb_compat[] = {
 		.sym_num = SYM_NUM,
 		.ocon_num = OCON_NUM,
 	},
+	{
+		.version = POLICYDB_VERSION_NEVERAUDIT,
+		.sym_num = SYM_NUM,
+		.ocon_num = OCON_NUM,
+	},
 };
 
 static const struct policydb_compat_info *
@@ -526,6 +531,7 @@ static void policydb_init(struct policydb *p)
 	ebitmap_init(&p->filename_trans_ttypes);
 	ebitmap_init(&p->policycaps);
 	ebitmap_init(&p->permissive_map);
+	ebitmap_init(&p->neveraudit_map);
 }
 
 /*
@@ -847,6 +853,7 @@ void policydb_destroy(struct policydb *p)
 	ebitmap_destroy(&p->filename_trans_ttypes);
 	ebitmap_destroy(&p->policycaps);
 	ebitmap_destroy(&p->permissive_map);
+	ebitmap_destroy(&p->neveraudit_map);
 }
 
 /*
@@ -2541,6 +2548,12 @@ int policydb_read(struct policydb *p, struct policy_file *fp)
 			goto bad;
 	}
 
+	if (p->policyvers >= POLICYDB_VERSION_NEVERAUDIT) {
+		rc = ebitmap_read(&p->neveraudit_map, fp);
+		if (rc)
+			goto bad;
+	}
+
 	rc = -EINVAL;
 	info = policydb_lookup_compat(p->policyvers);
 	if (!info) {
@@ -3722,6 +3735,12 @@ int policydb_write(struct policydb *p, struct policy_file *fp)
 
 	if (p->policyvers >= POLICYDB_VERSION_PERMISSIVE) {
 		rc = ebitmap_write(&p->permissive_map, fp);
+		if (rc)
+			return rc;
+	}
+
+	if (p->policyvers >= POLICYDB_VERSION_NEVERAUDIT) {
+		rc = ebitmap_write(&p->neveraudit_map, fp);
 		if (rc)
 			return rc;
 	}
