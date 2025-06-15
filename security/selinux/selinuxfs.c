@@ -2094,8 +2094,6 @@ err:
 	pr_err("SELinux: %s:  failed while creating inodes\n",
 		__func__);
 
-	selinux_fs_info_free(sb);
-
 	return ret;
 }
 
