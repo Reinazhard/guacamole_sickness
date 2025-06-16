@@ -5806,8 +5806,8 @@ err_destroy:
 
 __printf(1, 4)
 struct workqueue_struct *alloc_workqueue(const char *fmt,
-					 unsigned int flags,
-					 int max_active, ...)
+						unsigned int flags,
+						int max_active, ...)
 {
 	struct workqueue_struct *wq;
 	va_list args;
