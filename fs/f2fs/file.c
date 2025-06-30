@@ -1035,6 +1035,18 @@ int f2fs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	if (unlikely(f2fs_cp_error(sbi)))
 		return -EIO;
 
+	err = setattr_prepare(mnt_userns, dentry, attr);
+	if (err)
+		return err;
+
+	err = fscrypt_prepare_setattr(dentry, attr);
+	if (err)
+		return err;
+
+	err = fsverity_prepare_setattr(dentry, attr);
+	if (err)
+		return err;
+
 	if (unlikely(IS_IMMUTABLE(inode)))
 		return -EPERM;
 
@@ -1063,18 +1075,6 @@ int f2fs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 			F2FS_BLK_TO_BYTES(CAP_BLKS_PER_SEC(sbi))))
 			return -EINVAL;
 	}
-
-	err = setattr_prepare(mnt_userns, dentry, attr);
-	if (err)
-		return err;
-
-	err = fscrypt_prepare_setattr(dentry, attr);
-	if (err)
-		return err;
-
-	err = fsverity_prepare_setattr(dentry, attr);
-	if (err)
-		return err;
 
 	if (is_quota_modification(mnt_userns, inode, attr)) {
 		err = f2fs_dquot_initialize(inode);
