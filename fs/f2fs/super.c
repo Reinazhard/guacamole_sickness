@@ -1050,6 +1050,8 @@ static int parse_options(struct f2fs_sb_info *sbi, char *options, bool is_remoun
 			set_opt(sbi, DISABLE_CHECKPOINT);
 			break;
 		case Opt_checkpoint_enable:
+			F2FS_OPTION(sbi).unusable_cap_perc = 0;
+			F2FS_OPTION(sbi).unusable_cap = 0;
 			clear_opt(sbi, DISABLE_CHECKPOINT);
 			break;
 		case Opt_checkpoint_merge:
