@@ -553,7 +553,7 @@ got_it:
 	}
 
 	/* Get the node page */
-	node_page = f2fs_get_node_page(sbi, nid);
+	node_page = f2fs_get_node_page(sbi, nid, NODE_TYPE_REGULAR);
 	if (IS_ERR(node_page))
 		return PTR_ERR(node_page);
 
