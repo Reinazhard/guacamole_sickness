@@ -4167,7 +4167,7 @@ static int sec_ts_read_frame_stdev(struct sec_ts_data *ts,
 	const unsigned int buff_size = ts->tx_count * ts->rx_count *
 					CMD_RESULT_WORD_LEN;
 	unsigned int buff_len = 0;
-	char *pBuff;
+	char *pBuff = NULL;
 
 	input_info(true, &ts->client->dev, "%s\n", __func__);
 
