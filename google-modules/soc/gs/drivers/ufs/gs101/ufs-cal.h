@@ -413,6 +413,7 @@ static struct ufs_cal_phy_cfg pre_h8_exit[] = {
 	{0, 0, 0, 0, PHY_CFG_NONE, BRD_ALL}
 };
 
+#if defined(__UFS_CAL_FW__)
 static struct ufs_cal_phy_cfg loopback_init[] = {
 	/* mib(just to monitor), sfr offset, value, .. */
 	{0x0000, 0xBB4, 0x23, PMD_ALL, PHY_PMA_TRSV, BRD_ALL},
@@ -439,6 +440,7 @@ static struct ufs_cal_phy_cfg loopback_set_2[] = {
 
 	{0, 0, 0, 0, PHY_CFG_NONE, BRD_ALL}
 };
+#endif
 
 static struct ufs_cal_phy_cfg eom_prepare[] = {
 	/* mib(just to monitor), sfr offset, value, .. */
@@ -514,6 +516,7 @@ static struct ufs_cal_phy_cfg pre_h8_exit_card[] = {
 	{0, 0, 0, 0, PHY_CFG_NONE, BRD_ALL}
 };
 
+#if defined(__UFS_CAL_FW__)
 static struct ufs_cal_phy_cfg loopback_init_card[] = {
 	/* mib(just to monitor), sfr offset, value, .. */
 	{0, 0, 0, 0, PHY_CFG_NONE, BRD_ALL}
@@ -528,4 +531,6 @@ static struct ufs_cal_phy_cfg loopback_set_2_card[] = {
 	/* mib(just to monitor), sfr offset, value, .. */
 	{0, 0, 0, 0, PHY_CFG_NONE, BRD_ALL}
 };
+#endif
+
 #endif	/* _GS101_UFS_CAL_H */

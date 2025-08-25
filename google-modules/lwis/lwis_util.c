@@ -119,7 +119,7 @@ int lwis_create_kthread_workers(struct lwis_device *lwis_dev)
 
 	kthread_init_worker(&lwis_dev->transaction_worker);
 	lwis_dev->transaction_worker_thread =
-		kthread_run(kthread_worker_fn, &lwis_dev->transaction_worker, t_name);
+		kthread_run(kthread_worker_fn, &lwis_dev->transaction_worker, "lwis_t_%s", t_name);
 	if (IS_ERR_OR_NULL(lwis_dev->transaction_worker_thread)) {
 		dev_err(lwis_dev->dev, "transaction kthread_run failed\n");
 		return -EINVAL;
