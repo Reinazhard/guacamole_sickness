@@ -12222,7 +12222,7 @@ dhd_prot_get_read_addr(dhd_pub_t *dhd, msgbuf_ring_t *ring, uint32 *available_le
 	void  *md_read_addr = NULL; /* address of next msg to be read in ring */
 	int i;
 	uint8 *ptr = NULL;
-	uint32 total_md_len = 0;
+	uint32 __maybe_unused total_md_len = 0;
 
 	DHD_TRACE(("%s: d2h_dma_indx_rd_buf %p, d2h_dma_indx_wr_buf %p\n",
 		__FUNCTION__, (uint32 *)(dhd->prot->d2h_dma_indx_rd_buf.va),
