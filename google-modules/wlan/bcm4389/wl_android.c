@@ -1397,7 +1397,6 @@ int wl_android_get_chanspec(struct net_device *dev, char *command, int total_len
 	int error = 0;
 	int bytes_written = 0;
 	int chsp = {0};
-	uint16 band = 0;
 	uint16 bw = 0;
 	uint16 channel = 0;
 	u32 sb = 0;
@@ -1414,11 +1413,10 @@ int wl_android_get_chanspec(struct net_device *dev, char *command, int total_len
 	DHD_INFO(("wl_android_get_80211_mode: return value of chanspec:%x\n", chanspec));
 
 	channel = chanspec & WL_CHANSPEC_CHAN_MASK;
-	band = chanspec & WL_CHANSPEC_BAND_MASK;
 	bw = chanspec & WL_CHANSPEC_BW_MASK;
 
 	DHD_INFO(("wl_android_get_80211_mode: channel:%d band:%d bandwidth:%d\n",
-		channel, band, bw));
+		channel, (chanspec & WL_CHANSPEC_BAND_MASK), bw));
 
 	if (bw == WL_CHANSPEC_BW_160) {
 		bw = WL_CH_BANDWIDTH_160MHZ;
