@@ -33,7 +33,6 @@
 #include <linux/debugfs.h>
 #include <linux/cpuhotplug.h>
 #include <linux/part_stat.h>
-#include <soc/google/meminfo.h>
 
 #include "zram_drv.h"
 
@@ -1974,36 +1973,6 @@ static void destroy_devices(void)
 	unregister_blkdev(zram_major, "zram");
 }
 
-static int zram_meminfo_cb(int id, void *ptr, void *data)
-{
-	struct zram *zram = (struct zram *)ptr;
-	unsigned long pages = 0;
-
-	down_read(&zram->init_lock);
-	if (init_done(zram))
-		pages = zs_get_total_pages(zram->mem_pool);
-	up_read(&zram->init_lock);
-	*(unsigned long *)data += pages;
-
-	return 0;
-}
-
-static unsigned long zram_meminfo_size(void *private)
-{
-	unsigned long pages = 0;
-
-	mutex_lock(&zram_index_mutex);
-	idr_for_each(&zram_index_idr, &zram_meminfo_cb, &pages);
-	mutex_unlock(&zram_index_mutex);
-
-	return pages << (PAGE_SHIFT - 10);
-}
-
-static struct meminfo zram_meminfo = {
-	.name = "Zram",
-	.size_kb = zram_meminfo_size,
-};
-
 static int __init zram_init(void)
 {
 	int ret;
@@ -2032,8 +2001,6 @@ static int __init zram_init(void)
 			goto out_error;
 		num_devices--;
 	}
-
-	register_meminfo(&zram_meminfo);
 
 	return 0;
 
