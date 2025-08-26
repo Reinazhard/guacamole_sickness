@@ -226,7 +226,7 @@ static int create_kthread_workers(struct lwis_bus_manager *bus_manager,
 	scnprintf(bus_thread_name, LWIS_MAX_NAME_STRING_LEN, "lwis_%s", bus_manager->bus_name);
 	kthread_init_worker(&bus_manager->bus_worker);
 	bus_manager->bus_worker_thread =
-		kthread_run(kthread_worker_fn, &bus_manager->bus_worker, bus_thread_name);
+		kthread_run(kthread_worker_fn, &bus_manager->bus_worker, "lwis_%s", bus_thread_name);
 	if (IS_ERR(bus_manager->bus_worker_thread)) {
 		dev_err(lwis_dev->dev, "Creation of bus_worker_thread failed for bus %s\n",
 			bus_manager->bus_name);
