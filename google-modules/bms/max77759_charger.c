@@ -3270,7 +3270,7 @@ static int max77759_charger_probe(struct i2c_client *client,
 
 	INIT_DELAYED_WORK(&data->mode_rerun_work, max77759_mode_rerun_work);
 
-	if (dbg_init_fs(data) < 0);
+	if (dbg_init_fs(data) < 0)
 		dev_err(dev, "Failed to initialize debug fs\n");
 
 	mutex_lock(&data->io_lock);
