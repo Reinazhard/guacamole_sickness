@@ -181,7 +181,6 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned int freq;
 	unsigned int idx, l_freq, h_freq;
-	unsigned long next_freq = 0;
 
 	if (arch_scale_freq_invariant())
 		freq = policy->cpuinfo.max_freq;
