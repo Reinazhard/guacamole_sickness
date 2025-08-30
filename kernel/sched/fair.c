@@ -6355,6 +6355,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_entity *se = &p->se;
 	int idle_h_nr_running = task_has_idle_policy(p);
 	int task_new = !(flags & ENQUEUE_WAKEUP);
+	int should_iowait_boost;
 
 	/*
 	 * The code below (indirectly) updates schedutil which looks at
@@ -7923,10 +7924,10 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	int next_buddy_marked = 0;
 	int cse_is_idle, pse_is_idle;
 	bool ignore = false;
+	bool preempt = false;
 
 	if (unlikely(se == pse))
 		return;
-
 	trace_android_rvh_check_preempt_wakeup_ignore(curr, &ignore);
 	if (ignore)
 		return;
