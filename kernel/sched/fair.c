@@ -7924,7 +7924,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	int next_buddy_marked = 0;
 	int cse_is_idle, pse_is_idle;
 	bool ignore = false;
-	bool preempt = false;
 
 	if (unlikely(se == pse))
 		return;
