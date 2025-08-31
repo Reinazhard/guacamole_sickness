@@ -3042,7 +3042,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	enum scan_balance scan_balance;
 	unsigned long ap, fp;
 	enum lru_list lru;
-	bool balance_anon_file_reclaim = false;
+	bool balance_anon_file_reclaim = true;
 
 	/* If we have no swap space, do not bother scanning anon folios. */
 	if (!sc->may_swap || !can_reclaim_anon_pages(memcg, pgdat->node_id, sc)) {
@@ -3081,8 +3081,6 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 		scan_balance = SCAN_ANON;
 		goto out;
 	}
-
-	trace_android_rvh_set_balance_anon_file_reclaim(&balance_anon_file_reclaim);
 
 	/*
 	 * If there is enough inactive page cache, we do not reclaim
