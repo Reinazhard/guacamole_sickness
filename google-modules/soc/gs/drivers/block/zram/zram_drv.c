@@ -1221,14 +1221,8 @@ static int zram_read_page(struct zram *zram, struct page *page, u32 index,
 	if (access)
 		zram_accessed(zram, index);
 	if (zram_test_flag(zram, index, ZRAM_WB)) {
-		struct bio_vec bvec;
-
 		zram_slot_unlock(zram, index);
-
-		bvec.bv_page = page;
-		bvec.bv_len = PAGE_SIZE;
-		bvec.bv_offset = 0;
-		return read_from_bdev(zram, &bvec,
+		return read_from_bdev(zram, page,
 				zram_get_element(zram, index),
 				parent);
 	}
@@ -1285,7 +1279,7 @@ static int zram_write_page(struct zram *zram, struct page *page,
  * This is a partial IO. Read the full page before writing the changes.
  */
 static int zram_bvec_write_partial(struct zram *zram, struct bio_vec *bvec,
-				   u32 index, int offset, struct bio *bio, bool access)
+				   u32 index, int offset, struct bio *bio)
 {
 	struct page *page = alloc_page(GFP_NOIO);
 	int ret;
@@ -1303,11 +1297,11 @@ static int zram_bvec_write_partial(struct zram *zram, struct bio_vec *bvec,
 }
 
 static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
-			   u32 index, int offset, struct bio *bio, access)
+			   u32 index, int offset, struct bio *bio)
 {
 	if (is_partial_io(bvec))
 		return zram_bvec_write_partial(zram, bvec, index,
-									   offset, bio, access);
+									   offset, bio);
 	return zram_write_page(zram, bvec->bv_page, index, bio);
 }
 
