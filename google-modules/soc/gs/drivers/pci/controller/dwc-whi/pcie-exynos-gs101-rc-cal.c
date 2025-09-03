@@ -290,12 +290,12 @@ void exynos_pcie_rc_pcie_phy_config(struct exynos_pcie *exynos_pcie, int ch_num)
 	/* when entring L1.2, ERIO CLK gating */
 	val = readl(exynos_pcie->phy_pcs_base + 0x008);
 	val &= ~((1 << 4) | (1 << 5));
-	val |= (1 << 4);
+	val |= ((1 << 4) | (1 << 5));
 	writel(val, phy_pcs_base_regs + 0x008);
 	if (num_lanes == 2) {
 		val = readl(exynos_pcie->phy_pcs_base + 0x808);
 		val &= ~((1 << 4) | (1 << 5));
-		val |= (1 << 4);
+		val |= ((1 << 4) | (1 << 5));
 		writel(val, phy_pcs_base_regs + 0x808);
 	}
 
@@ -309,7 +309,8 @@ void exynos_pcie_rc_pcie_phy_config(struct exynos_pcie *exynos_pcie, int ch_num)
 	val |= (0x1 << 4);
 	val &= ~(0x1 << 3);
 	writel(val, phy_base_regs + 0x5D0);
-	pr_debug("XO clock configuration : 0x%x\n", readl(phy_base_regs + 0x5D0));
+	dev_dbg(exynos_pcie->pci->dev, "[%s] XO clock configuration : 0x%x\n",
+		__func__, readl(phy_base_regs + 0x5D0));
 
 	/* AFC cal mode by default uses the calibrated value from a previous
 	 * run. However on some devices this causes a CDR failure because
@@ -317,7 +318,7 @@ void exynos_pcie_rc_pcie_phy_config(struct exynos_pcie *exynos_pcie, int ch_num)
 	 * always start from an initial value (determined through simulation)
 	 * ensures that AFC has enough time to complete.
 	 */
-	dev_info(exynos_pcie->pci->dev, "AFC cal mode set to restart\n");
+	dev_dbg(exynos_pcie->pci->dev, "AFC cal mode set to restart\n");
 	writel(0x4, phy_base_regs + 0xBF4);
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_rc_pcie_phy_config);
@@ -360,11 +361,16 @@ int exynos_pcie_rc_eom(struct device *dev, void *phy_base_regs)
 	/* eom_result[lane_num][test_cnt] */
 	eom_result = kcalloc(1, sizeof(struct pcie_eom_result *) * lane_width, GFP_KERNEL);
 	for (i = 0; i < lane_width; i++) {
-		eom_result[i] = kcalloc(1, sizeof(*eom_result[i]) *
+		eom_result[i] = devm_kzalloc(dev, sizeof(*eom_result[i]) *
 				EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX, GFP_KERNEL);
 	}
-	if (!eom_result)
-		return -ENOMEM;
+	for (i = 0; i < lane_width; i++) {
+		if (!eom_result[i]) {
+			dev_err(dev, "[%s] failed to alloc 'eom_result[%d]\n",
+				       __func__, i);
+			return -ENOMEM;
+		}
+	}
 
 	exynos_pcie->eom_result = eom_result;
 
@@ -374,7 +380,8 @@ int exynos_pcie_rc_eom(struct device *dev, void *phy_base_regs)
 	if (speed_rate == 1 || speed_rate == 2) {
 		dev_err(dev, "[%s] speed_rate(GEN%d) is not GEN3 or GEN4\n", __func__, speed_rate);
 		/* memory free 'eom_result' */
-		kfree(eom_result);
+		for (i = 0; i < lane_width; i++)
+			devm_kfree(dev, eom_result[i]);
 
 		return -EINVAL;
 	}
