@@ -2,5 +2,5 @@
 #
 # Copyright (C) 2023 Google LLC
 
-build:bluejay --//private/devices/google/common:kernel=//private/devices/google/bluejay:kernel
-build:bluejay --//private/google-modules/soc/gs:gs_soc_module=//private/devices/google/bluejay:gs101_soc.bluejay
+build:bluejay --config=gs101_base
+build:bluejay --//private/devices/google/common:kernel=//private/devices/google/bluejay:bluejay/kernel

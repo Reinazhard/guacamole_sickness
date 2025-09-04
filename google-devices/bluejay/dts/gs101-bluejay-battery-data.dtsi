@@ -152,12 +152,9 @@ maxim,config {
 			/* 0x002e */	0x03DE	/* CGain */
 		>;
 		maxim,fg-aafv = /bits/ 32 <
-			200     0   95  0xff
-			400    20   90  0xff
-			600    40   85  0xff
-			800    60   80  0xff
-			1000   80   75  0xff
-			2000  130   63  0xff
+			199     0   95  0xff
+			399    20   90  0xff
+			400   400   50  0xff
 		>;
 	};
 
