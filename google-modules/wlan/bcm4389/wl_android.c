@@ -1497,6 +1497,13 @@ int wl_android_get_assoclist(struct net_device *dev, char *command, int total_le
 	if (error)
 		return -1;
 
+	if (assoc_maclist->count > htod32(MAX_NUM_OF_ASSOCLIST)) {
+		DHD_ERROR(("wl_android_get_assoclist: invalid assoc count(%d)\n",
+			assoc_maclist->count));
+		bytes_written = -1;
+		return bytes_written;
+	}
+
 	assoc_maclist->count = dtoh32(assoc_maclist->count);
 	bytes_written = snprintf(command, total_len, "%s listcount: %d Stations:",
 		CMD_ASSOC_CLIENTS, assoc_maclist->count);
@@ -4958,6 +4965,11 @@ wl_android_set_ap_mac_list(struct net_device *dev, int macmode, struct maclist *
 				ret));
 			return ret;
 		}
+		if (assoc_maclist->count > MAX_NUM_OF_ASSOCLIST) {
+			DHD_ERROR(("wl_android_set_ap_mac_list: invalid assoc count=%d\n",
+				assoc_maclist->count));
+			return BCME_ERROR;
+		}
 		/* do we have any STA associated?  */
 		if (assoc_maclist->count) {
 			/* iterate each associated STA */
@@ -6777,6 +6789,11 @@ wl_android_get_band_chanspecs(struct net_device *ndev, void *buf, s32 buflen,
 	}
 
 	list = (wl_uint32_list_t *)buf;
+	if (dtoh32(list->count) > WL_NUMCHANSPECS) {
+		WL_ERR(("exceeded max chanspecs (%u>%u)\n", dtoh32(list->count), WL_NUMCHANSPECS));
+		return BCME_ERROR;
+	}
+
 	/* Skip DFS and inavlid P2P channel. */
 	for (i = 0, j = 0; i < dtoh32(list->count); i++) {
 		if (!CHSPEC_IS20(list->element[i])) {
@@ -14590,10 +14607,11 @@ int wl_cfg80211_wbtext_table_config(struct net_device *ndev, char *data,
 	size_t slen = strlen(data);
 	char *start_addr = NULL;
 	u8 ioctl_buf[WLC_IOCTL_SMLEN];
+	u32 alloc_len;
 
 	data[slen] = '\0';
-	btcfg = (wnm_bss_select_factor_cfg_t *)MALLOCZ(cfg->osh,
-		(sizeof(*btcfg) + sizeof(*btcfg) * WL_FACTOR_TABLE_MAX_LIMIT));
+	alloc_len = sizeof(*btcfg) + sizeof(*btcfg) * WL_FACTOR_TABLE_MAX_LIMIT;
+	btcfg = (wnm_bss_select_factor_cfg_t *)MALLOCZ(cfg->osh, alloc_len);
 	if (unlikely(!btcfg)) {
 		WL_ERR(("%s: failed to allocate memory\n", __func__));
 		err = -ENOMEM;
@@ -14631,8 +14649,16 @@ int wl_cfg80211_wbtext_table_config(struct net_device *ndev, char *data,
 			WL_ERR(("Getting wnm_bss_select_table failed with err=%d \n", err));
 			goto exit;
 		}
-		memcpy(btcfg, ioctl_buf, sizeof(*btcfg));
-		memcpy(btcfg, ioctl_buf, (btcfg->count+1) * sizeof(*btcfg));
+		err = memcpy_s(btcfg, sizeof(*btcfg), ioctl_buf, sizeof(*btcfg));
+		if (err) {
+			WL_ERR(("Failed to memcpy first btcfg err=%d\n", err));
+			goto exit;
+		}
+		err = memcpy_s(btcfg, alloc_len, ioctl_buf, (btcfg->count+1) * sizeof(*btcfg));
+		if (err) {
+			WL_ERR(("Failed to memcpy btcfg array err=%d\n", err));
+			goto exit;
+		}
 
 		bytes_written += snprintf(command + bytes_written, total_len - bytes_written,
 					"No of entries in table: %d\n", btcfg->count);
@@ -14681,8 +14707,7 @@ int wl_cfg80211_wbtext_table_config(struct net_device *ndev, char *data,
 	}
 exit:
 	if (btcfg) {
-		MFREE(cfg->osh, btcfg,
-			(sizeof(*btcfg) + sizeof(*btcfg) * WL_FACTOR_TABLE_MAX_LIMIT));
+		MFREE(cfg->osh, btcfg, alloc_len);
 	}
 	return err;
 }

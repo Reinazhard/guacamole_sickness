@@ -3714,4 +3714,5 @@ struct wl_cp_coex {
 	int ch_5g;
 };
 #endif /* WL_CP_COEX */
+extern s32 wl_validate_bss_length(uint32 version, uint32 tot_len, uint32 ie_length);
 #endif /* _wl_cfg80211_h_ */

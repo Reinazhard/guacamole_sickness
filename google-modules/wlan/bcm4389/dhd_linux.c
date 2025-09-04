@@ -14716,6 +14716,10 @@ dhd_module_cleanup(void)
 #endif /* ENABLE_NOT_LOAD_DHD_MODULE */
 	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
 
+#ifdef DHD_COREDUMP
+	dhd_plat_unregister_coredump();
+#endif /* DHD_COREDUMP */
+
 #ifdef BCMDBUS
 	dbus_deregister();
 #else
@@ -14753,7 +14757,7 @@ _dhd_module_init(void)
 	int err;
 	int retry = POWERUP_MAX_RETRY;
 
-	DHD_ERROR(("%s in\n", __FUNCTION__));
+	DHD_PRINT(("%s in, retry=%d\n", __FUNCTION__, retry));
 
 #ifdef DHD_BUZZZ_LOG_ENABLED
 	dhd_buzzz_attach();
@@ -14825,6 +14829,9 @@ _dhd_module_init(void)
 		if (!dhd_download_fw_on_driverload) {
 			dhd_driver_init_done = TRUE;
 		}
+#ifdef DHD_COREDUMP
+		dhd_plat_register_coredump();
+#endif /* DHD_COREDUMP */
 	}
 
 	DHD_ERROR(("%s out\n", __FUNCTION__));
@@ -19210,6 +19217,11 @@ void dhd_schedule_memdump(dhd_pub_t *dhdp, uint8 *buf, uint32 size)
 #endif /* DHD_LOG_DUMP */
 		return;
 	}
+#ifdef DHD_DUMP_RXPKTIDMAP
+	else if (dhdp->memdump_type == DUMP_TYPE_BY_SYSDUMP) {
+		dhd_dump_rxpktidmap(dhdp);
+	}
+#endif /* DHD_DUMP_RXPKTIDMAP */
 
 	dhd_info->scheduled_memdump = TRUE;
 

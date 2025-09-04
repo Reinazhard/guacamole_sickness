@@ -3994,6 +3994,9 @@ static INLINE void dhd_pktid_logging_dump(dhd_pub_t *dhdp) { }
 #endif /* LINUX || linux */
 #endif /* DHD_MAP_PKTID_LOGGING */
 
+#ifdef DHD_DUMP_RXPKTIDMAP
+void dhd_dump_rxpktidmap(dhd_pub_t *dhd);
+#endif /* DHD_DUMP_RXPKTIDMAP */
 #ifdef DHD_PCIE_RUNTIMEPM
 #define DEFAULT_DHD_RUNTIME_MS 100
 #ifndef CUSTOM_DHD_RUNTIME_MS
