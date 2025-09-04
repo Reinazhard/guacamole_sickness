@@ -176,9 +176,6 @@ static void kutf_set_pm_ctx_active(struct kutf_context *context)
 
 	kbase_pm_context_active(data->kbdev);
 	kbase_pm_wait_for_desired_state(data->kbdev);
-#if !MALI_USE_CSF
-	kbase_pm_request_gpu_cycle_counter(data->kbdev);
-#endif
 }
 
 static void kutf_set_pm_ctx_idle(struct kutf_context *context)
@@ -187,9 +184,6 @@ static void kutf_set_pm_ctx_idle(struct kutf_context *context)
 
 	if (WARN_ON(data->pm_ctx_cnt > 0))
 		return;
-#if !MALI_USE_CSF
-	kbase_pm_release_gpu_cycle_counter(data->kbdev);
-#endif
 	kbase_pm_context_idle(data->kbdev);
 }
 
@@ -797,6 +791,10 @@ static void *mali_kutf_clk_rate_trace_create_fixture(struct kutf_context *contex
 		return NULL;
 
 	memset(data, 0, sizeof(*data));
+
+	/* Initialize listener's list node */
+	INIT_LIST_HEAD(&data->listener.node);
+
 	pr_debug("Hooking up the test portal to kbdev clk rate trace\n");
 	spin_lock(&kbdev->pm.clk_rtm.lock);
 
