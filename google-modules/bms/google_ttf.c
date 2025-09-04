@@ -147,7 +147,7 @@ static int ttf_pwr_health_pause(const struct gbms_charging_event *ce_data, int s
  * tiers for bad cables, ibatt is affected by temperature tier and sysload.
  */
 static int ttf_pwr_equiv_icl(const struct gbms_charging_event *ce_data,
-			     int vbatt_idx, int soc)
+			     int vbatt_idx, int soc, int fcc_now)
 {
 	const struct gbms_chg_profile *profile = ce_data->chg_profile;
 	const int volt_limit = profile->volt_limits[vbatt_idx] == 0 ?
@@ -192,6 +192,9 @@ static int ttf_pwr_equiv_icl(const struct gbms_charging_event *ce_data,
 	act_ibatt = ttf_pwr_ibatt(tier_stats);
 	if (act_ibatt == 0 && health_ibatt > 0)
 		act_ibatt = health_ibatt;
+	else if (fcc_now > 0 && (act_ibatt == 0 || fcc_now < act_ibatt))
+		act_ibatt = fcc_now;
+
 	if (act_ibatt < 0) {
 		pr_debug("%s: discharging ibatt=%d\n", __func__, act_ibatt);
 		return -EINVAL;
@@ -270,7 +273,7 @@ static int ttf_pwr_ratio(const struct batt_ttf_stats *stats,
 		 avg_cc, cc_max);
 
 	/* equivalent input current for adapter at vtier */
-	equiv_icl = ttf_pwr_equiv_icl(ce_data, vbatt_idx, soc);
+	equiv_icl = ttf_pwr_equiv_icl(ce_data, vbatt_idx, soc, stats->fcc_now / 1000);
 	if (equiv_icl <= 0) {
 		pr_debug("%s %d: negative, null act_icl=%d\n",
 			 __func__, soc, equiv_icl);

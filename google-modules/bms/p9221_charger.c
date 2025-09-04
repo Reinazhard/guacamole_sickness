@@ -1746,7 +1746,7 @@ static const char *p9221_get_tx_id_str(struct p9221_charger_data *charger)
 {
 	int ret;
 
-	if (!p9221_is_online(charger))
+	if (!charger->online)
 		return NULL;
 
 	pm_runtime_get_sync(charger->dev);
@@ -3787,6 +3787,14 @@ static void p9221_notifier_check_dc(struct p9221_charger_data *charger)
 	}
 
 	dev_info(&charger->client->dev, "dc status is %d\n", dc_in);
+
+	if (!charger->chg_mode_votable)
+		charger->chg_mode_votable =
+			gvotable_election_get_handle(GBMS_MODE_VOTABLE);
+	if (charger->chg_mode_votable)
+		gvotable_cast_long_vote(charger->chg_mode_votable,
+					P9221_WLC_VOTER,
+					GBMS_CHGR_MODE_WLC_RX, dc_in);
 	charger->check_dc = false;
 	/*
 	 * We now have confirmation from DC_IN, kill the timer, charger->online
@@ -7238,10 +7246,14 @@ static int p9221_parse_dt(struct device *dev,
 	pdata->ldo_en_gpio = p9221_parse_gpios(dev, "idt,ldo_en-gpio", "idt,gpio_ldo_en", &flags);
 	if (pdata->ldo_en_gpio > 0)
 		dev_info(dev, "QI_EXT_LDO_EN gpio:%d", pdata->ldo_en_gpio);
+	if (pdata->ldo_en_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
 
 	pdata->wcin_inlim_en_gpio = p9221_parse_gpios(dev,
 						      "google,wcin_inlim_en-gpio",
 						      "google,wcin_inlim_en", &flags);
+	if (pdata->wcin_inlim_en_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
 	if (pdata->wcin_inlim_en_gpio > 0)
 		dev_info(dev, "WCIN_INLIM_EN gpio: %d", pdata->wcin_inlim_en_gpio);
 

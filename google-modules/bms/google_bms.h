@@ -38,7 +38,7 @@ struct device_node;
 #define GBMS_AACR_DATA_MAX 10
 #define GBMS_AAFV_DATA_MAX 16
 #define GBMS_AAFV_VOLTAGE_OFFSET_SCALE 1000
-#define GBMS_AACT_NB_LIMITS_MAX 10
+#define GBMS_AACT_NB_LIMITS_MAX 5
 #define GBMS_AACT_PROFILE_MAX 100
 
 struct gbms_chg_profile {
@@ -54,6 +54,7 @@ struct gbms_chg_profile {
 	u32 *cccm_limits;
 	/* used to fill table  */
 	u32 capacity_ma;
+	u32 last_volt;
 
 	/* behavior */
 	u32 fv_uv_margin_dpct;
@@ -91,10 +92,43 @@ struct gbms_chg_profile {
 	int aact_idx;
 	bool aact_init_profile;
 	bool aact_update_profile;
+	bool aact_support_multiple_profiles;
+	bool aact_load_chg_ecc;
 	u32 *aact_cccm_limits;
 
 	bool debug_chg_profile;
 	bool enable_switch_chg_profile;
+};
+
+typedef struct {
+    char *temp_limits[GBMS_AACT_NB_LIMITS_MAX];
+    char *cv_limits[GBMS_AACT_NB_LIMITS_MAX];
+    char *cc_limits[GBMS_AACT_NB_LIMITS_MAX];
+} aact_limits_profiles_t;
+
+/* the number should be the same as GBMS_AACT_NB_LIMITS_MAX */
+static aact_limits_profiles_t aact_all_limits = {
+    .temp_limits = {
+        "google,aact-temp-limits",
+        "google,aact-temp-limits-1",
+        "google,aact-temp-limits-2",
+        "google,aact-temp-limits-3",
+        "google,aact-temp-limits-4"
+    },
+    .cv_limits = {
+        "google,aact-cv-limits",
+        "google,aact-cv-limits-1",
+        "google,aact-cv-limits-2",
+        "google,aact-cv-limits-3",
+        "google,aact-cv-limits-4"
+    },
+    .cc_limits = {
+        "google,aact-cc-limits",
+        "google,aact-cc-limits-1",
+        "google,aact-cc-limits-2",
+        "google,aact-cc-limits-3",
+        "google,aact-cc-limits-4"
+    }
 };
 
 #define WLC_BPP_THRESHOLD_UV	7000000
@@ -274,6 +308,7 @@ struct batt_ttf_stats {
 	struct mutex ttf_lock;
 
 	int report_max_ratio; /* max ratio to report ttf */
+	int fcc_now;
 };
 
 /*
@@ -449,12 +484,22 @@ struct gbms_charging_event {
 #define GBMS_CCCM_LIMITS_GET(profile, ti, vi) \
 	(((ti) >= 0 && (vi) >= 0) ? profile->cccm_limits[((ti) * profile->volt_nb_limits) + (vi)] : 0)
 
-#define GBMS_AACT_IDX(profile) \
-	(profile->aact_idx * (profile->temp_nb_limits - 1))
+/* only one table in each profile if multiple_profiles is supported */
+#define GBMS_AACT_TI(profile) \
+	(profile->aact_support_multiple_profiles ? \
+	0 : profile->aact_idx * (profile->temp_nb_limits - 1))
 
 #define GBMS_CCCM_LIMITS(profile, ti, vi) \
 	(((ti) >= 0 && (vi) >= 0) ? \
-	profile->cccm_limits[((ti + GBMS_AACT_IDX(profile)) * profile->volt_nb_limits) + (vi)] : 0)
+	profile->cccm_limits[((ti + GBMS_AACT_TI(profile)) * profile->volt_nb_limits) + (vi)] : 0)
+
+/* select the preset (first) profile if multiple_profiles is not supported */
+#define GBMS_AACT_IDX(profile) \
+	(profile->aact_support_multiple_profiles ? profile->aact_idx : 0)
+
+/* only one table in each profile if multiple_profiles is supported */
+#define GBMS_AACT_NB_LIMITS(profile) \
+	(profile->aact_support_multiple_profiles ? 1 : profile->aact_nb_limits)
 
 /* newgen charging */
 #define GBMS_CS_FLAG_BUCK_EN		BIT(0)
@@ -489,6 +534,7 @@ int gbms_init_aact_profile_internal(struct gbms_chg_profile *profile,
 	gbms_init_aact_profile_internal(p, n, KBUILD_MODNAME)
 int gbms_update_chg_profile_from_aact(struct gbms_chg_profile *profile);
 int gbms_aact_get_index(const struct gbms_chg_profile *profile, const int cycles);
+int gbms_read_chg_aact_ecc(struct gbms_chg_profile *profile, struct device_node *node);
 
 void gbms_init_chg_table(struct gbms_chg_profile *profile,
 			 struct device_node *node, u32 capacity);
@@ -667,7 +713,8 @@ int gbms_tier_stats_cstr(char *buff, int size,
 			 bool verbose);
 
 void gbms_log_cstr_handler(struct logbuffer *log, char *buf, int len);
-
+/* decode EEPROM serial number to readable string */
+int gbms_decode_eeprom_sn(char *decode_sn, const size_t max_len);
 
 
 
@@ -683,6 +730,7 @@ enum gbms_charger_modes {
 	GBMS_USB_OTG_ON 	= 0x31,
 	GBMS_USB_OTG_FRS_ON	= 0x32,
 
+	GBMS_CHGR_MODE_WLC_RX	= 0x39,
 	GBMS_CHGR_MODE_WLC_TX	= 0x40,
 
 	GBMS_POGO_VIN		= 0x50,
@@ -912,5 +960,16 @@ enum gbms_fwupdate_max77779_err_code {
 	FWU_MAX77779_ERR_UNKNOWN = 0,
 	FWU_MAX77779_ERR_NONE = 1,
 };
+
+/* Define charger status for stability dump */
+#define CDD_PD_VOLTAGE_UV			9000000
+
+#define CDD_CHARGE_OFF_MODE_CHARGING		BIT(0)
+#define CDD_CHARGE_DISCHARGING			BIT(1)
+#define CDD_CHARGE_CHARGING			BIT(2)
+#define CDD_CHARGE_FAST_CHARGING		BIT(3)
+#define CDD_CHARGE_WLC_CHARGING			BIT(4)
+#define CDD_CHARGE_EXT_CHARGING			BIT(5)
+#define CDD_CHARGE_INIT_DONE			BIT(7)
 
 #endif  /* __GOOGLE_BMS_H_ */

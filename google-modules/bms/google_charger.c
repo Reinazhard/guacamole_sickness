@@ -40,6 +40,10 @@
 #include <linux/seq_file.h>
 #endif
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+#include <soc/google/google-cdd.h>
+#endif
+
 #define CHG_DELAY_INIT_MS		250
 #define CHG_DELAY_INIT_DETECT_MS	1000
 
@@ -236,6 +240,9 @@ struct bd_data {
 	ktime_t bd_pretrigger_stats_last_update;
 	struct gbms_ce_tier_stats bd_resume_stats;
 	ktime_t bd_resume_stats_last_update;
+
+	/* notify bd_event */
+	struct power_supply *bat_psy;
 };
 
 struct chg_drv {
@@ -367,6 +374,9 @@ struct chg_drv {
 
 	int online;
 	int present;
+
+	u32 cdd_charger_status;
+	int cdd_off_mode_charging;
 };
 
 static void reschedule_chg_work(struct chg_drv *chg_drv)
@@ -709,11 +719,19 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 	int ad_type, usbc_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 
 	if (usb_psy) {
-		int voltage_now, current_now;
-		int tcpm_online;
+		int voltage_now, current_output, current_input;
+		int tcpm_online = 0;
 
 		/* TODO: handle POWER_SUPPLY_PROP_REAL_TYPE in qc-compat */
 		usb_type = PSY_GET_PROP(usb_psy, POWER_SUPPLY_PROP_USB_TYPE);
+
+		voltage_max = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_VOLTAGE_MAX);
+		voltage_now = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		current_output = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_CURRENT_NOW);
+		current_input = current_output;
 
 		if (tcpm_psy) {
 			usbc_type = PSY_GET_PROP(tcpm_psy,
@@ -729,9 +747,12 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 			}
 
 			tcpm_online = PSY_GET_PROP(tcpm_psy, POWER_SUPPLY_PROP_ONLINE);
-			if (tcpm_online == 2)
+			if (tcpm_online == PPS_PSY_PROG_ONLINE) {
 				amperage_max = PSY_GET_PROP(tcpm_psy,
 							    POWER_SUPPLY_PROP_CURRENT_MAX);
+				current_input = GPSY_GET_PROP(chg_drv->chg_psy,
+								GBMS_PROP_CURRENT_NOW);
+			}
 			else
 				amperage_max = PSY_GET_PROP(usb_psy,
 							    POWER_SUPPLY_PROP_CURRENT_MAX);
@@ -740,23 +761,18 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 							POWER_SUPPLY_PROP_CURRENT_MAX);
 		}
 
-		voltage_max = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_VOLTAGE_MAX);
-		voltage_now = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_VOLTAGE_NOW);
-		current_now = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_CURRENT_NOW);
-
 		if (usb_type < ARRAY_SIZE(psy_usb_type_str))
 			usb_type_str = psy_usb_type_str[usb_type];
 
-		pr_info("usbchg=%s typec=%s usbv=%d usbc=%d usbMv=%d usbMc=%d\n",
+
+		pr_info("usbchg=%s typec=%s usbv=%d usbc=%d usbMv=%d usbMc=%d usbOc=%d\n",
 			usb_type_str,
 			tcpm_psy ? psy_usbc_type_str[usbc_type] : "null",
 			voltage_now < 0 ? voltage_now : voltage_now / 1000,
-			current_now / 1000,
+			current_input / 1000,
 			voltage_max < 0 ? voltage_max : voltage_max / 1000,
-			amperage_max < 0 ? amperage_max : amperage_max / 1000);
+			amperage_max < 0 ? amperage_max : amperage_max / 1000,
+			current_output / 1000);
 
 		chg_hda_tz_vote(voltage_max/1000, amperage_max/1000);
 	}
@@ -1525,6 +1541,10 @@ static void bd_reset(struct bd_data *bd_state)
 			    bd_state->bd_trigger_temp &&
 			    bd_state->bd_temp_enable &&
 			    can_resume;
+
+	/* notify google_battery the time to aware reset */
+	if (bd_state->bat_psy)
+		GPSY_SET_INT64_PROP(bd_state->bat_psy, GBMS_PROP_BD_TIME_SUM, bd_state->time_sum);
 }
 
 /* Defender */
@@ -1776,6 +1796,11 @@ static int bd_update_stats(struct chg_drv *chg_drv)
 				bd_state->temp_sum);
 		bd_state->time_sum += elap;
 		bd_state->temp_sum += temp * elap;
+		/* notify google_battery the time to aware pre-trigger */
+		ret = GPSY_SET_INT64_PROP(chg_drv->bat_psy, GBMS_PROP_BD_TIME_SUM,
+					  bd_state->time_sum);
+		if (ret < 0)
+			pr_warn("fail to notify time_sum:%lld, ret=%d\n", bd_state->time_sum, ret);
 	}
 
 	bd_state->last_voltage = vbatt;
@@ -2453,6 +2478,65 @@ static void chg_update_csi(struct chg_drv *chg_drv)
 
 /* ------------------------------------------------------------------------ */
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+static bool chg_is_off_mode_charging(struct chg_drv *chg_drv)
+{
+	u32 status;
+
+	if (chg_drv->cdd_off_mode_charging != -1)
+		goto done;
+
+	google_cdd_get_system_dev_stat(CDD_SYSTEM_DEVICE_CHARGER, &status);
+	/* If the off_mode_charging status has not been updated in google_battery, then return */
+	if (!(status & CDD_CHARGE_INIT_DONE))
+		return false;
+
+	chg_drv->cdd_off_mode_charging = status & CDD_CHARGE_OFF_MODE_CHARGING ? 1 : 0;
+
+done:
+	return chg_drv->cdd_off_mode_charging == 1;
+}
+
+static void chg_update_cdd_charger_stat(struct chg_drv *chg_drv, int usb_online,
+					int wlc_online, int ext_online)
+{
+	int online = usb_online || wlc_online || ext_online;
+	bool off_mode_charging;
+	u32 status;
+
+	off_mode_charging = chg_is_off_mode_charging(chg_drv);
+	status = off_mode_charging ? CDD_CHARGE_OFF_MODE_CHARGING : 0;
+
+	if (wlc_online)
+		status |= CDD_CHARGE_WLC_CHARGING;
+
+	if (ext_online)
+		status |= CDD_CHARGE_EXT_CHARGING;
+
+	if (usb_online) {
+		int voltage_max = PSY_GET_PROP(chg_drv->usb_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+
+		if (voltage_max > CDD_PD_VOLTAGE_UV)
+			status |= CDD_CHARGE_FAST_CHARGING;
+		else
+			status |= CDD_CHARGE_CHARGING;
+	}
+
+	if (!online)
+		status |= CDD_CHARGE_DISCHARGING;
+
+	if (status != chg_drv->cdd_charger_status) {
+		google_cdd_set_system_dev_stat(CDD_SYSTEM_DEVICE_CHARGER, status);
+		chg_drv->cdd_charger_status = status;
+	}
+}
+
+#else
+static inline void chg_update_cdd_charger_stat(struct chg_drv *chg_drv, int usb_online,
+					       int wlc_online, int ext_online) {}
+#endif
+/* ------------------------------------------------------------------------ */
+
 /* No op on battery not present */
 static void chg_work(struct work_struct *work)
 {
@@ -2615,6 +2699,9 @@ static void chg_work(struct work_struct *work)
 						      msecs_to_jiffies(100));
 			else
 				chg_drv->stop_charging = 1;
+
+			/* update cdd_charger_stat for stability dump */
+			chg_update_cdd_charger_stat(chg_drv, usb_online, wlc_online, ext_online);
 		}
 
 		if (chg_is_custom_enabled(upperbd, lowerbd) && chg_drv->disable_pwrsrc)
@@ -2652,9 +2739,12 @@ static void chg_work(struct work_struct *work)
 	}
 
 	/* device might fall off the charger when disable_pwrsrc is set. */
-	if (!chg_drv->disable_pwrsrc)
+	if (!chg_drv->disable_pwrsrc) {
 		chg_work_adapter_details(&ad, usb_online, wlc_online,
 					 ext_online, chg_drv);
+		/* update cdd_charger_stat for stability dump */
+		chg_update_cdd_charger_stat(chg_drv, usb_online, wlc_online, ext_online);
+	}
 
 	rc = chg_work_roundtrip(chg_drv, &chg_drv->chg_state);
 	if (rc == -EAGAIN)
@@ -2686,7 +2776,7 @@ update_charger:
 	pr_debug("MSC_CHG disable_charging=%d, update_interval=%d\n",
 		 chg_drv->disable_charging, update_interval);
 
-	if (!chg_drv->disable_charging && update_interval > 0) {
+	if (!chg_drv->disable_charging && (update_interval > 0 || online_changed)) {
 
 		/* msc_update_charger_cb will write to charger and reschedule */
 		gvotable_cast_int_vote(chg_drv->msc_interval_votable,
@@ -4513,6 +4603,8 @@ static void chg_update_charging_policy(struct chg_drv *chg_drv, const int value)
 		   chg_drv->charging_policy == CHARGING_POLICY_VOTE_LONGLIFE) {
 		chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
 		chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
+		/* reset charging policy */
+		chg_update_charging_state(chg_drv, false, false);
 	}
 
 	chg_drv->charging_policy = value;
@@ -5644,6 +5736,20 @@ static int chg_get_psy(struct chg_drv *chg_drv, const char *psy_name, struct pow
 	return 0;
 }
 
+static void chg_init_charge_level(struct chg_drv *chg_drv)
+{
+	/*
+	 * If charge_stop_level and charge_start_level are zero,
+	 * this indicates they haven't been properly initialized
+	 * (e.g., overwritten by a user space write before driver init).
+	 * Reset them to their default values.
+	 */
+	if (chg_drv->charge_stop_level == 0 && chg_drv->charge_start_level == 0) {
+		chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
+		chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
+	}
+}
+
 static void google_charger_init_work(struct work_struct *work)
 {
 	struct chg_drv *chg_drv = container_of(work, struct chg_drv,
@@ -5660,8 +5766,10 @@ static void google_charger_init_work(struct work_struct *work)
 
 	if (!chg_drv->bat_psy && chg_get_psy(chg_drv, chg_drv->bat_psy_name, &bat_psy))
 		goto retry_init_work;
-	if (!chg_drv->bat_psy)
+	if (!chg_drv->bat_psy) {
 		chg_drv->bat_psy = bat_psy;
+		chg_drv->bd_state.bat_psy = bat_psy;
+	}
 
 	if (!chg_drv->usb_psy && chg_drv->usb_psy_name)	/* usb_psy_name is optional */
 		ret_usb = chg_get_psy(chg_drv, chg_drv->usb_psy_name, &usb_psy);
@@ -5740,9 +5848,8 @@ static void google_charger_init_work(struct work_struct *work)
 		pr_info("dead battery mode\n");
 
 	chg_init_state(chg_drv);
+	chg_init_charge_level(chg_drv);
 	chg_drv->stop_charging = -1;
-	chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
-	chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
 	chg_drv->charging_policy = CHARGING_POLICY_DEFAULT;
 	mutex_init(&chg_drv->stats_lock);
 	thermal_stats_init(chg_drv);
@@ -5750,6 +5857,9 @@ static void google_charger_init_work(struct work_struct *work)
 	/* reset override charging parameters */
 	chg_drv->user_fv_uv = -1;
 	chg_drv->user_cc_max = -1;
+
+	/* Initialize status before confirming off_mode_chaging status */
+	chg_drv->cdd_off_mode_charging = -1;
 
 	/* dock_defend */
 	if (chg_drv->ext_psy)
