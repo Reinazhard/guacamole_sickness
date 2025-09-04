@@ -13,7 +13,7 @@ $(info *** Building in $B)
 
 default all: modules
 
-modules modules_install:
+modules modules_install compile_commands.json:
 	mkdir -p $B
 	ln -srTf include $B/include
 	ln -srTf Kbuild $B/Kbuild
@@ -46,7 +46,7 @@ B := $(abspath $O/$M)
 
 default:
 	$(MAKE) -C $(KDIR) M=$(M)
-modules modules_install clean help kernelrelease:
+modules modules_install clean help kernelrelease compile_commands.json:
 	$(MAKE) -C $(KDIR) M=$(M) $@
 
 endif # ifeq ($(PROJECTS_BUILD),$(abspath $(KDIR)/../../../../..))
