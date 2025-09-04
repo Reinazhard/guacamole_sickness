@@ -1261,7 +1261,7 @@ static int zram_bvec_read(struct zram *zram, struct bio_vec *bvec,
 			u32 index, int offset, struct bio *bio, bool access)
 {
 	if (is_partial_io(bvec))
-		return zram_bvec_read_partial(zram, bvec, index, offset);
+		return zram_bvec_read_partial(zram, bvec, index, offset, access);
 	return zram_read_page(zram, bvec->bv_page, index, bio, access);
 }
 
