@@ -187,7 +187,7 @@ CONFIG_CLKSRC_EXYNOS_MCT_GS=m
 
 # private/google-modules/soc/gs/drivers/iommu/Kconfig
 CONFIG_SAMSUNG_IOMMU=m
-CONFIG_IOVAD_BEST_FIT_ALGO=m
+CONFIG_IOVAD_VENDOR_HOOKS=m
 
 # private/google-modules/soc/gs/drivers/cpufreq/Kconfig
 CONFIG_ARM_EXYNOS_ACME=m

@@ -378,6 +378,7 @@
 		power-domains = <&pd_pdp>;
 		samsung,iommu-group = <&iommu_group_isp>;
 		lwis,iommu-best-fit-algo;
+		iommu-max-align-shift = <8>;
 		samsung,tzmp = "true";
 	};
 
