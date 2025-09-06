@@ -17,7 +17,7 @@
 #include "kcompressd.h"
 
 #define INIT_QUEUE_SIZE		4096
-#define DEFAULT_NR_KCOMPRESSD	4
+#define DEFAULT_NR_KCOMPRESSD	8
 
 static atomic_t enable_kcompressd;
 static unsigned int nr_kcompressd;
