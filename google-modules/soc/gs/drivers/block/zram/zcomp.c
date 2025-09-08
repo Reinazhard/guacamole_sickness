@@ -128,7 +128,7 @@ static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 	unsigned long val;
 	bool ret = true;
 
-	mem = kmap_atomic(page);
+	mem = kmap_local_page(page);
 	val = mem[0];
 	for (pos = 1; pos < PAGE_SIZE / sizeof(*mem); pos++) {
 		if (val != mem[pos]) {
@@ -139,7 +139,7 @@ static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 
 	*element = val;
 out:
-	kunmap_atomic(mem);
+	kunmap_local(mem);
 	return ret;
 }
 
@@ -402,18 +402,18 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 	if (!handle || zram_test_flag(zram, index, ZRAM_SAME)) {
 		unsigned long val = handle ? zram_get_element(zram, index) : 0;
 
-		dst = kmap_atomic(page);
+		dst = kmap_local_page(page);
 		zcomp_fill_page(dst, PAGE_SIZE, val);
-		kunmap_atomic(dst);
+		kunmap_local(dst);
 		goto out;
 	}
 
 	src_len = zram_get_obj_size(zram, index);
 	if (src_len == PAGE_SIZE) {
 		src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
-		dst = kmap_atomic(page);
+		dst = kmap_local_page(page);
 		memcpy(dst, src, PAGE_SIZE);
-		kunmap_atomic(dst);
+		kunmap_local(dst);
 		zs_unmap_object(zram->mem_pool, handle);
 		goto out;
 	}
@@ -513,10 +513,10 @@ int zcomp_copy_buffer(int err, void *buffer, int comp_len,
 
 	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
 	if (comp_len == PAGE_SIZE) {
-		void *src = kmap_atomic(page);
+		void *src = kmap_local_page(page);
 
 		memcpy(dst_addr, src, comp_len);
-		kunmap_atomic(src);
+		kunmap_local(src);
 	} else {
 		memcpy(dst_addr, buffer, comp_len);
 	}
