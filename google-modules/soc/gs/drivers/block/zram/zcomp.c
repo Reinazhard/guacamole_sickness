@@ -411,9 +411,7 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 	src_len = zram_get_obj_size(zram, index);
 	if (src_len == PAGE_SIZE) {
 		src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
-		dst = kmap_local_page(page);
-		memcpy(dst, src, PAGE_SIZE);
-		kunmap_local(dst);
+		memcpy_to_page(page, 0, src, PAGE_SIZE);
 		zs_unmap_object(zram->mem_pool, handle);
 		goto out;
 	}
@@ -513,10 +511,7 @@ int zcomp_copy_buffer(int err, void *buffer, int comp_len,
 
 	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
 	if (comp_len == PAGE_SIZE) {
-		void *src = kmap_local_page(page);
-
-		memcpy(dst_addr, src, comp_len);
-		kunmap_local(src);
+		memcpy_from_page(dst_addr, page, 0, comp_len);
 	} else {
 		memcpy(dst_addr, buffer, comp_len);
 	}
