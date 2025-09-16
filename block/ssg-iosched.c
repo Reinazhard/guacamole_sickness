@@ -28,7 +28,6 @@
 #include "blk-mq-tag.h"
 #include "blk-mq-sched.h"
 #include "ssg.h"
-#include "blk-sec.h"
 
 #define MAX_ASYNC_WRITE_RQS	8
 
@@ -373,10 +372,8 @@ static void ssg_completed_request(struct request *rq, u64 now)
 	struct ssg_request_info *rqi;
 
 	rqi = ssg_rq_info(ssg, rq);
-	if (likely(rqi && rqi->sector == blk_rq_pos(rq))) {
+	if (likely(rqi && rqi->sector == blk_rq_pos(rq)))
 		ssg_stat_account_io_done(ssg, rq, rqi->data_size, now);
-		blk_sec_stat_account_io_complete(rq, rqi->data_size, rqi->pio);
-	}
 }
 
 static void ssg_set_shallow_depth(struct ssg_data *ssg, struct blk_mq_tags *tags)
@@ -498,7 +495,6 @@ static void ssg_exit_queue(struct elevator_queue *e)
 
 	ssg_stat_exit(ssg);
 	ssg_wb_exit(ssg);
-	blk_sec_stat_account_exit(e);
 	blk_stat_disable_accounting(ssg->queue);
 
 	kfree(ssg->rq_info);
@@ -554,7 +550,6 @@ static int ssg_init_queue(struct request_queue *q, struct elevator_type *e)
 
 	ssg_stat_init(ssg);
 	blk_stat_enable_accounting(q);
-	blk_sec_stat_account_init(q);
 	ssg_wb_init(ssg);
 
 	return 0;
@@ -687,8 +682,6 @@ static void ssg_prepare_request(struct request *rq)
 		rqi->blkg = blkg_lookup(css_to_blkcg(curr_css()), rq->q);
 		ssg_blkcg_inc_rq(rqi->blkg);
 		rcu_read_unlock();
-
-		blk_sec_stat_account_io_prepare(rq, &rqi->pio);
 	}
 
 	if (ssg_op_is_async_write(rq->cmd_flags))
@@ -736,8 +729,6 @@ static void ssg_finish_request(struct request *rq)
 
 		ssg_blkcg_dec_rq(rqi->blkg);
 		rqi->blkg = NULL;
-
-		blk_sec_stat_account_io_finish(rq, &rqi->pio);
 	}
 
 	if (ssg_op_is_async_write(rq->cmd_flags))
