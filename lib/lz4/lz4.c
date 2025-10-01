@@ -1396,22 +1396,18 @@ int LZ4_compress_destSize_extState(void* state, const char* src, char* dst, int*
 }
 
 
-int LZ4_compress_destSize(const char* src, char* dst, int* srcSizePtr, int targetDstSize)
+/* Separate function to isolate large stack allocation and prevent stack frame size issues */
+static int LZ4_compress_destSize_stack_internal(const char* src, char* dst, int* srcSizePtr, int targetDstSize)
 {
-#if (LZ4_HEAPMODE)
-    LZ4_stream_t* const ctx = (LZ4_stream_t*)ALLOC(sizeof(LZ4_stream_t));   /* malloc-calloc always properly aligned */
-    if (ctx == NULL) return 0;
-#else
     LZ4_stream_t ctxBody;
     LZ4_stream_t* const ctx = &ctxBody;
-#endif
 
-    int result = LZ4_compress_destSize_extState_internal(ctx, src, dst, srcSizePtr, targetDstSize, 1);
+    return LZ4_compress_destSize_extState_internal(ctx, src, dst, srcSizePtr, targetDstSize, 1);
+}
 
-#if (LZ4_HEAPMODE)
-    FREEMEM(ctx);
-#endif
-    return result;
+int LZ4_compress_destSize(const char* src, char* dst, int* srcSizePtr, int targetDstSize)
+{
+    return LZ4_compress_destSize_stack_internal(src, dst, srcSizePtr, targetDstSize);
 }
 
 
