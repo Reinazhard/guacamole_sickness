@@ -9,6 +9,7 @@ export KERNEL_SRC := $(srctree)/google-modules
 
 obj-y += amplifiers/cs35l41/
 obj-y += amplifiers/cs40l25/
+obj-y += amplifiers/cs40l26/
 obj-y += amplifiers/drv2624/
 obj-y += amplifiers/snd_soc_wm_adsp/
 obj-y += aoc/
