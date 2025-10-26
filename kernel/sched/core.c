@@ -7415,41 +7415,6 @@ struct task_struct *idle_task(int cpu)
 }
 
 #ifdef CONFIG_SMP
-unsigned int sched_dvfs_headroom[CONFIG_NR_CPUS] =
-	{ [0 ... CONFIG_NR_CPUS - 1] = 1280 };
-
-/*
- * Implements a headroom function which gives the utilization (or the tasks
- * extra CPU bandwidth) to grow. The goal is to use the outcome to select the
- * frequency. We don't want an exact frequency selection so that if the tasks
- * running on the CPU don't go to sleep, they'll grow in that additional
- * headroom until we do the next frequency update to a higher one.
- */
-static unsigned long __always_inline
-apply_dvfs_headroom(unsigned long util, int cpu, bool tapered)
-{
-	if (tapered) {
-		unsigned long capacity = capacity_orig_of(cpu);
-		unsigned long headroom;
-
-		if (util >= capacity)
-			return util;
-
-		/*
-		 * Taper the boosting at e top end as these are expensive and
-		 * we don't need that much of a big headroom as we approach max
-		 * capacity
-		 *
-		 */
-		headroom = (capacity - util);
-		/* formula: headroom * (1.X - 1) == headroom * 0.X */
-		headroom = headroom * (sched_dvfs_headroom[cpu] - SCHED_CAPACITY_SCALE) >> SCHED_CAPACITY_SHIFT;
-		return util + headroom;
-	}
-
-	return util * sched_dvfs_headroom[cpu] >> SCHED_CAPACITY_SHIFT;
-}
-
 /*
  * This function computes an effective utilization for the given CPU, to be
  * used for frequency selection given the linear relation: f = u * f_max.
@@ -7517,7 +7482,6 @@ unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
 	 * to obtain the CPU's actual utilization.
 	 */
 	util = util_cfs + cpu_util_rt(rq);
-	util = apply_dvfs_headroom(util, cpu, true);
 	util += cpu_util_dl(rq);
 
 	/*
@@ -7540,7 +7504,7 @@ unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
 	 *                 max
 	 */
 	util = scale_irq_capacity(util, irq, scale);
-	util += apply_dvfs_headroom(irq, cpu, false);
+	util += irq;
 
 	return min(scale, util);
 }
