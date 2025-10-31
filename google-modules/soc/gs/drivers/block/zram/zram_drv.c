@@ -34,7 +34,6 @@
 #include <linux/cpuhotplug.h>
 #include <linux/part_stat.h>
 
-#include "kcompressd.h"
 #include "zram_drv.h"
 
 #undef CREATE_TRACE_POINTS
@@ -55,8 +54,9 @@ static unsigned int num_devices = 1;
 static const struct block_device_operations zram_devops;
 
 static void zram_free_page(struct zram *zram, size_t index);
-static int zram_read_page(struct zram *zram, struct page *page, u32 index,
-			  struct bio *parent, bool access);
+static int zram_bvec_read(struct zram *zram, struct bio_vec *bvec,
+			u32 index, int offset, struct bio *bio, bool accesss);
+
 
 static int zram_slot_trylock(struct zram *zram, u32 index)
 {
@@ -148,13 +148,42 @@ static inline bool is_partial_io(struct bio_vec *bvec)
 {
 	return bvec->bv_len != PAGE_SIZE;
 }
-#define ZRAM_PARTIAL_IO		1
 #else
 static inline bool is_partial_io(struct bio_vec *bvec)
 {
 	return false;
 }
 #endif
+
+/*
+ * Check if request is within bounds and aligned on zram logical blocks.
+ */
+static inline bool valid_io_request(struct zram *zram,
+		sector_t start, unsigned int size)
+{
+	u64 end, bound;
+
+	/* unaligned request */
+	if (unlikely(start & (ZRAM_SECTOR_PER_LOGICAL_BLOCK - 1)))
+		return false;
+	if (unlikely(size & (ZRAM_LOGICAL_BLOCK_SIZE - 1)))
+		return false;
+
+	end = start + (size >> SECTOR_SHIFT);
+	bound = zram->disksize >> SECTOR_SHIFT;
+	/* out of range range */
+	if (unlikely(start >= bound || end > bound || start > end))
+		return false;
+
+	/* I/O request is valid */
+	return true;
+}
+
+static void update_position(u32 *index, int *offset, struct bio_vec *bvec)
+{
+	*index  += (*offset + bvec->bv_len) / PAGE_SIZE;
+	*offset = (*offset + bvec->bv_len) % PAGE_SIZE;
+}
 
 static inline void update_used_max(struct zram *zram,
 					const unsigned long pages)
@@ -553,16 +582,41 @@ static void free_block_bdev(struct zram *zram, unsigned long blk_idx)
 	this_cpu_dec(zram->pcp_stats->items[NR_BD_COUNT]);
 }
 
-static void read_from_bdev_async(struct zram *zram, struct page *page,
+static void zram_page_end_io(struct bio *bio)
+{
+	struct page *page = bio_first_page_all(bio);
+
+	page_endio(page, op_is_write(bio_op(bio)),
+			blk_status_to_errno(bio->bi_status));
+	bio_put(bio);
+}
+
+/*
+ * Returns 1 if the submission is successful.
+ */
+static int read_from_bdev_async(struct zram *zram, struct bio_vec *bvec,
 			unsigned long entry, struct bio *parent)
 {
 	struct bio *bio;
 
-	bio = bio_alloc(zram->bdev, 1, parent->bi_opf, GFP_NOIO);
+	bio = bio_alloc(zram->bdev, 1, parent ? parent->bi_opf : REQ_OP_READ,
+			GFP_NOIO);
+	if (!bio)
+		return -ENOMEM;
+
 	bio->bi_iter.bi_sector = entry * (PAGE_SIZE >> 9);
-	__bio_add_page(bio, page, PAGE_SIZE, 0);
-	bio_chain(bio, parent);
+	if (!bio_add_page(bio, bvec->bv_page, bvec->bv_len, bvec->bv_offset)) {
+		bio_put(bio);
+		return -EIO;
+	}
+
+	if (!parent)
+		bio->bi_end_io = zram_page_end_io;
+	else
+		bio_chain(bio, parent);
+
 	submit_bio(bio);
+	return 1;
 }
 
 #define PAGE_WB_SIG "page_index="
@@ -621,6 +675,12 @@ static ssize_t writeback_store(struct device *dev,
 	}
 
 	for (; nr_pages != 0; index++, nr_pages--) {
+		struct bio_vec bvec;
+
+		bvec.bv_page = page;
+		bvec.bv_len = PAGE_SIZE;
+		bvec.bv_offset = 0;
+
 		spin_lock(&zram->wb_limit_lock);
 		if (zram->wb_limit_enable && !zram->bd_wb_limit) {
 			spin_unlock(&zram->wb_limit_lock);
@@ -660,7 +720,7 @@ static ssize_t writeback_store(struct device *dev,
 		/* Need for hugepage writeback racing */
 		zram_set_flag(zram, index, ZRAM_IDLE);
 		zram_slot_unlock(zram, index);
-		if (zram_read_page(zram, page, index, NULL, false)) {
+		if (zram_bvec_read(zram, &bvec, index, 0, NULL, false)) {
 			zram_slot_lock(zram, index);
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
 			zram_clear_flag(zram, index, ZRAM_IDLE);
@@ -671,8 +731,9 @@ static ssize_t writeback_store(struct device *dev,
 		bio_init(&bio, zram->bdev, &bio_vec, 1,
 			 REQ_OP_WRITE | REQ_SYNC);
 		bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
-		bio_add_page(&bio, page, PAGE_SIZE, 0);
 
+		bio_add_page(&bio, bvec.bv_page, bvec.bv_len,
+				bvec.bv_offset);
 		/*
 		 * XXX: A single page IO would be inefficient for write
 		 * but it would be not bad as starter.
@@ -736,20 +797,19 @@ struct zram_work {
 	struct work_struct work;
 	struct zram *zram;
 	unsigned long entry;
-	struct page *page;
-	int error;
+	struct bio *bio;
+	struct bio_vec bvec;
 };
 
+#if PAGE_SIZE != 4096
 static void zram_sync_read(struct work_struct *work)
 {
 	struct zram_work *zw = container_of(work, struct zram_work, work);
-	struct bio_vec bv;
-	struct bio bio;
+	struct zram *zram = zw->zram;
+	unsigned long entry = zw->entry;
+	struct bio *bio = zw->bio;
 
-	bio_init(&bio, zw->zram->bdev, &bv, 1, REQ_OP_READ);
-	bio.bi_iter.bi_sector = zw->entry * (PAGE_SIZE >> 9);
-	__bio_add_page(&bio, zw->page, PAGE_SIZE, 0);
-	zw->error = submit_bio_wait(&bio);
+	read_from_bdev_async(zram, &zw->bvec, entry, bio);
 }
 
 /*
@@ -757,39 +817,46 @@ static void zram_sync_read(struct work_struct *work)
  * chained IO with parent IO in same context, it's a deadlock. To avoid that,
  * use a worker thread context.
  */
-static int read_from_bdev_sync(struct zram *zram, struct page *page,
-				unsigned long entry)
+static int read_from_bdev_sync(struct zram *zram, struct bio_vec *bvec,
+				unsigned long entry, struct bio *bio)
 {
 	struct zram_work work;
 
-	work.page = page;
+	work.bvec = *bvec;
 	work.zram = zram;
 	work.entry = entry;
+	work.bio = bio;
 
 	INIT_WORK_ONSTACK(&work.work, zram_sync_read);
 	queue_work(system_unbound_wq, &work.work);
 	flush_work(&work.work);
 	destroy_work_on_stack(&work.work);
 
-	return work.error;
+	return 1;
 }
+#else
+static int read_from_bdev_sync(struct zram *zram, struct bio_vec *bvec,
+				unsigned long entry, struct bio *bio)
+{
+	WARN_ON(1);
+	return -EIO;
+}
+#endif
 
-static int read_from_bdev(struct zram *zram, struct page *page,
-			unsigned long entry, struct bio *parent)
+static int read_from_bdev(struct zram *zram, struct bio_vec *bvec,
+			unsigned long entry, struct bio *parent, bool sync)
 {
 	this_cpu_inc(zram->pcp_stats->items[NR_BD_READ]);
-	if (!parent) {
-		if (WARN_ON_ONCE(!IS_ENABLED(ZRAM_PARTIAL_IO)))
-			return -EIO;
-		return read_from_bdev_sync(zram, page, entry);
-	}
-	read_from_bdev_async(zram, page, entry, parent);
-	return 0;
+	trace_zram_read_from_bdev(zram, entry);
+	if (sync)
+		return read_from_bdev_sync(zram, bvec, entry, parent);
+	else
+		return read_from_bdev_async(zram, bvec, entry, parent);
 }
 #else
 static inline void reset_bdev(struct zram *zram) {};
-static int read_from_bdev(struct zram *zram, struct page *page,
-			unsigned long entry, struct bio *parent)
+static int read_from_bdev(struct zram *zram, struct bio_vec *bvec,
+			unsigned long entry, struct bio *parent, bool sync)
 {
 	return -EIO;
 }
@@ -989,17 +1056,18 @@ static ssize_t io_stat_show(struct device *dev,
 {
 	struct zram *zram = dev_to_zram(dev);
 	ssize_t ret;
-	unsigned long failed_reads, failed_writes, notify_free;
+	unsigned long failed_reads, failed_writes, invalid_io, notify_free;
 
 	down_read(&zram->init_lock);
 
 	failed_reads = zram_stat_read(zram, NR_FAILED_READ);
 	failed_writes = zram_stat_read(zram, NR_FAILED_WRITE);
+	invalid_io = zram_stat_read(zram, NR_INVALID_IO);
 	notify_free = zram_stat_read(zram, NR_NOTIFY_FREE);
 
 	ret = scnprintf(buf, PAGE_SIZE,
-			"%8lu %8lu %8lu\n",
-			failed_reads, failed_writes, notify_free);
+			"%8lu %8lu %8lu %8lu\n",
+			failed_reads, failed_writes, invalid_io, notify_free);
 	up_read(&zram->init_lock);
 
 	return ret;
@@ -1213,8 +1281,8 @@ out:
 		~(1UL << ZRAM_LOCK | 1UL << ZRAM_UNDER_WB));
 }
 
-static int zram_read_page(struct zram *zram, struct page *page, u32 index,
-			  struct bio *parent, bool access)
+static int __zram_bvec_read(struct zram *zram, struct page *page, u32 index,
+				struct bio *bio, bool partial_io, bool access)
 {
 	int ret;
 
@@ -1222,10 +1290,19 @@ static int zram_read_page(struct zram *zram, struct page *page, u32 index,
 	if (access)
 		zram_accessed(zram, index);
 	if (zram_test_flag(zram, index, ZRAM_WB)) {
+		struct bio_vec bvec;
+
 		zram_slot_unlock(zram, index);
-		return read_from_bdev(zram, page,
+		/* A null bio means rw_page was used, we must fallback to bio */
+		if (!bio)
+			return -EOPNOTSUPP;
+
+		bvec.bv_page = page;
+		bvec.bv_len = PAGE_SIZE;
+		bvec.bv_offset = 0;
+		return read_from_bdev(zram, &bvec,
 				zram_get_element(zram, index),
-				parent);
+				bio, partial_io);
 	}
 
 	ret = zcomp_decompress(zram->comp, index, page);
@@ -1238,36 +1315,44 @@ static int zram_read_page(struct zram *zram, struct page *page, u32 index,
 	return ret;
 }
 
-/*
- * Use a temporary buffer to decompress the page, as the decompressor
- * always expects a full page for the output.
- */
-static int zram_bvec_read_partial(struct zram *zram, struct bio_vec *bvec,
-				  u32 index, int offset, bool access)
-{
-	struct page *page = alloc_page(GFP_NOIO);
-	int ret;
-
-	if (!page)
-		return -ENOMEM;
-	ret = zram_read_page(zram, page, index, NULL, access);
-	if (likely(!ret))
-		memcpy_to_bvec(bvec, page_address(page) + offset);
-	__free_page(page);
-	return ret;
-}
-
 static int zram_bvec_read(struct zram *zram, struct bio_vec *bvec,
 			u32 index, int offset, struct bio *bio, bool access)
 {
+	int ret;
+	struct page *page;
+
+	page = bvec->bv_page;
+	if (is_partial_io(bvec)) {
+		/* Use a temporary buffer to decompress the page */
+		page = alloc_page(GFP_NOIO|__GFP_HIGHMEM);
+		if (!page)
+			return -ENOMEM;
+	}
+
+	ret = __zram_bvec_read(zram, page, index, bio, is_partial_io(bvec), access);
+	if (unlikely(ret))
+		goto out;
+
+	if (is_partial_io(bvec)) {
+		void *dst = kmap_atomic(bvec->bv_page);
+		void *src = kmap_atomic(page);
+
+		memcpy(dst + bvec->bv_offset, src + offset, bvec->bv_len);
+		kunmap_atomic(src);
+		kunmap_atomic(dst);
+	}
+out:
 	if (is_partial_io(bvec))
-		return zram_bvec_read_partial(zram, bvec, index, offset, access);
-	return zram_read_page(zram, bvec->bv_page, index, bio, access);
+		__free_page(page);
+
+	return ret;
 }
 
-static int zram_write_page(struct zram *zram, struct page *page, u32 index,
-			   struct bio *bio)
+static int __zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
+				u32 index, struct bio *bio)
 {
+	struct page *page = bvec->bv_page;
+
 	if (zram->limit_pages &&
 			zs_get_total_pages(zram->mem_pool) > zram->limit_pages)
 		return -ENOMEM;
@@ -1275,43 +1360,53 @@ static int zram_write_page(struct zram *zram, struct page *page, u32 index,
 	return zcomp_compress(zram->comp, index, page, bio);
 }
 
-
-/*
- * This is a partial IO. Read the full page before writing the changes.
- */
-static int zram_bvec_write_partial(struct zram *zram, struct bio_vec *bvec,
+static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 				u32 index, int offset, struct bio *bio)
 {
-	struct page *page = alloc_page(GFP_NOIO);
 	int ret;
+	struct page *page = NULL;
+	struct bio_vec vec;
 
-	if (!page)
-		return -ENOMEM;
+	vec = *bvec;
+	if (is_partial_io(bvec)) {
+		void *dst;
+		/*
+		 * This is a partial IO. We need to read the full page
+		 * before to write the changes.
+		 */
+		page = alloc_page(GFP_NOIO|__GFP_HIGHMEM);
+		if (!page)
+			return -ENOMEM;
 
-	ret = zram_read_page(zram, page, index, bio, true);
-	if (!ret) {
-		memcpy_from_bvec(page_address(page) + offset, bvec);
-		ret = zram_write_page(zram, page, index, bio);
+		ret = __zram_bvec_read(zram, page, index, bio, true, true);
+		if (ret)
+			goto out;
+
+		dst = kmap_atomic(page);
+		memcpy_from_bvec(dst + offset, bvec);
+		kunmap_atomic(dst);
+
+		vec.bv_page = page;
+		vec.bv_len = PAGE_SIZE;
+		vec.bv_offset = 0;
 	}
 
-	__free_page(page);
+	ret = __zram_bvec_write(zram, &vec, index, bio);
+out:
+	if (is_partial_io(bvec))
+		__free_page(page);
 	return ret;
 }
 
-static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
-			   u32 index, int offset, struct bio *bio)
-{
-	if (is_partial_io(bvec))
-		return zram_bvec_write_partial(zram, bvec, index, offset, bio);
-	return zram_write_page(zram, bvec->bv_page, index, bio);
-}
-
-static void zram_bio_discard(struct zram *zram, struct bio *bio)
+/*
+ * zram_bio_discard - handler on discard request
+ * @index: physical block index in PAGE_SIZE units
+ * @offset: byte offset within physical block
+ */
+static void zram_bio_discard(struct zram *zram, u32 index,
+			     int offset, struct bio *bio)
 {
 	size_t n = bio->bi_iter.bi_size;
-	u32 index = bio->bi_iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
-	u32 offset = (bio->bi_iter.bi_sector & (SECTORS_PER_PAGE - 1)) <<
-			SECTOR_SHIFT;
 
 	/*
 	 * zram manages data in physical block size units. Because logical block
@@ -1339,8 +1434,28 @@ static void zram_bio_discard(struct zram *zram, struct bio *bio)
 		index++;
 		n -= PAGE_SIZE;
 	}
+}
 
-	bio_endio(bio);
+/*
+ * Returns errno if it has some problem. Otherwise return 0 or 1.
+ * Returns 0 if IO request was done synchronously
+ * Returns 1 if IO request was successfully submitted.
+ */
+static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
+			int offset, enum req_op op, struct bio *bio)
+{
+	int ret;
+
+	if (!op_is_write(op)) {
+		this_cpu_inc(zram->pcp_stats->items[NR_READ]);
+		ret = zram_bvec_read(zram, bvec, index, offset, bio, true);
+		flush_dcache_page(bvec->bv_page);
+	} else {
+		this_cpu_inc(zram->pcp_stats->items[NR_WRITE]);
+		ret = zram_bvec_write(zram, bvec, index, offset, bio);
+	}
+
+	return ret;
 }
 
 void zram_bio_endio(struct zram *zram, struct bio *bio, bool is_write, int err)
@@ -1371,65 +1486,53 @@ void zram_page_write_endio(struct zram *zram, struct page *page, int err)
 	page_endio(page, true, err);
 }
 
-static void zram_bio_read(struct zram *zram, struct bio *bio)
+static void __zram_make_request(struct zram *zram, struct bio *bio)
 {
+	int offset;
+	u32 index;
+	struct bio_vec bvec;
 	struct bvec_iter iter;
-	struct bio_vec bv;
 	unsigned long start_time;
 	int ret = 0;
 	const int op = bio_op(bio);
 
-	start_time = bio_start_io_acct(bio);
-	bio_for_each_segment(bv, bio, iter) {
-		u32 index = iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
-		u32 offset = (iter.bi_sector & (SECTORS_PER_PAGE - 1)) <<
-				SECTOR_SHIFT;
+	index = bio->bi_iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
+	offset = (bio->bi_iter.bi_sector &
+		  (SECTORS_PER_PAGE - 1)) << SECTOR_SHIFT;
 
-		ret = zram_bvec_read(zram, &bv, index, offset, bio, true);
-		if (ret < 0) {
-			this_cpu_inc(zram->pcp_stats->items[NR_FAILED_READ]);
-			bio->bi_status = BLK_STS_IOERR;
-			break;
-		}
-		flush_dcache_page(bv.bv_page);
+	switch (op) {
+	case REQ_OP_DISCARD:
+	case REQ_OP_WRITE_ZEROES:
+		zram_bio_discard(zram, index, offset, bio);
+		bio_endio(bio);
+		return;
+	default:
+		break;
+	}
+
+	start_time = bio_start_io_acct(bio);
+	bio_for_each_segment(bvec, bio, iter) {
+		struct bio_vec bv = bvec;
+		unsigned int unwritten = bvec.bv_len;
+
+		do {
+			bv.bv_len = min_t(unsigned int, PAGE_SIZE - offset,
+							unwritten);
+			ret = zram_bvec_rw(zram, &bv, index, offset, op, bio);
+			if (ret < 0) {
+				bio->bi_status = BLK_STS_IOERR;
+				break;
+			}
+
+			bv.bv_offset += bv.bv_len;
+			unwritten -= bv.bv_len;
+
+			update_position(&index, &offset, &bv);
+		} while (unwritten);
 	}
 	bio_end_io_acct(bio, start_time);
 	zram_bio_endio(zram, bio, op_is_write(op), ret);
 }
-
-static void zram_bio_write(struct zram *zram, struct bio *bio)
-{
-	struct bvec_iter iter;
-	struct bio_vec bv;
-	unsigned long start_time;
-	int ret = 0;
-	const int op = bio_op(bio);
-
-	start_time = bio_start_io_acct(bio);
-	bio_for_each_segment(bv, bio, iter) {
-		u32 index = iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
-		u32 offset = (iter.bi_sector & (SECTORS_PER_PAGE - 1)) <<
-				SECTOR_SHIFT;
-
-		ret = zram_bvec_write(zram, &bv, index, offset, bio);
-		if (ret < 0) {
-			this_cpu_inc(zram->pcp_stats->items[NR_WRITE]);
-			bio->bi_status = BLK_STS_IOERR;
-			break;
-		}
-	}
-	bio_end_io_acct(bio, start_time);
-	zram_bio_endio(zram, bio, op_is_write(op), ret);
-}
-
-#if IS_ENABLED(CONFIG_KCOMPRESSD)
-static void zram_bio_write_callback(void *mem, struct bio *bio)
-{
-	struct zram *zram = (struct zram *)mem;
-
-	zram_bio_write(zram, bio);
-}
-#endif
 
 /*
  * Handler function for all zram I/O requests.
@@ -1438,25 +1541,14 @@ static void zram_submit_bio(struct bio *bio)
 {
 	struct zram *zram = bio->bi_bdev->bd_disk->private_data;
 
-	switch (bio_op(bio)) {
-	case REQ_OP_READ:
-		zram_bio_read(zram, bio);
-		break;
-	case REQ_OP_WRITE:
-#if IS_ENABLED(CONFIG_KCOMPRESSD)
-		if (kcompressd_enabled() && !schedule_bio_write(zram, bio, zram_bio_write_callback))
-			break;
-#endif
-		zram_bio_write(zram, bio);
-		break;
-	case REQ_OP_DISCARD:
-	case REQ_OP_WRITE_ZEROES:
-		zram_bio_discard(zram, bio);
-		break;
-	default:
-		WARN_ON_ONCE(1);
-		bio_endio(bio);
+	if (!valid_io_request(zram, bio->bi_iter.bi_sector,
+					bio->bi_iter.bi_size)) {
+		this_cpu_inc(zram->pcp_stats->items[NR_INVALID_IO]);
+		bio_io_error(bio);
+		return;
 	}
+
+	__zram_make_request(zram, bio);
 }
 
 static void zram_slot_free_notify(struct block_device *bdev,
@@ -1474,6 +1566,61 @@ static void zram_slot_free_notify(struct block_device *bdev,
 
 	zram_free_page(zram, index);
 	zram_slot_unlock(zram, index);
+}
+
+static int zram_rw_page(struct block_device *bdev, sector_t sector,
+		       struct page *page, enum req_op op)
+{
+	int offset, ret;
+	u32 index;
+	struct zram *zram;
+	struct bio_vec bv;
+	unsigned long start_time;
+
+	if (PageTransHuge(page))
+		return -ENOTSUPP;
+	zram = bdev->bd_disk->private_data;
+
+	if (!valid_io_request(zram, sector, PAGE_SIZE)) {
+		this_cpu_inc(zram->pcp_stats->items[NR_INVALID_IO]);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	index = sector >> SECTORS_PER_PAGE_SHIFT;
+	offset = (sector & (SECTORS_PER_PAGE - 1)) << SECTOR_SHIFT;
+
+	bv.bv_page = page;
+	bv.bv_len = PAGE_SIZE;
+	bv.bv_offset = 0;
+
+	start_time = bdev_start_io_acct(bdev->bd_disk->part0,
+			SECTORS_PER_PAGE, op, jiffies);
+	ret = zram_bvec_rw(zram, &bv, index, offset, op, NULL);
+	bdev_end_io_acct(bdev->bd_disk->part0, op, start_time);
+out:
+	/*
+	 * If I/O fails, just return error(ie, non-zero) without
+	 * calling page_endio.
+	 * It causes resubmit the I/O with bio request by upper functions
+	 * of rw_page(e.g., swap_readpage, __swap_writepage) and
+	 * bio->bi_end_io does things to handle the error
+	 * (e.g., SetPageError, set_page_dirty and extra works).
+	 */
+	if (unlikely(ret < 0))
+		return ret;
+
+	switch (ret) {
+	case 0:
+		page_endio(page, op_is_write(op), 0);
+		break;
+	case 1:
+		ret = 0;
+		break;
+	default:
+		WARN_ON(1);
+	}
+	return ret;
 }
 
 static void zram_reset_device(struct zram *zram)
@@ -1607,6 +1754,7 @@ static const struct block_device_operations zram_devops = {
 	.open = zram_open,
 	.submit_bio = zram_submit_bio,
 	.swap_slot_free_notify = zram_slot_free_notify,
+	.rw_page = zram_rw_page,
 	.owner = THIS_MODULE
 };
 
@@ -1703,10 +1851,6 @@ static int zram_add(void)
 	set_capacity(zram->disk, 0);
 	/* zram devices sort of resembles non-rotational disks */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, zram->disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_READ_SYNCHRONOUS, zram->disk->queue);
-#if !IS_ENABLED(CONFIG_KCOMPRESSD)
-	blk_queue_flag_set(QUEUE_FLAG_WRITE_SYNCHRONOUS, zram->disk->queue);
-#endif
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, zram->disk->queue);
 
 	/*

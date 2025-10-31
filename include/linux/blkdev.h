@@ -584,17 +584,15 @@ struct request_queue {
 #define QUEUE_FLAG_IO_STAT	7	/* do disk/partitions IO accounting */
 #define QUEUE_FLAG_NOXMERGES	9	/* No extended merges */
 #define QUEUE_FLAG_ADD_RANDOM	10	/* Contributes to random pool */
-#define QUEUE_FLAG_READ_SYNCHRONOUS 11	/* read operations always completes in submit context */
-#define QUEUE_FLAG_WRITE_SYNCHRONOUS 12 /* write operations always completes in submit context */
-#define QUEUE_FLAG_SAME_FORCE	13	/* force complete on same CPU */
-#define QUEUE_FLAG_HW_WC	14	/* Write back caching supported */
-#define QUEUE_FLAG_INIT_DONE	15	/* queue is initialized */
-#define QUEUE_FLAG_STABLE_WRITES 16	/* don't modify blks until WB is done */
-#define QUEUE_FLAG_POLL		17	/* IO polling enabled if set */
-#define QUEUE_FLAG_WC		18	/* Write back caching */
-#define QUEUE_FLAG_FUA		19	/* device supports FUA writes */
-#define QUEUE_FLAG_DAX		20	/* device supports DAX */
-#define QUEUE_FLAG_STATS	21	/* track IO start and completion times */
+#define QUEUE_FLAG_SAME_FORCE	12	/* force complete on same CPU */
+#define QUEUE_FLAG_HW_WC	13	/* Write back caching supported */
+#define QUEUE_FLAG_INIT_DONE	14	/* queue is initialized */
+#define QUEUE_FLAG_STABLE_WRITES 15	/* don't modify blks until WB is done */
+#define QUEUE_FLAG_POLL		16	/* IO polling enabled if set */
+#define QUEUE_FLAG_WC		17	/* Write back caching */
+#define QUEUE_FLAG_FUA		18	/* device supports FUA writes */
+#define QUEUE_FLAG_DAX		19	/* device supports DAX */
+#define QUEUE_FLAG_STATS	20	/* track IO start and completion times */
 #define QUEUE_FLAG_REGISTERED	22	/* queue has been registered to a disk */
 #define QUEUE_FLAG_QUIESCED	24	/* queue has been quiesced */
 #define QUEUE_FLAG_PCI_P2PDMA	25	/* device supports PCI p2p requests */
@@ -1287,18 +1285,6 @@ static inline bool bdev_nonrot(struct block_device *bdev)
 	return blk_queue_nonrot(bdev_get_queue(bdev));
 }
 
-static inline bool bdev_read_synchronous(struct block_device *bdev)
-{
-	return test_bit(QUEUE_FLAG_READ_SYNCHRONOUS,
-			&bdev_get_queue(bdev)->queue_flags);
-}
-
-static inline bool bdev_write_synchronous(struct block_device *bdev)
-{
-	return test_bit(QUEUE_FLAG_WRITE_SYNCHRONOUS,
-			&bdev_get_queue(bdev)->queue_flags);
-}
-
 static inline bool bdev_stable_writes(struct block_device *bdev)
 {
 	return test_bit(QUEUE_FLAG_STABLE_WRITES,
@@ -1436,6 +1422,7 @@ struct block_device_operations {
 			unsigned int flags);
 	int (*open) (struct block_device *, fmode_t);
 	void (*release) (struct gendisk *, fmode_t);
+	int (*rw_page)(struct block_device *, sector_t, struct page *, enum req_op);
 	int (*ioctl) (struct block_device *, fmode_t, unsigned, unsigned long);
 	int (*compat_ioctl) (struct block_device *, fmode_t, unsigned, unsigned long);
 	unsigned int (*check_events) (struct gendisk *disk,
@@ -1472,6 +1459,10 @@ extern int blkdev_compat_ptr_ioctl(struct block_device *, fmode_t,
 #else
 #define blkdev_compat_ptr_ioctl NULL
 #endif
+
+extern int bdev_read_page(struct block_device *, sector_t, struct page *);
+extern int bdev_write_page(struct block_device *, sector_t, struct page *,
+						struct writeback_control *);
 
 static inline void blk_wake_io_task(struct task_struct *waiter)
 {
