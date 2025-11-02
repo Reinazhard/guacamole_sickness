@@ -252,7 +252,7 @@
 			dm-type = <DM_CPU_CL0>;
 
 			/* max-freq is set in gs101-a0.dts and gs101-b0.dts */
-			min-freq = <574000>;
+			min-freq = <300000>;
 			resume-freq = <1197000>;
 
 			#cooling-cells = <2>; /* min followed by max */
@@ -272,7 +272,7 @@
 			dm-type = <DM_CPU_CL1>;
 
 			max-freq = <2253000>;
-			min-freq = <696000>;
+			min-freq = <400000>;
 			resume-freq = <1491000>;
 
 			#cooling-cells = <2>; /* min followed by max */
@@ -292,7 +292,7 @@
 			dm-type = <DM_CPU_CL2>;
 
 			/* max-freq is set in gs101-a0.dts and gs101-b0.dts */
-			min-freq = <851000>;
+			min-freq = <500000>;
 			resume-freq = <1826000>;
 
 			#cooling-cells = <2>; /* min followed by max */
@@ -341,7 +341,8 @@
 				  910000	574000
 				  799000	574000
 				  696000	574000
-				  553000	574000 >;
+				  553000	574000
+				  400000	300000 >;
 		};
 		big_ank_perf: dm-table@6 {
 			const-type = <CONSTRAINT_MIN>;
@@ -366,7 +367,8 @@
 				  1277000	738000
 				  1106000	738000
 				  984000	574000
-				  851000	574000 >;
+				  851000	574000
+				  500000	300000 >;
 		};
 	};
 };
