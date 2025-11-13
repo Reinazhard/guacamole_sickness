@@ -207,7 +207,7 @@ static int selinux_lsm_notifier_avc_callback(u32 event)
  */
 static void cred_init_security(void)
 {
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 
 	/* NOTE: the lsm framework zeros out the buffer on allocation */
 
@@ -220,7 +220,7 @@ static void cred_init_security(void)
  */
 static inline u32 cred_sid(const struct cred *cred)
 {
-	const struct task_security_struct *tsec;
+	const struct cred_security_struct *tsec;
 
 	tsec = selinux_cred(cred);
 	return tsec->sid;
@@ -434,7 +434,7 @@ static int may_context_mount_sb_relabel(u32 sid,
 			struct superblock_security_struct *sbsec,
 			const struct cred *cred)
 {
-	const struct task_security_struct *tsec = selinux_cred(cred);
+	const struct cred_security_struct *tsec = selinux_cred(cred);
 	int rc;
 
 	rc = avc_has_perm(tsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
@@ -451,7 +451,7 @@ static int may_context_mount_inode_relabel(u32 sid,
 			struct superblock_security_struct *sbsec,
 			const struct cred *cred)
 {
-	const struct task_security_struct *tsec = selinux_cred(cred);
+	const struct cred_security_struct *tsec = selinux_cred(cred);
 	int rc;
 	rc = avc_has_perm(tsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
 			  FILESYSTEM__RELABELFROM, NULL);
@@ -1793,7 +1793,7 @@ out:
  * Determine the label for an inode that might be unioned.
  */
 static int
-selinux_determine_inode_label(const struct task_security_struct *tsec,
+selinux_determine_inode_label(const struct cred_security_struct *tsec,
 				 struct inode *dir,
 				 const struct qstr *name, u16 tclass,
 				 u32 *_new_isid)
@@ -1822,7 +1822,7 @@ static int may_create(struct inode *dir,
 		      struct dentry *dentry,
 		      u16 tclass)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	struct inode_security_struct *dsec;
 	struct superblock_security_struct *sbsec;
 	u32 sid, newsid;
@@ -2263,8 +2263,8 @@ static u32 ptrace_parent_sid(void)
 }
 
 static int check_nnp_nosuid(const struct linux_binprm *bprm,
-			    const struct task_security_struct *old_tsec,
-			    const struct task_security_struct *new_tsec)
+			    const struct cred_security_struct *old_tsec,
+			    const struct cred_security_struct *new_tsec)
 {
 	int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
 	int nosuid = !mnt_may_suid(bprm->file->f_path.mnt);
@@ -2317,8 +2317,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 
 static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 {
-	const struct task_security_struct *old_tsec;
-	struct task_security_struct *new_tsec;
+	const struct cred_security_struct *old_tsec;
+	struct cred_security_struct *new_tsec;
 	struct inode_security_struct *isec;
 	struct common_audit_data ad;
 	struct inode *inode = file_inode(bprm->file);
@@ -2495,7 +2495,7 @@ static inline void flush_unauthorized_files(const struct cred *cred,
  */
 static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
 {
-	struct task_security_struct *new_tsec;
+	struct cred_security_struct *new_tsec;
 	struct rlimit *rlim, *initrlim;
 	int rc, i;
 
@@ -2541,7 +2541,7 @@ static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
  */
 static void selinux_bprm_committed_creds(struct linux_binprm *bprm)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	u32 osid, sid;
 	int rc;
 
@@ -2923,7 +2923,7 @@ static int selinux_dentry_create_files_as(struct dentry *dentry, int mode,
 {
 	u32 newsid;
 	int rc;
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 
 	rc = selinux_determine_inode_label(selinux_cred(old),
 					   d_inode(dentry->d_parent), name,
@@ -2942,7 +2942,7 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 				       const char **name,
 				       void **value, size_t *len)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	struct superblock_security_struct *sbsec;
 	u32 newsid, clen;
 	u16 newsclass;
@@ -3128,7 +3128,7 @@ static noinline int audit_inode_permission(struct inode *inode,
  * Clear the task's AVD cache in @tsec and reset it to the current policy's
  * and task's info.
  */
-static inline void task_avdcache_reset(struct task_security_struct *tsec)
+static inline void task_avdcache_reset(struct cred_security_struct *tsec)
 {
 	memset(&tsec->avdcache.dir, 0, sizeof(tsec->avdcache.dir));
 	tsec->avdcache.sid = tsec->sid;
@@ -3145,7 +3145,7 @@ static inline void task_avdcache_reset(struct task_security_struct *tsec)
  * Search @tsec for a AVD cache entry that matches @isec and return it to the
  * caller via @avdc.  Returns 0 if a match is found, negative values otherwise.
  */
-static inline int task_avdcache_search(struct task_security_struct *tsec,
+static inline int task_avdcache_search(struct cred_security_struct *tsec,
 				       struct inode_security_struct *isec,
 				       struct avdc_entry **avdc)
 {
@@ -3185,7 +3185,7 @@ static inline int task_avdcache_search(struct task_security_struct *tsec,
  * Update the AVD cache in @tsec with the @avdc and @audited info associated
  * with @isec.
  */
-static inline void task_avdcache_update(struct task_security_struct *tsec,
+static inline void task_avdcache_update(struct cred_security_struct *tsec,
 					struct inode_security_struct *isec,
 					struct av_decision *avd,
 					u32 audited)
@@ -3219,7 +3219,7 @@ static int selinux_inode_permission(struct inode *inode, int requested)
 {
 	int mask;
 	u32 perms;
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 	struct inode_security_struct *isec;
 	struct avdc_entry *avdc;
 	int rc, rc2;
@@ -3304,7 +3304,7 @@ static int selinux_inode_setattr(struct dentry *dentry, struct iattr *iattr)
 
 static int selinux_inode_getattr(const struct path *path)
 {
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 
 	tsec = selinux_cred(current_cred());
 
@@ -3633,7 +3633,7 @@ static void selinux_inode_getsecid(struct inode *inode, u32 *secid)
 static int selinux_inode_copy_up(struct dentry *src, struct cred **new)
 {
 	u32 sid;
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 	struct cred *new_creds = *new;
 
 	if (new_creds == NULL) {
@@ -3671,7 +3671,7 @@ static int selinux_inode_copy_up_xattr(const char *name)
 static int selinux_kernfs_init_security(struct kernfs_node *kn_dir,
 					struct kernfs_node *kn)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	u32 parent_sid, newsid, clen;
 	int rc;
 	char *context;
@@ -4125,8 +4125,8 @@ static int selinux_task_alloc(struct task_struct *task,
 static int selinux_cred_prepare(struct cred *new, const struct cred *old,
 				gfp_t gfp)
 {
-	const struct task_security_struct *old_tsec = selinux_cred(old);
-	struct task_security_struct *tsec = selinux_cred(new);
+	const struct cred_security_struct *old_tsec = selinux_cred(old);
+	struct cred_security_struct *tsec = selinux_cred(new);
 
 	*tsec = *old_tsec;
 	return 0;
@@ -4137,8 +4137,8 @@ static int selinux_cred_prepare(struct cred *new, const struct cred *old,
  */
 static void selinux_cred_transfer(struct cred *new, const struct cred *old)
 {
-	const struct task_security_struct *old_tsec = selinux_cred(old);
-	struct task_security_struct *tsec = selinux_cred(new);
+	const struct cred_security_struct *old_tsec = selinux_cred(old);
+	struct cred_security_struct *tsec = selinux_cred(new);
 
 	*tsec = *old_tsec;
 }
@@ -4154,7 +4154,7 @@ static void selinux_cred_getsecid(const struct cred *c, u32 *secid)
  */
 static int selinux_kernel_act_as(struct cred *new, u32 secid)
 {
-	struct task_security_struct *tsec = selinux_cred(new);
+	struct cred_security_struct *tsec = selinux_cred(new);
 	u32 sid = current_sid();
 	int ret;
 
@@ -4178,7 +4178,7 @@ static int selinux_kernel_act_as(struct cred *new, u32 secid)
 static int selinux_kernel_create_files_as(struct cred *new, struct inode *inode)
 {
 	struct inode_security_struct *isec = inode_security(inode);
-	struct task_security_struct *tsec = selinux_cred(new);
+	struct cred_security_struct *tsec = selinux_cred(new);
 	u32 sid = current_sid();
 	int ret;
 
@@ -4692,7 +4692,7 @@ static int selinux_conn_sid(u32 sk_sid, u32 skb_sid, u32 *conn_sid)
 
 /* socket security operations */
 
-static int socket_sockcreate_sid(const struct task_security_struct *tsec,
+static int socket_sockcreate_sid(const struct cred_security_struct *tsec,
 				 u16 secclass, u32 *socksid)
 {
 	if (tsec->sockcreate_sid > SECSID_NULL) {
@@ -4737,7 +4737,7 @@ static int sock_has_perm(struct sock *sk, u32 perms)
 static int selinux_socket_create(int family, int type,
 				 int protocol, int kern)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	u32 newsid;
 	u16 secclass;
 	int rc;
@@ -4756,7 +4756,7 @@ static int selinux_socket_create(int family, int type,
 static int selinux_socket_post_create(struct socket *sock, int family,
 				      int type, int protocol, int kern)
 {
-	const struct task_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *tsec = selinux_cred(current_cred());
 	struct inode_security_struct *isec = inode_security_novalidate(SOCK_INODE(sock));
 	struct sk_security_struct *sksec;
 	u16 sclass = socket_type_to_security_class(family, type, protocol);
@@ -6450,7 +6450,7 @@ static void selinux_d_instantiate(struct dentry *dentry, struct inode *inode)
 static int selinux_getprocattr(struct task_struct *p,
 			       const char *name, char **value)
 {
-	const struct task_security_struct *__tsec;
+	const struct cred_security_struct *tsec;
 	u32 sid;
 	int error;
 	unsigned len;
@@ -6498,7 +6498,7 @@ bad:
 
 static int selinux_setprocattr(const char *name, void *value, size_t size)
 {
-	struct task_security_struct *tsec;
+	struct cred_security_struct *tsec;
 	struct cred *new;
 	u32 mysid = current_sid(), sid = 0, ptsid;
 	int error;
@@ -6697,7 +6697,7 @@ static int selinux_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
 static int selinux_key_alloc(struct key *k, const struct cred *cred,
 			     unsigned long flags)
 {
-	const struct task_security_struct *tsec;
+	const struct cred_security_struct *tsec;
 	struct key_security_struct *ksec;
 
 	ksec = kzalloc(sizeof(struct key_security_struct), GFP_KERNEL);
@@ -6992,7 +6992,7 @@ static void selinux_bpf_prog_free(struct bpf_prog_aux *aux)
 #endif
 
 struct lsm_blob_sizes selinux_blob_sizes __ro_after_init = {
-	.lbs_cred = sizeof(struct task_security_struct),
+	.lbs_cred = sizeof(struct cred_security_struct),
 	.lbs_file = sizeof(struct file_security_struct),
 	.lbs_inode = sizeof(struct inode_security_struct),
 	.lbs_ipc = sizeof(struct ipc_security_struct),
