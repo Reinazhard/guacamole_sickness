@@ -207,12 +207,12 @@ static int selinux_lsm_notifier_avc_callback(u32 event)
  */
 static void cred_init_security(void)
 {
-	struct cred_security_struct *tsec;
+	struct cred_security_struct *crsec;
 
 	/* NOTE: the lsm framework zeros out the buffer on allocation */
 
-	tsec = selinux_cred(unrcu_pointer(current->real_cred));
-	tsec->osid = tsec->sid = SECINITSID_KERNEL;
+	crsec = selinux_cred(unrcu_pointer(current->real_cred));
+	crsec->osid = crsec->sid = SECINITSID_KERNEL;
 }
 
 /*
@@ -220,10 +220,10 @@ static void cred_init_security(void)
  */
 static inline u32 cred_sid(const struct cred *cred)
 {
-	const struct cred_security_struct *tsec;
+	const struct cred_security_struct *crsec;
 
-	tsec = selinux_cred(cred);
-	return tsec->sid;
+	crsec = selinux_cred(cred);
+	return crsec->sid;
 }
 
 static void __ad_net_init(struct common_audit_data *ad,
@@ -434,15 +434,15 @@ static int may_context_mount_sb_relabel(u32 sid,
 			struct superblock_security_struct *sbsec,
 			const struct cred *cred)
 {
-	const struct cred_security_struct *tsec = selinux_cred(cred);
+	const struct cred_security_struct *crsec = selinux_cred(cred);
 	int rc;
 
-	rc = avc_has_perm(tsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
+	rc = avc_has_perm(crsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
 			  FILESYSTEM__RELABELFROM, NULL);
 	if (rc)
 		return rc;
 
-	rc = avc_has_perm(tsec->sid, sid, SECCLASS_FILESYSTEM,
+	rc = avc_has_perm(crsec->sid, sid, SECCLASS_FILESYSTEM,
 			  FILESYSTEM__RELABELTO, NULL);
 	return rc;
 }
@@ -451,9 +451,9 @@ static int may_context_mount_inode_relabel(u32 sid,
 			struct superblock_security_struct *sbsec,
 			const struct cred *cred)
 {
-	const struct cred_security_struct *tsec = selinux_cred(cred);
+	const struct cred_security_struct *crsec = selinux_cred(cred);
 	int rc;
-	rc = avc_has_perm(tsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
+	rc = avc_has_perm(crsec->sid, sbsec->sid, SECCLASS_FILESYSTEM,
 			  FILESYSTEM__RELABELFROM, NULL);
 	if (rc)
 		return rc;
@@ -1793,7 +1793,7 @@ out:
  * Determine the label for an inode that might be unioned.
  */
 static int
-selinux_determine_inode_label(const struct cred_security_struct *tsec,
+selinux_determine_inode_label(const struct cred_security_struct *crsec,
 				 struct inode *dir,
 				 const struct qstr *name, u16 tclass,
 				 u32 *_new_isid)
@@ -1805,11 +1805,11 @@ selinux_determine_inode_label(const struct cred_security_struct *tsec,
 	    (sbsec->behavior == SECURITY_FS_USE_MNTPOINT)) {
 		*_new_isid = sbsec->mntpoint_sid;
 	} else if ((sbsec->flags & SBLABEL_MNT) &&
-		   tsec->create_sid) {
-		*_new_isid = tsec->create_sid;
+		   crsec->create_sid) {
+		*_new_isid = crsec->create_sid;
 	} else {
 		const struct inode_security_struct *dsec = inode_security(dir);
-		return security_transition_sid(tsec->sid,
+		return security_transition_sid(crsec->sid,
 					       dsec->sid, tclass,
 					       name, _new_isid);
 	}
@@ -1822,7 +1822,7 @@ static int may_create(struct inode *dir,
 		      struct dentry *dentry,
 		      u16 tclass)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	struct inode_security_struct *dsec;
 	struct superblock_security_struct *sbsec;
 	u32 sid, newsid;
@@ -1832,7 +1832,7 @@ static int may_create(struct inode *dir,
 	dsec = inode_security(dir);
 	sbsec = selinux_superblock(dir->i_sb);
 
-	sid = tsec->sid;
+	sid = crsec->sid;
 
 	ad.type = LSM_AUDIT_DATA_DENTRY;
 	ad.u.dentry = dentry;
@@ -1843,7 +1843,7 @@ static int may_create(struct inode *dir,
 	if (rc)
 		return rc;
 
-	rc = selinux_determine_inode_label(tsec, dir, &dentry->d_name, tclass,
+	rc = selinux_determine_inode_label(crsec, dir, &dentry->d_name, tclass,
 					   &newsid);
 	if (rc)
 		return rc;
@@ -2263,8 +2263,8 @@ static u32 ptrace_parent_sid(void)
 }
 
 static int check_nnp_nosuid(const struct linux_binprm *bprm,
-			    const struct cred_security_struct *old_tsec,
-			    const struct cred_security_struct *new_tsec)
+			    const struct cred_security_struct *old_crsec,
+			    const struct cred_security_struct *new_crsec)
 {
 	int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
 	int nosuid = !mnt_may_suid(bprm->file->f_path.mnt);
@@ -2274,7 +2274,7 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 	if (!nnp && !nosuid)
 		return 0; /* neither NNP nor nosuid */
 
-	if (new_tsec->sid == old_tsec->sid)
+	if (new_crsec->sid == old_crsec->sid)
 		return 0; /* No change in credentials */
 
 	/*
@@ -2289,7 +2289,7 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 			av |= PROCESS2__NNP_TRANSITION;
 		if (nosuid)
 			av |= PROCESS2__NOSUID_TRANSITION;
-		rc = avc_has_perm(old_tsec->sid, new_tsec->sid,
+		rc = avc_has_perm(old_crsec->sid, new_crsec->sid,
 				  SECCLASS_PROCESS2, av, NULL);
 		if (!rc)
 			return 0;
@@ -2300,8 +2300,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 	 * i.e. SIDs that are guaranteed to only be allowed a subset
 	 * of the permissions of the current SID.
 	 */
-	rc = security_bounded_transition(old_tsec->sid,
-					 new_tsec->sid);
+	rc = security_bounded_transition(old_crsec->sid,
+					 new_crsec->sid);
 	if (!rc)
 		return 0;
 
@@ -2317,8 +2317,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 
 static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 {
-	const struct cred_security_struct *old_tsec;
-	struct cred_security_struct *new_tsec;
+	const struct cred_security_struct *old_crsec;
+	struct cred_security_struct *new_crsec;
 	struct inode_security_struct *isec;
 	struct common_audit_data ad;
 	struct inode *inode = file_inode(bprm->file);
@@ -2327,18 +2327,18 @@ static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 	/* SELinux context only depends on initial program or script and not
 	 * the script interpreter */
 
-	old_tsec = selinux_cred(current_cred());
-	new_tsec = selinux_cred(bprm->cred);
+	old_crsec = selinux_cred(current_cred());
+	new_crsec = selinux_cred(bprm->cred);
 	isec = inode_security(inode);
 
 	/* Default to the current task SID. */
-	new_tsec->sid = old_tsec->sid;
-	new_tsec->osid = old_tsec->sid;
+	new_crsec->sid = old_crsec->sid;
+	new_crsec->osid = old_crsec->sid;
 
 	/* Reset fs, key, and sock SIDs on execve. */
-	new_tsec->create_sid = 0;
-	new_tsec->keycreate_sid = 0;
-	new_tsec->sockcreate_sid = 0;
+	new_crsec->create_sid = 0;
+	new_crsec->keycreate_sid = 0;
+	new_crsec->sockcreate_sid = 0;
 
 	/*
 	 * Before policy is loaded, label any task outside kernel space
@@ -2347,26 +2347,26 @@ static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 	 * (if the policy chooses to set SECINITSID_INIT != SECINITSID_KERNEL).
 	 */
 	if (!selinux_initialized()) {
-		new_tsec->sid = SECINITSID_INIT;
+		new_crsec->sid = SECINITSID_INIT;
 		/* also clear the exec_sid just in case */
-		new_tsec->exec_sid = 0;
+		new_crsec->exec_sid = 0;
 		return 0;
 	}
 
-	if (old_tsec->exec_sid) {
-		new_tsec->sid = old_tsec->exec_sid;
+	if (old_crsec->exec_sid) {
+		new_crsec->sid = old_crsec->exec_sid;
 		/* Reset exec SID on execve. */
-		new_tsec->exec_sid = 0;
+		new_crsec->exec_sid = 0;
 
 		/* Fail on NNP or nosuid if not an allowed transition. */
-		rc = check_nnp_nosuid(bprm, old_tsec, new_tsec);
+		rc = check_nnp_nosuid(bprm, old_crsec, new_crsec);
 		if (rc)
 			return rc;
 	} else {
 		/* Check for a default transition on this program. */
-		rc = security_transition_sid(old_tsec->sid,
+		rc = security_transition_sid(old_crsec->sid,
 					     isec->sid, SECCLASS_PROCESS, NULL,
-					     &new_tsec->sid);
+					     &new_crsec->sid);
 		if (rc)
 			return rc;
 
@@ -2374,34 +2374,34 @@ static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 		 * Fallback to old SID on NNP or nosuid if not an allowed
 		 * transition.
 		 */
-		rc = check_nnp_nosuid(bprm, old_tsec, new_tsec);
+		rc = check_nnp_nosuid(bprm, old_crsec, new_crsec);
 		if (rc)
-			new_tsec->sid = old_tsec->sid;
+			new_crsec->sid = old_crsec->sid;
 	}
 
 	ad.type = LSM_AUDIT_DATA_FILE;
 	ad.u.file = bprm->file;
 
-	if (new_tsec->sid == old_tsec->sid) {
-		rc = avc_has_perm(old_tsec->sid, isec->sid,
+	if (new_crsec->sid == old_crsec->sid) {
+		rc = avc_has_perm(old_crsec->sid, isec->sid,
 				  SECCLASS_FILE, FILE__EXECUTE_NO_TRANS, &ad);
 		if (rc)
 			return rc;
 	} else {
 		/* Check permissions for the transition. */
-		rc = avc_has_perm(old_tsec->sid, new_tsec->sid,
+		rc = avc_has_perm(old_crsec->sid, new_crsec->sid,
 				  SECCLASS_PROCESS, PROCESS__TRANSITION, &ad);
 		if (rc)
 			return rc;
 
-		rc = avc_has_perm(new_tsec->sid, isec->sid,
+		rc = avc_has_perm(new_crsec->sid, isec->sid,
 				  SECCLASS_FILE, FILE__ENTRYPOINT, &ad);
 		if (rc)
 			return rc;
 
 		/* Check for shared state */
 		if (bprm->unsafe & LSM_UNSAFE_SHARE) {
-			rc = avc_has_perm(old_tsec->sid, new_tsec->sid,
+			rc = avc_has_perm(old_crsec->sid, new_crsec->sid,
 					  SECCLASS_PROCESS, PROCESS__SHARE,
 					  NULL);
 			if (rc)
@@ -2413,7 +2413,7 @@ static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 		if (bprm->unsafe & LSM_UNSAFE_PTRACE) {
 			u32 ptsid = ptrace_parent_sid();
 			if (ptsid != 0) {
-				rc = avc_has_perm(ptsid, new_tsec->sid,
+				rc = avc_has_perm(ptsid, new_crsec->sid,
 						  SECCLASS_PROCESS,
 						  PROCESS__PTRACE, NULL);
 				if (rc)
@@ -2427,7 +2427,7 @@ static int selinux_bprm_creds_for_exec(struct linux_binprm *bprm)
 		/* Enable secure mode for SIDs transitions unless
 		   the noatsecure permission is granted between
 		   the two SIDs, i.e. ahp returns 0. */
-		rc = avc_has_perm(old_tsec->sid, new_tsec->sid,
+		rc = avc_has_perm(old_crsec->sid, new_crsec->sid,
 				  SECCLASS_PROCESS, PROCESS__NOATSECURE,
 				  NULL);
 		bprm->secureexec |= !!rc;
@@ -2495,12 +2495,12 @@ static inline void flush_unauthorized_files(const struct cred *cred,
  */
 static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
 {
-	struct cred_security_struct *new_tsec;
+	struct cred_security_struct *new_crsec;
 	struct rlimit *rlim, *initrlim;
 	int rc, i;
 
-	new_tsec = selinux_cred(bprm->cred);
-	if (new_tsec->sid == new_tsec->osid)
+	new_crsec = selinux_cred(bprm->cred);
+	if (new_crsec->sid == new_crsec->osid)
 		return;
 
 	/* Close files for which the new task SID is not authorized. */
@@ -2519,7 +2519,7 @@ static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
 	 * higher than the default soft limit for cases where the default is
 	 * lower than the hard limit, e.g. RLIMIT_CORE or RLIMIT_STACK.
 	 */
-	rc = avc_has_perm(new_tsec->osid, new_tsec->sid, SECCLASS_PROCESS,
+	rc = avc_has_perm(new_crsec->osid, new_crsec->sid, SECCLASS_PROCESS,
 			  PROCESS__RLIMITINH, NULL);
 	if (rc) {
 		/* protect against do_prlimit() */
@@ -2541,12 +2541,12 @@ static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
  */
 static void selinux_bprm_committed_creds(struct linux_binprm *bprm)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	u32 osid, sid;
 	int rc;
 
-	osid = tsec->osid;
-	sid = tsec->sid;
+	osid = crsec->osid;
+	sid = crsec->sid;
 
 	if (sid == osid)
 		return;
@@ -2923,7 +2923,7 @@ static int selinux_dentry_create_files_as(struct dentry *dentry, int mode,
 {
 	u32 newsid;
 	int rc;
-	struct cred_security_struct *tsec;
+	struct cred_security_struct *crsec;
 
 	rc = selinux_determine_inode_label(selinux_cred(old),
 					   d_inode(dentry->d_parent), name,
@@ -2932,8 +2932,8 @@ static int selinux_dentry_create_files_as(struct dentry *dentry, int mode,
 	if (rc)
 		return rc;
 
-	tsec = selinux_cred(new);
-	tsec->create_sid = newsid;
+	crsec = selinux_cred(new);
+	crsec->create_sid = newsid;
 	return 0;
 }
 
@@ -2942,7 +2942,7 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 				       const char **name,
 				       void **value, size_t *len)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	struct superblock_security_struct *sbsec;
 	u32 newsid, clen;
 	u16 newsclass;
@@ -2951,9 +2951,9 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 
 	sbsec = selinux_superblock(dir->i_sb);
 
-	newsid = tsec->create_sid;
+	newsid = crsec->create_sid;
 	newsclass = inode_mode_to_security_class(inode->i_mode);
-	rc = selinux_determine_inode_label(tsec, dir, qstr, newsclass, &newsid);
+	rc = selinux_determine_inode_label(crsec, dir, qstr, newsclass, &newsid);
 	if (rc)
 		return rc;
 
@@ -3634,7 +3634,7 @@ static void selinux_inode_getsecid(struct inode *inode, u32 *secid)
 static int selinux_inode_copy_up(struct dentry *src, struct cred **new)
 {
 	u32 sid;
-	struct cred_security_struct *tsec;
+	struct cred_security_struct *crsec;
 	struct cred *new_creds = *new;
 
 	if (new_creds == NULL) {
@@ -3643,10 +3643,10 @@ static int selinux_inode_copy_up(struct dentry *src, struct cred **new)
 			return -ENOMEM;
 	}
 
-	tsec = selinux_cred(new_creds);
+	crsec = selinux_cred(new_creds);
 	/* Get label from overlay inode and set it in create_sid */
 	selinux_inode_getsecid(d_inode(src), &sid);
-	tsec->create_sid = sid;
+	crsec->create_sid = sid;
 	*new = new_creds;
 	return 0;
 }
@@ -3672,7 +3672,7 @@ static int selinux_inode_copy_up_xattr(const char *name)
 static int selinux_kernfs_init_security(struct kernfs_node *kn_dir,
 					struct kernfs_node *kn)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	u32 parent_sid, newsid, clen;
 	int rc;
 	char *context;
@@ -3700,8 +3700,8 @@ static int selinux_kernfs_init_security(struct kernfs_node *kn_dir,
 	if (rc)
 		return rc;
 
-	if (tsec->create_sid) {
-		newsid = tsec->create_sid;
+	if (crsec->create_sid) {
+		newsid = crsec->create_sid;
 	} else {
 		u16 secclass = inode_mode_to_security_class(kn->mode);
 		struct qstr q;
@@ -3709,7 +3709,7 @@ static int selinux_kernfs_init_security(struct kernfs_node *kn_dir,
 		q.name = kn->name;
 		q.hash_len = hashlen_string(kn_dir, kn->name);
 
-		rc = security_transition_sid(tsec->sid,
+		rc = security_transition_sid(crsec->sid,
 					     parent_sid, secclass, &q,
 					     &newsid);
 		if (rc)
@@ -4129,10 +4129,10 @@ static int selinux_task_alloc(struct task_struct *task,
 static int selinux_cred_prepare(struct cred *new, const struct cred *old,
 				gfp_t gfp)
 {
-	const struct cred_security_struct *old_tsec = selinux_cred(old);
-	struct cred_security_struct *tsec = selinux_cred(new);
+	const struct cred_security_struct *old_crsec = selinux_cred(old);
+	struct cred_security_struct *crsec = selinux_cred(new);
 
-	*tsec = *old_tsec;
+	*crsec = *old_crsec;
 	return 0;
 }
 
@@ -4141,10 +4141,10 @@ static int selinux_cred_prepare(struct cred *new, const struct cred *old,
  */
 static void selinux_cred_transfer(struct cred *new, const struct cred *old)
 {
-	const struct cred_security_struct *old_tsec = selinux_cred(old);
-	struct cred_security_struct *tsec = selinux_cred(new);
+	const struct cred_security_struct *old_crsec = selinux_cred(old);
+	struct cred_security_struct *crsec = selinux_cred(new);
 
-	*tsec = *old_tsec;
+	*crsec = *old_crsec;
 }
 
 static void selinux_cred_getsecid(const struct cred *c, u32 *secid)
@@ -4158,7 +4158,7 @@ static void selinux_cred_getsecid(const struct cred *c, u32 *secid)
  */
 static int selinux_kernel_act_as(struct cred *new, u32 secid)
 {
-	struct cred_security_struct *tsec = selinux_cred(new);
+	struct cred_security_struct *crsec = selinux_cred(new);
 	u32 sid = current_sid();
 	int ret;
 
@@ -4167,10 +4167,10 @@ static int selinux_kernel_act_as(struct cred *new, u32 secid)
 			   KERNEL_SERVICE__USE_AS_OVERRIDE,
 			   NULL);
 	if (ret == 0) {
-		tsec->sid = secid;
-		tsec->create_sid = 0;
-		tsec->keycreate_sid = 0;
-		tsec->sockcreate_sid = 0;
+		crsec->sid = secid;
+		crsec->create_sid = 0;
+		crsec->keycreate_sid = 0;
+		crsec->sockcreate_sid = 0;
 	}
 	return ret;
 }
@@ -4182,7 +4182,7 @@ static int selinux_kernel_act_as(struct cred *new, u32 secid)
 static int selinux_kernel_create_files_as(struct cred *new, struct inode *inode)
 {
 	struct inode_security_struct *isec = inode_security(inode);
-	struct cred_security_struct *tsec = selinux_cred(new);
+	struct cred_security_struct *crsec = selinux_cred(new);
 	u32 sid = current_sid();
 	int ret;
 
@@ -4192,7 +4192,7 @@ static int selinux_kernel_create_files_as(struct cred *new, struct inode *inode)
 			   NULL);
 
 	if (ret == 0)
-		tsec->create_sid = isec->sid;
+		crsec->create_sid = isec->sid;
 	return ret;
 }
 
@@ -4696,15 +4696,15 @@ static int selinux_conn_sid(u32 sk_sid, u32 skb_sid, u32 *conn_sid)
 
 /* socket security operations */
 
-static int socket_sockcreate_sid(const struct cred_security_struct *tsec,
+static int socket_sockcreate_sid(const struct cred_security_struct *crsec,
 				 u16 secclass, u32 *socksid)
 {
-	if (tsec->sockcreate_sid > SECSID_NULL) {
-		*socksid = tsec->sockcreate_sid;
+	if (crsec->sockcreate_sid > SECSID_NULL) {
+		*socksid = crsec->sockcreate_sid;
 		return 0;
 	}
 
-	return security_transition_sid(tsec->sid, tsec->sid,
+	return security_transition_sid(crsec->sid, crsec->sid,
 				       secclass, NULL, socksid);
 }
 
@@ -4741,7 +4741,7 @@ static int sock_has_perm(struct sock *sk, u32 perms)
 static int selinux_socket_create(int family, int type,
 				 int protocol, int kern)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	u32 newsid;
 	u16 secclass;
 	int rc;
@@ -4750,17 +4750,17 @@ static int selinux_socket_create(int family, int type,
 		return 0;
 
 	secclass = socket_type_to_security_class(family, type, protocol);
-	rc = socket_sockcreate_sid(tsec, secclass, &newsid);
+	rc = socket_sockcreate_sid(crsec, secclass, &newsid);
 	if (rc)
 		return rc;
 
-	return avc_has_perm(tsec->sid, newsid, secclass, SOCKET__CREATE, NULL);
+	return avc_has_perm(crsec->sid, newsid, secclass, SOCKET__CREATE, NULL);
 }
 
 static int selinux_socket_post_create(struct socket *sock, int family,
 				      int type, int protocol, int kern)
 {
-	const struct cred_security_struct *tsec = selinux_cred(current_cred());
+	const struct cred_security_struct *crsec = selinux_cred(current_cred());
 	struct inode_security_struct *isec = inode_security_novalidate(SOCK_INODE(sock));
 	struct sk_security_struct *sksec;
 	u16 sclass = socket_type_to_security_class(family, type, protocol);
@@ -4768,7 +4768,7 @@ static int selinux_socket_post_create(struct socket *sock, int family,
 	int err = 0;
 
 	if (!kern) {
-		err = socket_sockcreate_sid(tsec, sclass, &sid);
+		err = socket_sockcreate_sid(crsec, sclass, &sid);
 		if (err)
 			return err;
 	}
@@ -6454,33 +6454,32 @@ static void selinux_d_instantiate(struct dentry *dentry, struct inode *inode)
 static int selinux_getprocattr(struct task_struct *p,
 			       const char *name, char **value)
 {
-	const struct cred_security_struct *tsec;
+	const struct cred_security_struct *crsec;
 	u32 sid;
 	int error;
 	unsigned len;
 
 	rcu_read_lock();
-	__tsec = selinux_cred(__task_cred(p));
-
-	if (current != p) {
-		error = avc_has_perm(current_sid(), __tsec->sid,
+	crsec = selinux_cred(__task_cred(p));
+	if (p != current) {
+		error = avc_has_perm(current_sid(), crsec->sid,
 				     SECCLASS_PROCESS, PROCESS__GETATTR, NULL);
 		if (error)
 			goto bad;
 	}
 
 	if (!strcmp(name, "current"))
-		sid = __tsec->sid;
+		sid = crsec->sid;
 	else if (!strcmp(name, "prev"))
-		sid = __tsec->osid;
+		sid = crsec->osid;
 	else if (!strcmp(name, "exec"))
-		sid = __tsec->exec_sid;
+		sid = crsec->exec_sid;
 	else if (!strcmp(name, "fscreate"))
-		sid = __tsec->create_sid;
+		sid = crsec->create_sid;
 	else if (!strcmp(name, "keycreate"))
-		sid = __tsec->keycreate_sid;
+		sid = crsec->keycreate_sid;
 	else if (!strcmp(name, "sockcreate"))
-		sid = __tsec->sockcreate_sid;
+		sid = crsec->sockcreate_sid;
 	else {
 		error = -EINVAL;
 		goto bad;
@@ -6502,7 +6501,7 @@ bad:
 
 static int selinux_setprocattr(const char *name, void *value, size_t size)
 {
-	struct cred_security_struct *tsec;
+	struct cred_security_struct *crsec;
 	struct cred *new;
 	u32 mysid = current_sid(), sid = 0, ptsid;
 	int error;
@@ -6578,11 +6577,11 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 	   operation.  See selinux_bprm_creds_for_exec for the execve
 	   checks and may_create for the file creation checks. The
 	   operation will then fail if the context is not permitted. */
-	tsec = selinux_cred(new);
+	crsec = selinux_cred(new);
 	if (!strcmp(name, "exec")) {
-		tsec->exec_sid = sid;
+		crsec->exec_sid = sid;
 	} else if (!strcmp(name, "fscreate")) {
-		tsec->create_sid = sid;
+		crsec->create_sid = sid;
 	} else if (!strcmp(name, "keycreate")) {
 		if (sid) {
 			error = avc_has_perm(mysid, sid,
@@ -6590,9 +6589,9 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 			if (error)
 				goto abort_change;
 		}
-		tsec->keycreate_sid = sid;
+		crsec->keycreate_sid = sid;
 	} else if (!strcmp(name, "sockcreate")) {
-		tsec->sockcreate_sid = sid;
+		crsec->sockcreate_sid = sid;
 	} else if (!strcmp(name, "current")) {
 		error = -EINVAL;
 		if (sid == 0)
@@ -6600,13 +6599,13 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 
 		/* Only allow single threaded processes to change context */
 		if (!current_is_single_threaded()) {
-			error = security_bounded_transition(tsec->sid, sid);
+			error = security_bounded_transition(crsec->sid, sid);
 			if (error)
 				goto abort_change;
 		}
 
 		/* Check permissions for the transition. */
-		error = avc_has_perm(tsec->sid, sid, SECCLASS_PROCESS,
+		error = avc_has_perm(crsec->sid, sid, SECCLASS_PROCESS,
 				     PROCESS__DYNTRANSITION, NULL);
 		if (error)
 			goto abort_change;
@@ -6621,7 +6620,7 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 				goto abort_change;
 		}
 
-		tsec->sid = sid;
+		crsec->sid = sid;
 	} else {
 		error = -EINVAL;
 		goto abort_change;
@@ -6701,18 +6700,18 @@ static int selinux_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
 static int selinux_key_alloc(struct key *k, const struct cred *cred,
 			     unsigned long flags)
 {
-	const struct cred_security_struct *tsec;
+	const struct cred_security_struct *crsec;
 	struct key_security_struct *ksec;
 
 	ksec = kzalloc(sizeof(struct key_security_struct), GFP_KERNEL);
 	if (!ksec)
 		return -ENOMEM;
 
-	tsec = selinux_cred(cred);
-	if (tsec->keycreate_sid)
-		ksec->sid = tsec->keycreate_sid;
+	crsec = selinux_cred(cred);
+	if (crsec->keycreate_sid)
+		ksec->sid = crsec->keycreate_sid;
 	else
-		ksec->sid = tsec->sid;
+		ksec->sid = crsec->sid;
 
 	k->security = ksec;
 	return 0;
