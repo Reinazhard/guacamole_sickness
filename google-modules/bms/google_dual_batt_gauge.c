@@ -28,7 +28,9 @@
 #include "google_bms.h"
 #include "google_psy.h"
 
+#ifndef MAX
 #define MAX(x, y)	((x) < (y) ? (y) : (x))
+#endif
 #define DUAL_FG_DELAY_INIT_MS	500
 #define DUAL_FG_WORK_PERIOD_MS	10000
 #define DUAL_BATT_TEMP_VOTER	"daul_batt_temp"
