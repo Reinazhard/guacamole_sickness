@@ -26,6 +26,7 @@
 #ifndef _MALISW_H_
 #define _MALISW_H_
 
+#ifndef __linux__
 /**
  * MIN - Return the lesser of two values.
  * @x: value1
@@ -35,7 +36,9 @@
  * Refer to MAX macro for more details
  */
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
+#endif
 
+#ifndef __linux__
 /**
  * MAX - Return the greater of two values.
  * @x: value1
@@ -49,6 +52,7 @@
  * instead.
  */
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
+#endif
 
 /**
  * CSTD_UNUSED - Function-like macro for suppressing unused variable warnings.
