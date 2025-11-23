@@ -52,6 +52,7 @@ EXPORT_SYMBOL_GPL(ANDROID_GKI_struct_dwc3);
 #endif
 
 #define DWC3_DEFAULT_AUTOSUSPEND_DELAY	5000 /* ms */
+#define DWC3_LLUCTL(n)			(0xd024 + ((n) * 0x80))
 
 /**
  * dwc3_get_dr_mode - Validates and sets dr_mode
