@@ -180,8 +180,6 @@
 #define DWC3_OEVTEN		0xcc0C
 #define DWC3_OSTS		0xcc10
 
-#define DWC3_LLUCTL(n)		(0xd024 + ((n) * 0x80))
-
 /* Bit fields */
 
 /* Global SoC Bus Configuration INCRx Register 0 */
