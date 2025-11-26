@@ -34,6 +34,7 @@ obj-y += radio/samsung/s5300/
 obj-y += soc/gs/
 obj-y += touch/common/
 obj-y += touch/fts/ftm5_legacy/
+obj-y += touch/sec/
 obj-y += trusty/
 obj-y += uwb/qorvo/dw3000/kernel/
 obj-y += video/gchips/
