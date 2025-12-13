@@ -4556,12 +4556,6 @@ out:
 		}
 	}
 
-	error = fts_init_sensing(info);
-	if (error < OK) {
-		dev_err(info->dev, "Cannot initialize the hardware device ERROR %08X\n",
-			error);
-	}
-
 	dev_err(info->dev, "Fw Update Finished! error = %08X\n", error);
 	return error;
 }
@@ -4573,17 +4567,60 @@ out:
   */
 static void fts_fw_update_auto(struct work_struct *work)
 {
+	int retval = 0;
 	struct delayed_work *fwu_work = container_of(work, struct delayed_work,
 						     work);
 	struct fts_ts_info *info = container_of(fwu_work, struct fts_ts_info,
 						fwu_work);
 #if IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
-	goog_pm_wake_lock(info->gti, GTI_PM_WAKELOCK_TYPE_FW_UPDATE, false);
+	struct gti_optional_configuration *options;
 #endif
+
 	fts_fw_update(info);
+
 #if IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
-	goog_pm_wake_unlock_nosync(info->gti, GTI_PM_WAKELOCK_TYPE_FW_UPDATE);
+	if (info->systemInfo.u8_scrRxLen == 0 && info->systemInfo.u8_scrTxLen == 0) {
+		dev_err(info->dev, "Touch firmware abnromal after update.\n");
+		return;
+	}
+
+	options = devm_kzalloc(info->dev, sizeof(struct gti_optional_configuration), GFP_KERNEL);
+	if (!options) {
+		dev_err(info->dev, "GTI optional configuration kzalloc failed.\n");
+	}
+
+	options->get_fw_version = get_fw_version;
+	options->get_mutual_sensor_data = get_mutual_sensor_data;
+	options->get_self_sensor_data = get_self_sensor_data;
+	options->set_continuous_report = set_continuous_report;
+	options->set_screen_protector_mode = set_screen_protector_mode;
+	options->get_screen_protector_mode = get_screen_protector_mode;
+	options->set_grip_mode = set_grip_mode;
+	options->get_grip_mode = get_grip_mode;
+	options->set_palm_mode = set_palm_mode;
+	options->get_palm_mode = get_palm_mode;
+	options->set_coord_filter_enabled = set_coord_filter_enabled;
+	options->get_coord_filter_enabled = get_coord_filter_enabled;
+	options->set_report_rate = set_report_rate;
+	options->get_irq_mode = get_irq_mode;
+	options->set_irq_mode = set_irq_mode;
+	options->reset = set_reset;
+	options->ping = ping;
+
+	options->calibrate = calibrate;
+	options->selftest = selftest;
+
+	info->gti = goog_touch_interface_probe(
+		info, info->dev, info->input_dev, gti_default_handler, options);
+
+	retval = goog_pm_register_notification(info->gti, &fts_pm_ops);
+	if (retval < 0) {
+		dev_info(info->dev, "Failed to register gti pm");
+	}
 #endif
+	retval = fts_init_sensing(info);
+	if (retval < OK)
+		dev_err(info->dev, "Cannot initialize the hardware device ERROR %08X\n", retval);
 }
 
 /**
@@ -5618,9 +5655,6 @@ static int fts_probe(struct spi_device *client)
 	int retval;
 	int input_dev_free_flag = 0;
 	u16 bus_type;
-#if IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
-	struct gti_optional_configuration *options;
-#endif
 
 	dev_info(&client->dev, "%s: driver probe begin!\n", __func__);
 	dev_info(&client->dev, "driver ver. %s\n", FTS_TS_DRV_VERSION);
@@ -5886,43 +5920,6 @@ static int fts_probe(struct spi_device *client)
 		dev_err(info->dev, "Error: can not create /proc file!\n");
 	info->diag_node_open = false;
 
-#if IS_ENABLED(CONFIG_GOOG_TOUCH_INTERFACE)
-	options = devm_kzalloc(info->dev, sizeof(struct gti_optional_configuration), GFP_KERNEL);
-	if (!options) {
-		dev_err(info->dev, "GTI optional configuration kzalloc failed.\n");
-	}
-
-	options->get_fw_version = get_fw_version;
-	options->get_mutual_sensor_data = get_mutual_sensor_data;
-	options->get_self_sensor_data = get_self_sensor_data;
-	options->set_continuous_report = set_continuous_report;
-	options->set_screen_protector_mode = set_screen_protector_mode;
-	options->get_screen_protector_mode = get_screen_protector_mode;
-	options->set_grip_mode = set_grip_mode;
-	options->get_grip_mode = get_grip_mode;
-	options->set_palm_mode = set_palm_mode;
-	options->get_palm_mode = get_palm_mode;
-	options->set_coord_filter_enabled = set_coord_filter_enabled;
-	options->get_coord_filter_enabled = get_coord_filter_enabled;
-	options->set_report_rate = set_report_rate;
-	options->get_irq_mode = get_irq_mode;
-	options->set_irq_mode = set_irq_mode;
-	options->reset = set_reset;
-	options->ping = ping;
-
-	options->calibrate = calibrate;
-	options->selftest = selftest;
-
-	info->gti = goog_touch_interface_probe(
-		info, info->dev, info->input_dev, gti_default_handler, options);
-
-	retval = goog_pm_register_notification(info->gti, &fts_pm_ops);
-	if (retval < 0) {
-		dev_info(info->dev, "Failed to register gti pm");
-		goto ProbeErrorExit_6;
-	}
-#endif
-
 	if (info->fwu_workqueue)
 		queue_delayed_work(info->fwu_workqueue, &info->fwu_work,
 				   msecs_to_jiffies(EXP_FN_WORK_DELAY_MS));
@@ -5930,10 +5927,6 @@ static int fts_probe(struct spi_device *client)
 	dev_info(info->dev, "Probe Finished!\n");
 
 	return OK;
-
-
-ProbeErrorExit_6:
-	sysfs_remove_group(&client->dev.kobj, &info->attrs);
 
 ProbeErrorExit_5:
 	input_unregister_device(info->input_dev);
