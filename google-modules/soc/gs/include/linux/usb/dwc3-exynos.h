@@ -27,7 +27,7 @@
 /* LINK Registers */
 #define DWC3_LU3LFPSRXTIM	0xd010
 #define DWC3_LSKIPFREQ		0xd020
-#define DWC3_LLUCTL		0xd024
+#define PDWC3_LLUCTL		0xd024
 #define DWC3_BU31RHBDBG		0xd800
 
 /* Link Register - LLUCTL */

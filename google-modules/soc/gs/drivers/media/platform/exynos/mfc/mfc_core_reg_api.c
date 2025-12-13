@@ -379,7 +379,7 @@ int mfc_core_set_dec_stream_buffer(struct mfc_core *core, struct mfc_ctx *ctx,
 
 	MFC_CORE_WRITEL(strm_size, MFC_REG_D_STREAM_DATA_SIZE);
 	MFC_CORE_WRITEL(addr, MFC_REG_D_CPB_BUFFER_ADDR);
-	MFC_CORE_WRITEL(cpb_buf_size, MFC_REG_D_CPB_BUFFER_SIZE);
+	MFC_CORE_WRITEL(cpb_buf_size + start_num_byte, MFC_REG_D_CPB_BUFFER_SIZE);
 	MFC_CORE_WRITEL(start_num_byte, MFC_REG_D_CPB_BUFFER_OFFSET);
 	ctx->last_src_addr = addr;
 

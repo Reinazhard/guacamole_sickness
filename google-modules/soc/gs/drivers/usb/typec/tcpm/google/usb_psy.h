@@ -31,4 +31,6 @@ void *usb_psy_setup(struct i2c_client *client, struct logbuffer *log,
 		    struct usb_psy_ops *ops, void *chip, non_compliant_bc12_callback callback);
 void usb_psy_teardown(void *usb_data);
 void usb_psy_start_sdp_timeout(void *usb_psy);
+void usb_psy_stop_sdp_timeout(void *usb_psy);
+void apply_sdp_enum_failure_wa(void *usb_psy);
 #endif

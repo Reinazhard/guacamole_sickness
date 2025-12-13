@@ -454,6 +454,9 @@ static bool google_tcpci_shim_is_vbus_vsafe0v(struct tcpc_dev *tcpc)
 	unsigned int reg;
 	int ret;
 
+	if (tcpci->data->is_vbus_vsafe0v)
+		return tcpci->data->is_vbus_vsafe0v(tcpci, tcpci->data);
+
 	ret = regmap_read(tcpci->regmap, TCPC_EXTENDED_STATUS, &reg);
 	if (ret < 0)
 		return false;

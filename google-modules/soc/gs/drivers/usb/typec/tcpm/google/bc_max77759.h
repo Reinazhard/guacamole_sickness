@@ -54,5 +54,19 @@ void bc12_enable(struct bc12_status *bc12, bool enable);
 bool bc12_get_status(struct bc12_status *bc12);
 enum power_supply_usb_type get_usb_type(struct bc12_status *bc12);
 
+struct bc12_status {
+	struct workqueue_struct *wq;
+	struct max77759_plat *chip;
+	enum power_supply_usb_type usb_type;
+	/* Protects changes to this structure. */
+	struct mutex lock;
+	struct power_supply *usb_psy;
+	bool retry_done;
+	/* Tracks whether BC12 is enabled */
+	bool enable;
+	/* Status callback */
+	bc12_status_callback bc12_callback;
+};
+
 #endif /*__BC_MAX77759_H */
 

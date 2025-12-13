@@ -544,11 +544,13 @@ static int gf_open(struct inode *inode, struct file *filp)
 
 	mutex_lock(&gf_spi_lock);
 
-	list_for_each_entry (gf_dev, &device_list, device_entry) {
-		if (gf_dev->devt == inode->i_rdev) {
-			pr_info("Found\n");
-			status = 0;
-			break;
+	if (!list_empty(&device_list)) {
+		list_for_each_entry(gf_dev, &device_list, device_entry) {
+			if (gf_dev->devt == inode->i_rdev) {
+				pr_info("Found\n");
+				status = 0;
+				break;
+			}
 		}
 	}
 

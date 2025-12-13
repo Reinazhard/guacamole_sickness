@@ -19,24 +19,6 @@
 #include "tcpci_max77759.h"
 #include "google_tcpci_shim.h"
 
-struct bc12_status {
-	struct workqueue_struct *wq;
-	struct max77759_plat *chip;
-	/*
-	 * TODO: set to unknown upon disconnect and roleswap
-	 * Set after ChgTypRun
-	 */
-	enum power_supply_usb_type usb_type;
-	/* Protects changes to this structure. */
-	struct mutex lock;
-	struct power_supply *usb_psy;
-	bool retry_done;
-	/* Tracks whether BC12 is enabled */
-	bool enable;
-	/* Status callback */
-	bc12_status_callback bc12_callback;
-};
-
 struct bc12_update {
 	struct work_struct bc12_work;
 	u8 vendor_alert1_status;
@@ -47,15 +29,31 @@ struct bc12_update {
 
 enum power_supply_usb_type get_usb_type(struct bc12_status *bc12)
 {
-	return bc12->usb_type;
+	enum power_supply_usb_type usb_type;
+
+	mutex_lock(&bc12->lock);
+	usb_type = bc12->usb_type;
+	mutex_unlock(&bc12->lock);
+	return usb_type;
 }
 EXPORT_SYMBOL_GPL(get_usb_type);
+
+/*
+ * Call during disconnect to clear the chg_type
+ */
+static inline void clear_chg_type_locked(struct bc12_status *bc12)
+	__must_hold(&bc12->lock)
+{
+	bc12->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+}
 
 /*
  * Scheduled as a work item
  */
 static void vendor_bc12_alert(struct work_struct *work)
 {
+	bool run_cb = false;
+	bool is_bc12_running;
 	struct bc12_update *update = container_of(work, struct bc12_update,
 						  bc12_work);
 	struct bc12_status *bc12 = update->bc12;
@@ -71,8 +69,11 @@ static void vendor_bc12_alert(struct work_struct *work)
 		      , update->vendor_alert1_status, update->vendor_bc_status1,
 		      update->vendor_bc_status2, bc12->enable ? 'y' : 'n');
 
-	if (!bc12->enable)
+	if (!bc12->enable) {
+		mutex_unlock(&bc12->lock);
 		goto exit;
+	}
+
 	/*
 	 * If Data contact Detect timeout interrupt is detected,
 	 * detection could report erroneous charger type,
@@ -97,7 +98,7 @@ static void vendor_bc12_alert(struct work_struct *work)
 	} else if (update->vendor_alert1_status & CHGTYPINT) {
 		switch (update->vendor_bc_status1 & CHGTYP) {
 		case CHGTYP_NOT_ATTACHED:
-			bc12->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			clear_chg_type_locked(bc12);
 			logbuffer_log(plat->log, "BC12: nothing attached");
 			break;
 		case CHGTYP_SDP:
@@ -113,11 +114,60 @@ static void vendor_bc12_alert(struct work_struct *work)
 			logbuffer_log(plat->log, "BC12: DCP detected");
 			break;
 		default:
-			bc12->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			clear_chg_type_locked(bc12);
 			logbuffer_log(plat->log, "BC12: unknown detected");
 			break;
 		}
 		val.intval = bc12->usb_type;
+	}
+
+	if (update->vendor_alert1_status & CHGTYPRUNRINT) {
+		logbuffer_log(plat->log, "BC12: running");
+		run_cb = true;
+		is_bc12_running = true;
+	}
+
+	if (update->vendor_alert1_status & CHGTYPRUNFINT) {
+		logbuffer_log(plat->log, "BC12: not running");
+		run_cb = true;
+		is_bc12_running = false;
+	}
+
+	if (update->vendor_alert1_status & PRCHGTYPINT) {
+		logbuffer_log(plat->log, "BC12: Proprietary port");
+
+		/*
+		 * Fastpath for Apple 10W chargers to change charger type to
+		 * DCP. These chargers present themselves as SDP & proprietary
+		 * charger. bc12_callback should be executed after the war is
+		 * applied to try to prevent enabling & subsequent disabling
+		 * data. It is observed that the running bit & properietary bit
+		 * are set as part of the same status update which would lead to
+		 * the above scenario if re-ordered. This is still best effort
+		 * as it's possible that this worker wins the race vs usb_psy's
+		 * kthread but won't be fatal.
+		 */
+		if (bc12->usb_type == POWER_SUPPLY_USB_TYPE_SDP) {
+			/*
+			 * Update usb->usb_type to DCP and update compliance
+			 * warning.
+			 */
+			bc12->usb_type = POWER_SUPPLY_USB_TYPE_DCP;
+			usb_psy_stop_sdp_timeout(usb_psy_data);
+			apply_sdp_enum_failure_wa(usb_psy_data);
+			logbuffer_log(plat->log, "Applied BC12 fastpath WAR");
+		}
+	}
+
+	mutex_unlock(&bc12->lock);
+
+	if (run_cb) {
+		logbuffer_log(plat->log, "Invoking bc12_cb, is_bc12_running: %c",
+			      is_bc12_running ? 'y' : 'n');
+		bc12->bc12_callback(bc12->chip, is_bc12_running);
+	}
+
+	if (update->vendor_alert1_status & CHGTYPINT) {
 		if (power_supply_set_property(bc12->usb_psy,
 					      POWER_SUPPLY_PROP_USB_TYPE,
 					      &val))
@@ -127,21 +177,7 @@ static void vendor_bc12_alert(struct work_struct *work)
 			usb_psy_start_sdp_timeout(usb_psy_data);
 	}
 
-	if (update->vendor_alert1_status & CHGTYPRUNRINT) {
-		logbuffer_log(plat->log, "BC12: running");
-		if (bc12->bc12_callback)
-			bc12->bc12_callback(bc12->chip, true);
-	}
-	if (update->vendor_alert1_status & CHGTYPRUNFINT) {
-		logbuffer_log(plat->log, "BC12: not running");
-		if (bc12->bc12_callback)
-			bc12->bc12_callback(bc12->chip, false);
-	}
-	if (update->vendor_alert1_status & PRCHGTYPINT)
-		logbuffer_log(plat->log, "BC12: Proprietary port");
-
 exit:
-	mutex_unlock(&bc12->lock);
 	devm_kfree(plat->dev, update);
 }
 
@@ -180,10 +216,27 @@ void bc12_enable(struct bc12_status *bc12, bool enable)
 	struct max77759_plat *plat = bc12->chip;
 	struct regmap *regmap = plat->data.regmap;
 
+	/*
+	 * This condition is expected to be met during data role change invoked
+	 * as part of usb set_role callback. As there's a data role change, the
+	 * existing BC1.2 usb type is no longer valid.
+	 */
+	if (!bc12->enable && enable)
+		clear_chg_type_locked(bc12);
+
+	/*
+	 * Hold lock to complete updating enable flag to prevent racing against
+	 * vendor_alert1_status. Disabling CHGDETEN will make the hardware
+	 * report unknown.
+	 */
+	mutex_lock(&bc12->lock);
+
 	ret = max77759_update_bits8(regmap, VENDOR_BC_CTRL1, CHGDETEN, enable ? CHGDETEN : 0);
-	logbuffer_log(plat->log, "BC12: %s ret: %d", enable ? "enabled" : "disabled", ret);
 	if (!ret)
 		bc12->enable = enable;
+	mutex_unlock(&bc12->lock);
+	logbuffer_logk(plat->log, LOGLEVEL_INFO, "BC12: %s ret: %d",
+		       enable ? "enabled" : "disabled", ret);
 }
 EXPORT_SYMBOL_GPL(bc12_enable);
 
@@ -193,22 +246,33 @@ bool bc12_get_status(struct bc12_status *bc12)
 }
 EXPORT_SYMBOL_GPL(bc12_get_status);
 
-/*
- * Call during disconnect to clear the chg_typ
- */
-void clear_chg_typ(struct bc12_status *bc12)
-{
-	mutex_lock(&bc12->lock);
-	bc12->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
-	mutex_unlock(&bc12->lock);
-}
-EXPORT_SYMBOL_GPL(clear_chg_typ);
-
 void bc12_teardown(struct bc12_status *bc12)
 {
+	if (!bc12)
+		return;
+
+	destroy_workqueue(bc12->wq);
 	power_supply_put(bc12->usb_psy);
 }
 EXPORT_SYMBOL_GPL(bc12_teardown);
+
+static void enable_bc12_when_disabled(struct bc12_status *bc12) {
+	struct max77759_plat *chip = bc12->chip;
+	struct regmap *regmap = chip->data.regmap;
+	u8 vendor_bc_ctrl1;
+	int ret;
+
+	ret = max77759_read8(regmap, VENDOR_BC_CTRL1, &vendor_bc_ctrl1);
+	logbuffer_log(chip->log, "BC12: %s: VENDOR_BC_CTRL1 read, val:0x%x ret:%d",
+		      __func__, vendor_bc_ctrl1, ret);
+	if (ret < 0)
+		return;
+
+	if (vendor_bc_ctrl1 & CHGDETEN)
+		return;
+
+	bc12_enable(bc12, true);
+}
 
 struct bc12_status *bc12_init(struct max77759_plat *plat, bc12_status_callback callback)
 {
@@ -260,6 +324,7 @@ struct bc12_status *bc12_init(struct max77759_plat *plat, bc12_status_callback c
 
 	/* Unmask Vendor alert */
 	max77759_write8(regmap, VENDOR_ALERT_MASK1, 0xff);
+	enable_bc12_when_disabled(bc12);
 
 	return bc12;
 

@@ -231,6 +231,8 @@ struct google_shim_tcpci_data {
 	void (*check_contaminant)(struct google_shim_tcpci *tcpci,
 				  struct google_shim_tcpci_data *data);
 	int (*get_vbus)(struct google_shim_tcpci *tcpci, struct google_shim_tcpci_data *data);
+	bool (*is_vbus_vsafe0v)(struct google_shim_tcpci *tcpci,
+				struct google_shim_tcpci_data *data);
 };
 
 struct google_shim_tcpci *google_tcpci_shim_register_port(struct device *dev,

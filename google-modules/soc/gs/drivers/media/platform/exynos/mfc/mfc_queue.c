@@ -1010,7 +1010,7 @@ void mfc_dec_drc_find_del_buf(struct mfc_core_ctx *core_ctx)
 	struct mfc_buf *dst_mb;
 	int i;
 
-	if (!dec || dec->disp_drc.disp_res_change)
+	if (!dec || dec->disp_drc.disp_res_change || dec->disp_drc.disp_crop_change)
 		return;
 
 	dst_mb = mfc_get_del_buf(ctx, &ctx->dst_buf_queue, MFC_BUF_NO_TOUCH_USED);

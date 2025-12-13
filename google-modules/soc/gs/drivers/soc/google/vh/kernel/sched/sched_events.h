@@ -571,10 +571,10 @@ TRACE_EVENT(sched_cpu_util_rt,
 
 	TP_PROTO(int cpu, unsigned long capacity_orig, unsigned long capacity, unsigned long util,
 		 unsigned long exit_lat, unsigned long cpu_importance, bool task_fits,
-		 bool task_fits_original, bool overutilized, bool is_idle),
+		 bool task_fits_original, bool is_idle),
 
 	TP_ARGS(cpu, capacity_orig, capacity, util, exit_lat, cpu_importance, task_fits,
-		task_fits_original, overutilized, is_idle),
+		task_fits_original, is_idle),
 
 	TP_STRUCT__entry(
 		__field(int,		cpu)
@@ -585,7 +585,6 @@ TRACE_EVENT(sched_cpu_util_rt,
 		__field(unsigned long,	cpu_importance)
 		__field(bool,		task_fits)
 		__field(bool,		task_fits_original)
-		__field(bool,		overutilized)
 		__field(bool,		is_idle)
 	),
 
@@ -598,15 +597,14 @@ TRACE_EVENT(sched_cpu_util_rt,
 		__entry->cpu_importance	    = cpu_importance;
 		__entry->task_fits	    = task_fits;
 		__entry->task_fits_original = task_fits_original;
-		__entry->overutilized	    = overutilized;
 		__entry->is_idle	    = is_idle;
 	),
 
 	TP_printk("cpu=%d capacity_orig=%lu capacity=%lu util=%lu exit_lat=%lu cpu_importance=%lu "\
-		  "task_fits=%d task_fits_original=%d overutilized=%d is_idle=%d",
+		  "task_fits=%d task_fits_original=%d is_idle=%d",
 		__entry->cpu, __entry->capacity_orig, __entry->capacity, __entry->util,
 		__entry->exit_lat, __entry->cpu_importance, __entry->task_fits,
-		__entry->task_fits_original, __entry->overutilized, __entry->is_idle)
+		__entry->task_fits_original, __entry->is_idle)
 );
 
 TRACE_EVENT(sched_find_least_loaded_cpu,

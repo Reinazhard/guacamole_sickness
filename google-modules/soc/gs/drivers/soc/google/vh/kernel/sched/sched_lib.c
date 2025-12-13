@@ -13,9 +13,6 @@
 
 #include "sched_priv.h"
 
-static char sched_lib_name[LIB_PATH_LENGTH];
-unsigned long sched_lib_mask_out_val;
-unsigned long sched_lib_mask_in_val;
 bool disable_sched_setaffinity;
 
 extern unsigned int vendor_sched_priority_task_boost_value;
@@ -26,131 +23,48 @@ char prefer_idle_task_name[LIB_PATH_LENGTH];
 DEFINE_SPINLOCK(prefer_idle_task_name_lock);
 
 char boost_at_fork_task_name[LIB_PATH_LENGTH];
-raw_spinlock_t boost_at_fork_task_name_lock;
+DEFINE_RAW_SPINLOCK(boost_at_fork_task_name_lock);
 unsigned long vendor_sched_boost_at_fork_value = SCHED_CAPACITY_SCALE/2;
 
-static DEFINE_MUTEX(__sched_lib_name_mutex);
-
-ssize_t sched_lib_name_store(struct file *filp,
-			     const char __user *ubuffer, size_t count,
-			     loff_t *ppos)
+bool is_vcpu_task(struct task_struct *p)
 {
-	if (count >= sizeof(sched_lib_name))
-		return -EINVAL;
+	if (strstr(p->comm, "crosvm_vcpu"))
+		return true;
 
-	mutex_lock(&__sched_lib_name_mutex);
-
-	if (copy_from_user(sched_lib_name, ubuffer, count)) {
-		sched_lib_name[0] = '\0';
-		mutex_unlock(&__sched_lib_name_mutex);
-		return -EFAULT;
-	}
-
-	sched_lib_name[count] = '\0';
-	mutex_unlock(&__sched_lib_name_mutex);
-	return count;
-}
-
-int sched_lib_name_show(struct seq_file *m, void *v)
-{
-	mutex_lock(&__sched_lib_name_mutex);
-	seq_printf(m, "%s\n", sched_lib_name);
-	mutex_unlock(&__sched_lib_name_mutex);
-	return 0;
-}
-
-static bool is_sched_lib_based_app(pid_t pid)
-{
-	const char *name = NULL;
-	struct vm_area_struct *vma;
-	char path_buf[LIB_PATH_LENGTH];
-	char tmp_lib_name[LIB_PATH_LENGTH];
-	bool found = false;
-	struct task_struct *p;
-	struct mm_struct *mm;
-	struct vendor_task_struct *vp;
-	struct ma_state mas;
-
-	rcu_read_lock();
-	p = pid ? get_pid_task(find_vpid(pid), PIDTYPE_PID) : get_task_struct(current);
-	rcu_read_unlock();
-	if (!p)
-		return false;
-
-	// top app
-	vp = get_vendor_task_struct(p);
-	if (!vp || ((vp->group != VG_TOPAPP) && (vp->group != VG_FOREGROUND)))
-		goto put_task_struct;
-
-	// Copy lib name for thread safe access
-	mutex_lock(&__sched_lib_name_mutex);
-	if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0)
-		goto put_task_struct;
-	strlcpy(tmp_lib_name, sched_lib_name, LIB_PATH_LENGTH);
-	mutex_unlock(&__sched_lib_name_mutex);
-
-	mm = get_task_mm(p);
-	if (!mm)
-		goto put_task_struct;
-
-	down_read(&mm->mmap_lock);
-	mas.tree = &mm->mm_mt;
-	mas.index = 0;
-	mas.last = 0;
-	mas_for_each(&mas, vma, ULONG_MAX) {
-		if (vma->vm_file && vma->vm_flags & VM_EXEC) {
-			name = d_path(&vma->vm_file->f_path,
-					path_buf, LIB_PATH_LENGTH);
-			if (IS_ERR(name))
-				goto release_sem;
-
-			if (strnstr(name, tmp_lib_name, strnlen(name, LIB_PATH_LENGTH))) {
-				found = true;
-				goto release_sem;
-			}
-		}
-	}
-
-release_sem:
-	up_read(&mm->mmap_lock);
-	mmput(mm);
-put_task_struct:
-	put_task_struct(p);
-	return found;
+	return false;
 }
 
 void rvh_sched_setaffinity_mod(void *data, struct task_struct *task,
 				const struct cpumask *in_mask, int *res)
 {
-	struct cpumask out_mask;
 	bool block_affinity;
+	int group;
 
 	if (*res != 0)
 		return;
 
-	block_affinity = disable_sched_setaffinity;
-	block_affinity |= vg[get_vendor_group(task)].disable_sched_setaffinity;
-
-	if (block_affinity && !capable(CAP_SYS_NICE)) {
-		__reset_task_affinity(task);
+	if (is_vcpu_task(task)) {
+		__reset_task_affinity(task, NULL);
 		*res = -EPERM;
 		return;
 	}
 
-	if (!(sched_lib_mask_in_val && sched_lib_mask_out_val))
+	if (capable(CAP_SYS_NICE))
 		return;
 
-	if (in_mask->bits[0] != sched_lib_mask_in_val)
+	group = get_vendor_group(task);
+
+	block_affinity = disable_sched_setaffinity;
+	block_affinity |= vg[group].disable_sched_setaffinity;
+
+	if (block_affinity) {
+		__reset_task_affinity(task, NULL);
+		*res = -EPERM;
 		return;
+	}
 
-	if (!is_sched_lib_based_app(current->pid))
-		return;
-
-	out_mask.bits[0] = sched_lib_mask_out_val;
-	set_cpus_allowed_ptr(task, &out_mask);
-
-	pr_debug("schedlib setaff tid: %d, mask out: %*pb\n",
-		 task_pid_nr(task), cpumask_pr_args(&out_mask));
+	if (vg[group].disable_sched_setaffinity_mask)
+		__reset_task_affinity(task, in_mask);
 }
 
 /*

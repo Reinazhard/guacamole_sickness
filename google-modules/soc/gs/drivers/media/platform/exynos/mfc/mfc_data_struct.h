@@ -2058,6 +2058,7 @@ struct dpb_table {
 
 struct disp_drc_info {
 	int disp_res_change;
+	int disp_crop_change;
 	int push_idx;
 	int pop_idx;
 	int width[MFC_MAX_DRC_FRAME];

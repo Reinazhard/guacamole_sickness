@@ -10,6 +10,7 @@
 #include <linux/i2c.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/power_supply.h>
 #include <misc/gvotable.h>
 #include <misc/logbuffer.h>
@@ -135,6 +136,34 @@ struct usb_psy_data {
 	 * SDP_ENUMERATION_TIMEOUT_FIRST_CONNECT_MS.
 	 */
 	bool update_sdp_enum_timeout;
+
+	/*
+	 * Given a Type-C connection session, indicates if USB has entered USB
+	 * connect state in its typec lifecycle.
+	 */
+	bool usb_first_connected;
+
+	/*
+	 * Protect the following shared data/objects in this struct:
+	 *  1. usb_configured:
+	 *     a. Set psy prop INPUT_CURRENT_LIMIT (read + write) invoked in
+	 *     several contexts (eg., gadget drv)
+	 *     b. Set psy prop USB_TYPE (write) invoked by BC1.2 worker
+	 *  2. update_sdp_enum_timeout: A read & write invoked simultaenously
+	 *     from separate userspace threads.
+	 *  3. sdp_timeout_alarm: Atomicize alarm operations. For eg.,
+	 *     a. alarm restart in update_sdp_enum_timeout_store() invoked by
+	 *     userspace (update_sdp_enum_timeout_store())
+	 *     b. alarm_cancel() called from set_sdp_current_limit() invoked by
+	 *     the driver.
+	 *  4. usb_first_connected:
+	 *     a. set_sdp_current_limit() (writer) invoked by the driver
+	 *     b. __usb_psy_start_sdp_timeout() (reader) invoked by userspace.
+	 */
+	struct mutex lock;
+
+	/* Flag to indicate that sdp enum timeout wa should be disabled */
+	bool disable_sdp_enum_timeout;
 };
 
 void init_vote(struct usb_vote *vote, const char *reason,
@@ -206,17 +235,26 @@ static void set_sdp_current_limit(struct usb_psy_data *usb, int ua)
 	struct logbuffer *log = usb->log;
 	unsigned int voter_map = 0;
 	struct usb_vote vote;
-	bool configured;
+	bool new_configured, curr_configured;
 	int ret;
 
 	if (ua < 0)
 		return;
 
+	mutex_lock(&usb->lock);
+
+	/*
+	 * `usb->usb_configured` is shared with power_supply_set_property()
+	 *  and can be called from multiple contexts. Therefore, enclose within
+	 *  locks for synchronization.
+	 */
+	curr_configured = usb->usb_configured;
+
 	switch (ua) {
 	case SDP_SUSPEND_UA:
 		/* no need to change the usb_configured flag when entering SUSPEND */
-		configured = usb->usb_configured;
-		if (usb->usb_configured) {
+		new_configured = curr_configured;
+		if (curr_configured) {
 			voter_map = BIT(USB_CONFIGURED);
 			init_vote(&vote, proto_voter_reason[USB_SUSPEND], USB_SUSPEND, ua);
 		} else {
@@ -226,29 +264,34 @@ static void set_sdp_current_limit(struct usb_psy_data *usb, int ua)
 		}
 		break;
 	case SDP_DISCONNECT:
-		configured = false;
+		new_configured = false;
 		voter_map = BIT(USB_SUSPEND_UNCFG) | BIT(USB_CONFIGURED) | BIT(USB_SUSPEND);
 		/* Set to SDP_HS_CONN_UA for USB Gadget Reset */
 		init_vote(&vote, proto_voter_reason[BC12_SDP], BC12_SDP, SDP_HS_CONN_UA);
 		break;
 	case SDP_HS_CONN_UA:
 	case SDP_SS_CONN_UA:
+		usb->usb_first_connected = true;
 		alarm_cancel(&usb->sdp_timeout_alarm);
-		configured = false;
+		new_configured = false;
 		voter_map = BIT(USB_SUSPEND_UNCFG) | BIT(USB_CONFIGURED) | BIT(USB_SUSPEND);
 		init_vote(&vote, proto_voter_reason[BC12_SDP], BC12_SDP, ua);
 		break;
 	case SDP_HS_CONFIG_UA:
 	case SDP_SS_CONFIG_UA:
 		alarm_cancel(&usb->sdp_timeout_alarm);
-		configured = true;
+		new_configured = true;
 		voter_map = BIT(USB_SUSPEND_UNCFG) | BIT(USB_SUSPEND);
 		init_vote(&vote, proto_voter_reason[USB_CONFIGURED], USB_CONFIGURED, ua);
 		break;
 	default:
 		logbuffer_log(log, "%s: current %d uA not supported", __func__, ua);
+		mutex_unlock(&usb->lock);
 		return;
 	}
+
+	usb->usb_configured = new_configured;
+	mutex_unlock(&usb->lock);
 
 	ret = gvotable_cast_vote(usb_icl_proto_el, vote.reason, &vote, true);
 	logbuffer_log(log, "%s: %s voting usb proto_el: %d by %s",
@@ -256,12 +299,11 @@ static void set_sdp_current_limit(struct usb_psy_data *usb, int ua)
 		      vote.reason);
 
 	/* vote 0 to disable DEAD_BATTERY condition while entering CONFIGURED State */
-	if (configured && !usb->usb_configured) {
+	if (new_configured && !curr_configured) {
 		ret = gvotable_cast_vote(usb->dead_battery_el, USB_CFG_VOTER, 0, true);
 		logbuffer_log(log, "%s: %svoting dead_battery_el: %u by %s", __func__,
 			      ret < 0 ? "error " : "", 0, USB_CFG_VOTER);
 	}
-	usb->usb_configured = configured;
 
 	if (voter_map)
 		disable_proto_votes(usb_icl_proto_el, log, voter_map);
@@ -445,8 +487,13 @@ static int usb_psy_data_set_prop(struct power_supply *psy,
 		kthread_mod_delayed_work(usb->wq, &usb->sdp_icl_work, 0);
 		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
+		logbuffer_log(usb->log, "usb_psy: set usb type %d -> %d",
+			      usb->usb_type, val->intval);
 		usb->usb_type = val->intval;
+		mutex_lock(&usb->lock);
+		usb->usb_first_connected = false;
 		usb->usb_configured = false;
+		mutex_unlock(&usb->lock);
 		ops->tcpc_set_port_data_capable(client, usb->usb_type);
 
 		/* Expedite connect for UX notification */
@@ -466,6 +513,24 @@ static int usb_psy_data_set_prop(struct power_supply *psy,
 	return 0;
 }
 
+static void __usb_psy_start_sdp_timeout(struct usb_psy_data *usb)
+__must_hold(&usb->lock)
+{
+	if (usb->usb_first_connected || usb->disable_sdp_enum_timeout)
+		return;
+
+	if (usb->usb_type == POWER_SUPPLY_USB_TYPE_SDP) {
+		logbuffer_logk(usb->log, LOGLEVEL_INFO, "Starting alarm with expiry %d\n",
+			       usb->update_sdp_enum_timeout ?
+					SDP_ENUMERATION_TIMEOUT_MS :
+					SDP_ENUMERATION_TIMEOUT_FIRST_CONNECT_MS);
+		alarm_start_relative(&usb->sdp_timeout_alarm,
+				     ms_to_ktime(usb->update_sdp_enum_timeout ?
+					SDP_ENUMERATION_TIMEOUT_MS :
+					SDP_ENUMERATION_TIMEOUT_FIRST_CONNECT_MS));
+	}
+}
+
 void usb_psy_start_sdp_timeout(void *usb)
 {
 	struct usb_psy_data *usb_psy = usb;
@@ -473,18 +538,34 @@ void usb_psy_start_sdp_timeout(void *usb)
 	if (!usb_psy)
 		return;
 
-	if (usb_psy->usb_type == POWER_SUPPLY_USB_TYPE_SDP) {
-		logbuffer_logk(usb_psy->log, LOGLEVEL_INFO, "Starting alarm with expiry %d\n",
-			       usb_psy->update_sdp_enum_timeout ?
-					SDP_ENUMERATION_TIMEOUT_MS :
-					SDP_ENUMERATION_TIMEOUT_FIRST_CONNECT_MS);
-		alarm_start_relative(&usb_psy->sdp_timeout_alarm,
-				     ms_to_ktime(usb_psy->update_sdp_enum_timeout ?
-					SDP_ENUMERATION_TIMEOUT_MS :
-					SDP_ENUMERATION_TIMEOUT_FIRST_CONNECT_MS));
-	}
+	mutex_lock(&usb_psy->lock);
+	__usb_psy_start_sdp_timeout(usb_psy);
+	mutex_unlock(&usb_psy->lock);
 }
 EXPORT_SYMBOL_GPL(usb_psy_start_sdp_timeout);
+
+static void __usb_psy_stop_sdp_timeout(struct usb_psy_data *usb)
+__must_hold(&usb->lock)
+{
+	alarm_cancel(&usb->sdp_timeout_alarm);
+}
+
+/*
+ * usb_psy_stop_sdp_timeout: Stops sdp_timeout_alarm
+ * @usb_psy: Handle to struct usb_psy_data
+ */
+void usb_psy_stop_sdp_timeout(void *usb_psy)
+{
+	struct usb_psy_data *usb = usb_psy;
+
+	if (!usb || usb->usb_type != POWER_SUPPLY_USB_TYPE_SDP)
+		return;
+
+	mutex_lock(&usb->lock);
+	__usb_psy_stop_sdp_timeout(usb);
+	mutex_unlock(&usb->lock);
+}
+EXPORT_SYMBOL_GPL(usb_psy_stop_sdp_timeout);
 
 void usb_psy_set_sink_state(void *usb_psy, bool enabled)
 {
@@ -518,12 +599,14 @@ void usb_psy_set_attached_state(void *usb_psy, bool attached)
 		return;
 
 	/* Reset upon disconnect as BC1.2 gets disabled before enabling data */
-	if (usb->attached & !attached) {
+	if (usb->attached && !attached) {
 		kthread_queue_work(usb->usb_type_wq, &usb->bc_reset_work);
 		kthread_flush_work(&usb->bc_reset_work);
 
+		mutex_lock(&usb->lock);
 		/* Cancel sdp alarm if scheduled */
 		alarm_cancel(&usb->sdp_timeout_alarm);
+		mutex_unlock(&usb->lock);
 
 		/* Clear BC12 by default; only clears when already set */
 		if (usb->non_compliant_bc12_callback)
@@ -745,6 +828,7 @@ static ssize_t update_sdp_enum_timeout_show(struct device *dev, struct device_at
 {
 	struct max77759_plat *plat;
 	struct usb_psy_data *usb;
+	bool update_sdp_enum_timeout;
 
 	plat = i2c_get_clientdata(to_i2c_client(dev));
 	if (!plat)
@@ -753,7 +837,12 @@ static ssize_t update_sdp_enum_timeout_show(struct device *dev, struct device_at
 	usb = plat->usb_psy_data;
 	if (!usb)
 		return -EAGAIN;
-	return sysfs_emit(buf, "%u\n", usb->update_sdp_enum_timeout);
+
+	mutex_lock(&usb->lock);
+	update_sdp_enum_timeout = usb->update_sdp_enum_timeout;
+	mutex_unlock(&usb->lock);
+
+	return sysfs_emit(buf, "%u\n", update_sdp_enum_timeout);
 }
 
 static ssize_t update_sdp_enum_timeout_store(struct device *dev, struct device_attribute *attr,
@@ -770,6 +859,7 @@ static ssize_t update_sdp_enum_timeout_store(struct device *dev, struct device_a
 	if (!usb)
 		return -EAGAIN;
 
+	mutex_lock(&usb->lock);
 	if (usb->update_sdp_enum_timeout)
 		goto done;
 
@@ -780,12 +870,93 @@ static ssize_t update_sdp_enum_timeout_store(struct device *dev, struct device_a
 		goto done;
 
 	logbuffer_logk(usb->log, LOGLEVEL_INFO, "Cancelled alarm\n");
+	__usb_psy_start_sdp_timeout(usb);
 
-	usb_psy_start_sdp_timeout(usb);
 done:
+	mutex_unlock(&usb->lock);
 	return count;
 }
 static DEVICE_ATTR_RW(update_sdp_enum_timeout);
+
+static ssize_t disable_sdp_enum_timeout_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct max77759_plat *plat;
+	struct usb_psy_data *usb;
+	bool disable_sdp_enum_timeout;
+
+	plat = i2c_get_clientdata(to_i2c_client(dev));
+	if (!plat)
+		return -EAGAIN;
+
+	usb = plat->usb_psy_data;
+	if (!usb)
+		return -EAGAIN;
+
+	mutex_lock(&usb->lock);
+	disable_sdp_enum_timeout = usb->disable_sdp_enum_timeout;
+	mutex_unlock(&usb->lock);
+	return sysfs_emit(buf, "%u\n", disable_sdp_enum_timeout);
+}
+
+static ssize_t disable_sdp_enum_timeout_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t count)
+{
+	struct max77759_plat *plat;
+	struct usb_psy_data *usb;
+	bool disable_sdp_enum_timeout;
+	int ret;
+
+	plat = i2c_get_clientdata(to_i2c_client(dev));
+	if (!plat)
+		return -EAGAIN;
+
+	usb = plat->usb_psy_data;
+	if (!usb)
+		return -EAGAIN;
+
+	ret = kstrtobool(buf, &disable_sdp_enum_timeout);
+	if (ret)
+		return ret;
+
+	mutex_lock(&usb->lock);
+	if (usb->disable_sdp_enum_timeout == disable_sdp_enum_timeout)
+		goto done;
+
+	usb->disable_sdp_enum_timeout = disable_sdp_enum_timeout;
+
+	logbuffer_log(usb->log, "%s: %s sdp enum timeout detection", __func__,
+		      disable_sdp_enum_timeout ? "disabling" : "enabling");
+	if (!disable_sdp_enum_timeout) {
+		/*
+		 * SDP timeout detection is enabled by HAL and we can start to
+		 * check for non-compliant chargers that present themselves as
+		 * SDP port.
+		 */
+		__usb_psy_start_sdp_timeout(usb);
+	} else if (disable_sdp_enum_timeout) {
+		/*
+		 * As SDP timeout detection is disabled, it's not possible to
+		 * determine whether the connected port is an actual SDP port
+		 * or just pretending to be one.
+		 */
+		__usb_psy_stop_sdp_timeout(usb);
+	}
+
+done:
+	mutex_unlock(&usb->lock);
+	return count;
+}
+static DEVICE_ATTR_RW(disable_sdp_enum_timeout);
+
+static struct attribute *usb_psy_sysfs_attrs[] = {
+	&dev_attr_update_sdp_enum_timeout.attr,
+	&dev_attr_disable_sdp_enum_timeout.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(usb_psy_sysfs);
 
 static void sdp_timeout_work_item(struct kthread_work *work)
 {
@@ -800,13 +971,26 @@ static void sdp_timeout_work_item(struct kthread_work *work)
 		usb->non_compliant_bc12_callback(usb->chip, true);
 }
 
+/*
+ * apply_sdp_enum_failure_wa: Applies workaround for BC12 non-compliant
+ * chargers/cables
+ *
+ * @usb_psy: Handle to struct usb_psy_data
+ */
+void apply_sdp_enum_failure_wa(void *usb_psy)
+{
+	struct usb_psy_data *usb = usb_psy;
+
+	pm_wakeup_event(&usb->tcpc_client->dev, DCP_UPDATE_MS);
+	kthread_queue_work(usb->usb_type_wq, &usb->sdp_timeout_work);
+}
+EXPORT_SYMBOL_GPL(apply_sdp_enum_failure_wa);
+
 static enum alarmtimer_restart sdp_timeout_alarm_cb(struct alarm *alarm, ktime_t now)
 {
 	struct usb_psy_data *usb = container_of(alarm, struct usb_psy_data, sdp_timeout_alarm);
 
-	pm_wakeup_event(&usb->tcpc_client->dev, DCP_UPDATE_MS);
-	kthread_queue_work(usb->usb_type_wq, &usb->sdp_timeout_work);
-
+	apply_sdp_enum_failure_wa(usb);
 	return ALARMTIMER_NORESTART;
 }
 
@@ -839,6 +1023,7 @@ void *usb_psy_setup(struct i2c_client *client, struct logbuffer *log,
 	usb->chip = chip;
 	usb->non_compliant_bc12_callback = callback;
 	usb->update_sdp_enum_timeout = false;
+	usb->disable_sdp_enum_timeout = false;
 
 	usb->usb_type_wq = kthread_create_worker(0, "wq-tcpm-usb-psy-usb-type");
 	if (IS_ERR_OR_NULL(usb->usb_type_wq)) {
@@ -956,10 +1141,13 @@ void *usb_psy_setup(struct i2c_client *client, struct logbuffer *log,
 	/* vote default value after icl_work is initialized */
 	gvotable_use_default(usb->dead_battery_el, true);
 
-	retval = device_create_file(dev, &dev_attr_update_sdp_enum_timeout);
+	devm_mutex_init(dev, &usb->lock);
+	retval = device_add_groups(dev, usb_psy_sysfs_groups);
 	if (retval < 0) {
-		dev_err(dev, "usb_psy: Unable to create device attr ret:%d", retval);
-		ret = NULL;
+		logbuffer_logk(usb->log, LOGLEVEL_INFO,
+			       "usb_psy: Unable to create sysfs attr groups, ret=%d",
+			       retval);
+		ret = ERR_PTR(retval);
 		goto unreg_dead_battery_el;
 	}
 
@@ -991,8 +1179,15 @@ void usb_psy_teardown(void *usb_data)
 {
 	struct usb_psy_data *usb = (struct usb_psy_data *)usb_data;
 
+	if (!usb)
+		return;
+
 	if (usb->tcpc_client)
-		device_remove_file(&usb->tcpc_client->dev, &dev_attr_update_sdp_enum_timeout);
+		device_remove_groups(&usb->tcpc_client->dev,
+				     usb_psy_sysfs_groups);
+	kthread_cancel_delayed_work_sync(&usb->sdp_icl_work);
+	kthread_cancel_delayed_work_sync(&usb->bc_icl_work);
+	kthread_cancel_delayed_work_sync(&usb->icl_work);
 	kthread_destroy_worker(usb->wq);
 	gvotable_destroy_election(usb->dead_battery_el);
 	gvotable_destroy_election(usb->usb_icl_proto_el);
@@ -1004,6 +1199,8 @@ void usb_psy_teardown(void *usb_data)
 		power_supply_put(usb->main_chg_psy);
 	if (!IS_ERR_OR_NULL(usb->usb_psy))
 		power_supply_unregister(usb->usb_psy);
+	kthread_cancel_work_sync(&usb->bc_reset_work);
+	kthread_cancel_work_sync(&usb->sdp_timeout_work);
 	kthread_destroy_worker(usb->usb_type_wq);
 }
 EXPORT_SYMBOL_GPL(usb_psy_teardown);

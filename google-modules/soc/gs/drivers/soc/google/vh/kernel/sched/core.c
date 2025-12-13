@@ -61,6 +61,7 @@ DEFINE_STATIC_KEY_FALSE(auto_dvfs_headroom_enable);
 DEFINE_STATIC_KEY_FALSE(auto_migration_margins_enable);
 
 DEFINE_STATIC_KEY_FALSE(skip_inefficient_opps_enable);
+DEFINE_STATIC_KEY_FALSE(use_em_for_freq_mapping);
 
 #define vi_set_adpf(vi, type, value) \
     do { \
@@ -352,7 +353,7 @@ static void set_performance_inheritance(struct task_struct *p, struct task_struc
 		if (!!get_preempt_wakeup(pi_task))
 			vi_set_preempt_wakeup(vi, type, 1);
 
-		if (!!get_prefer_high_cap(pi_task) || task_cpu(pi_task) >= pixel_cluster_start_cpu[1])
+		if (__get_prefer_high_cap(pi_task) || task_cpu(pi_task) >= pixel_cluster_start_cpu[1])
 			vi_set_prefer_high_cap(vi, type, 1);
 	} else {
 		vi->uclamp[type][UCLAMP_MIN] = uclamp_none(UCLAMP_MIN);
@@ -378,7 +379,8 @@ static void set_performance_inheritance(struct task_struct *p, struct task_struc
 void vh_binder_set_priority_pixel_mod(void *data, struct binder_transaction *t,
 	struct task_struct *p)
 {
-	get_vendor_task_struct(p)->is_binder_task = true;
+	if (!t->is_nested)
+		get_vendor_task_struct(p)->is_binder_task = true;
 
 	if (!t->from)
 		return;

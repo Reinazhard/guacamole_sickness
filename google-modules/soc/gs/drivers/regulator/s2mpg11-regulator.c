@@ -565,7 +565,7 @@ static irqreturn_t s2mpg11_buck_ocp_irq(int irq, void *data)
 
 	mutex_lock(&s2mpg11->lock);
 
-	for (i = 0; i < 12; i++) {
+	for (i = 0; i < S2MPG11_BUCK_MAX; i++) {
 		if (s2mpg11->buck_ocp_irq[i] == irq) {
 			pr_info_ratelimited("%s : BUCK[%d] OCP IRQ, %d\n",
 					    __func__, i + 1, irq);

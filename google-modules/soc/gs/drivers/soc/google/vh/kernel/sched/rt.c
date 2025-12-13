@@ -70,7 +70,7 @@ static inline void rt_task_fits_capacity(struct task_struct *p, int cpu,
 
 	*fits = util_fits_cpu(util, uclamp_min, uclamp_max, cpu);
 	*fits_original = capacity_orig_of(cpu) >= clamp(util, uclamp_min, uclamp_max) ||
-			 cpu >= pixel_cluster_start_cpu[2];
+			 cpu >= pixel_cluster_start_cpu[pixel_cluster_num - 1];
 }
 
 static inline bool
@@ -132,7 +132,6 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 	unsigned int exit_lat[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool task_fits[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool task_fits_original[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
-	bool overutilize[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool candidates[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	int cpu, best_cpu = -1;
 	unsigned long min_cpu_util;
@@ -142,8 +141,7 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 	struct cpuidle_state *idle;
 	int prev_cpu = task_cpu(p);
 	bool is_idle;
-	bool fit_and_non_overutilized_found = false, fit_and_overutilized_found = false;
-	bool fit_orig_and_non_overutilized_found = false, fit_orig_and_overutilized_found = false;
+	bool fit_cpu = false, fit_orig_cpu = false;
 	unsigned long rq_util_min, rq_util_max;
 
 	if (cpumask_weight(lowest_mask) == 1)
@@ -183,8 +181,7 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 			util[cpu] += task_util(p);
 
 		rt_task_fits_capacity(p, cpu, &task_fits[cpu], &task_fits_original[cpu]);
-		overutilize[cpu] = !util_fits_cpu(util[cpu],
-						  rq_util_min, rq_util_max, cpu);
+
 
 		// Make cpus in CPD state the least preferred
 		if (is_idle && !get_cluster_enabled(pixel_cpu_to_cluster[cpu])) {
@@ -197,38 +194,29 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 
 		trace_sched_cpu_util_rt(cpu, capacity[cpu], capacity_of(cpu), util[cpu],
 					exit_lat[cpu], cpu_importance[cpu], task_fits[cpu],
-					task_fits_original[cpu], overutilize[cpu], is_idle);
+					task_fits_original[cpu], is_idle);
 
 		// To prefer idle cpu than non-idle cpu
 		if (is_idle)
 			util[cpu] = 0;
 
-		if (task_fits[cpu]) {
-			fit_and_non_overutilized_found |= !overutilize[cpu];
-			fit_and_overutilized_found |= overutilize[cpu];
-		} else if (task_fits_original[cpu]) {
-			fit_orig_and_non_overutilized_found |= !overutilize[cpu];
-			fit_orig_and_overutilized_found |= overutilize[cpu];
-		}
+		if (task_fits[cpu])
+			fit_cpu = true;
+		else if (task_fits_original[cpu])
+			fit_orig_cpu = true;
 	}
 
 	// no CPU fits, select the biggest capacity CPU instead
-	if (!fit_and_non_overutilized_found && !fit_and_overutilized_found &&
-		!fit_orig_and_non_overutilized_found && !fit_orig_and_overutilized_found) {
+	if (!fit_cpu && !fit_orig_cpu) {
 		best_cpu = cpumask_last(lowest_mask);
 		rcu_read_unlock();
 		goto out;
 	}
 
 	for_each_cpu(cpu, lowest_mask) {
-		if (fit_and_non_overutilized_found && (overutilize[cpu] || !task_fits[cpu]))
+		if (fit_cpu && !task_fits[cpu])
 			continue;
-		else if (fit_and_overutilized_found && (!task_fits[cpu]))
-			continue;
-		else if (fit_orig_and_non_overutilized_found &&
-			(overutilize[cpu] || !task_fits_original[cpu]))
-			continue;
-		else if (fit_orig_and_overutilized_found && (!task_fits_original[cpu]))
+		else if (fit_orig_cpu && (!task_fits_original[cpu]))
 			continue;
 
 		candidates[cpu] = 1;
@@ -390,7 +378,7 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 	int target = -1;
 	bool sync = !!(wake_flags & WF_SYNC);
 	int this_cpu;
-	bool sync_wakeup = false;
+	bool sync_wakeup = false, prefer_high_cap = false;
 	struct cpumask backup_mask;
 	int i;
 	bool fits;
@@ -422,7 +410,9 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 		}
 	}
 
-	set_auto_prefer_high_cap(p, sync && this_cpu >= pixel_cluster_start_cpu[1]);
+	prefer_high_cap = __get_prefer_high_cap(p) || (sync && this_cpu >= pixel_cluster_start_cpu[1]);
+
+	set_prefer_high_cap(p, prefer_high_cap);
 
 	target = find_lowest_rq(p, &backup_mask);
 
@@ -454,7 +444,7 @@ out_unlock:
 out:
 	trace_sched_select_task_rq_rt(p, task_util(p), prev_cpu, target, *new_cpu, sync_wakeup);
 
-	set_auto_prefer_high_cap(p, false);
+	set_prefer_high_cap(p, false);
 
 	return;
 }

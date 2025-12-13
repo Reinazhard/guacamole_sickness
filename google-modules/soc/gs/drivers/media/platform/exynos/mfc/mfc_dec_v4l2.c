@@ -1570,6 +1570,10 @@ static int mfc_dec_g_selection(struct file *file, void *priv,
 					s->r.width, s->r.height,
 					dec->cr_right, dec->cr_bot,
 					ctx->img_width, ctx->img_height);
+			if (dec->disp_drc.disp_crop_change) {
+				dec->disp_drc.disp_crop_change = 0;
+				mfc_debug(2, "clear disp_crop_change\n");
+			}
 		} else {
 			s->r.left = 0;
 			s->r.top = 0;

@@ -3712,11 +3712,6 @@ retry:
 
 			exynos_elbi_write(exynos_pcie, 0x0, PCIE_APP_XFER_PENDING);
 
-			if (exynos_pcie->ip_ver >= 0x889000 &&
-			    exynos_pcie->ep_device_type == EP_BCM_WIFI) {
-				return -EPIPE;
-			}
-
 			return -EPIPE;
 		}
 	} else {
@@ -5566,7 +5561,10 @@ static void exynos_pcie_wait_cfg_access_work(struct work_struct *work)
 	}
 
 	exynos_pcie_rc_dump_all_status(exynos_pcie->ch_num);
-	BUG_ON(1);
+	exynos_pcie->cpl_timeout_recovery = 1;
+	exynos_pcie->state = STATE_LINK_DOWN_TRY;
+	queue_work(exynos_pcie->pcie_wq,
+			&exynos_pcie->cpl_timeout_work.work);
 }
 
 static int exynos_pcie_rc_probe(struct platform_device *pdev)
