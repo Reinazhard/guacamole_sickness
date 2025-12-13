@@ -70,7 +70,6 @@
 
 		pca9468,input-current-limit = <2000000>; /* 2.0A */
 		pca9468,charging-current = <4000000>; /* 4A */
-		pca9468,float-voltage = <4300000>; /* 4.3V */
 
 		pca9468,input-itopoff = <500000>; /* 500mA */
 		pca9468,switching-frequency = <3>; /* 980KHz */

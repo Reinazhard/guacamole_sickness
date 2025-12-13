@@ -23,12 +23,16 @@
 				google,sub-power = <&s2mpg11mfd>;
 				ppm_settings = <0>;
 				mpmm_settings = <0x1a>;
-				tpu_con_heavy = <0xf041c3>;
-				tpu_con_light = <0xf041c5>;
+				tpu_con_heavy = <0xfff041c1>;
+				tpu_con_light = <0xfff041c3>;
 				tpu_clkdivstep = <0x201>;
-				gpu_con_heavy = <0xf04385>;
+				gpu_con_heavy = <0xfff04385>;
 				gpu_con_light = <0>;
 				gpu_clkdivstep = <0x801>;
+				cpu2_con_heavy = <0xfff041c0>;
+				cpu2_con_light = <0xfff041c3>;
+				cpu1_con_heavy = <0xfff041c3>;
+				cpu1_con_light = <0xfff041c5>;
 				cpu2_clkdivstep = <0x801>;
 				cpu1_clkdivstep = <0x0>;
 				cpu0_clkdivstep = <0x1>;
@@ -44,7 +48,7 @@
 				cpu0_cluster = <0>;
 				cpu1_cluster = <4>;
 				cpu2_cluster = <6>;
-
+				smpl_ctrl = <0xA4>; /* 3.1V, No HYS, 0us Debounce */
 
 				irq_config {
 					irq,uvlo1;
@@ -94,30 +98,30 @@
 				};
 				freq_qos {
 					batoilo {
-						cpucl0 = <955000>;
-						cpucl1 = <1221000>;
-						cpucl2 = <1557000>;
+						cpucl0 = <930000>;
+						cpucl1 = <1197000>;
+						cpucl2 = <1426000>;
 						gpu = <723000>;
 						tpu = <845000>;
 					};
 					vdroop1 {
 						cpucl0 = <1704000>;
-						cpucl1 = <1945000>;
-						cpucl2 = <2294000>;
+						cpucl1 = <1836000>;
+						cpucl2 = <2252000>;
 						gpu = <890000>;
 						tpu = <845000>;
 					};
 					vdroop2 {
 						cpucl0 = <1704000>;
-						cpucl1 = <1945000>;
-						cpucl2 = <2294000>;
+						cpucl1 = <1836000>;
+						cpucl2 = <2252000>;
 						gpu = <649000>;
 						tpu = <627000>;
 					};
 					smpl_gm {
 						cpucl0 = <1704000>;
-						cpucl1 = <1945000>;
-						cpucl2 = <2294000>;
+						cpucl1 = <1836000>;
+						cpucl2 = <2252000>;
 						gpu = <400000>;
 						tpu = <627000>;
 					};

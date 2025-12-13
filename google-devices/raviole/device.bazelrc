@@ -2,5 +2,5 @@
 #
 # Copyright (C) 2023 Google LLC
 
-build:raviole --//private/devices/google/common:kernel=//private/devices/google/raviole:kernel
-build:raviole --//private/google-modules/soc/gs:gs_soc_module=//private/devices/google/raviole:gs101_soc.raviole
+build:raviole --config=gs101_base
+build:raviole --//private/devices/google/common:kernel=//private/devices/google/raviole:raviole/kernel
