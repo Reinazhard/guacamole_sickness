@@ -21,6 +21,10 @@
 #include <linux/kfifo.h>
 #include <linux/slab.h>
 #include <soc/google/exynos-cpupm.h>
+#include <linux/workqueue.h>
+#include <linux/netlink.h>
+#include <net/sock.h>
+#include <linux/string.h>
 
 #define STATUS_IDLE	1
 #define STATUS_BUSY	0
@@ -36,6 +40,14 @@
 #define DBO_NOT_CONFIGURED		0
 #define DBO_CONFIGURED			1
 
+/* Number of wakelock log buffers */
+#define NUM_WAKELOCK_LOGS 2
+/* Max entries before switching log buffer */
+#define WAKELOCK_LOG_MAX_ENTRIES 1024
+
+#define NETLINK_BTHAL_NOTIFY 31
+
+/* Forward declaration to resolve circular dependency */
 struct nitrous_lpm_proc;
 
 struct nitrous_bt_lpm {
@@ -69,7 +81,34 @@ struct nitrous_bt_lpm {
 	int idle_bt_tx_ip_index;
 	int idle_bt_rx_ip_index;
 	int wakelock_ctrl;
+
+	/* Host Wake Logging */
+	struct logbuffer *wakelock_log[NUM_WAKELOCK_LOGS];
+	int current_wakelock_log_idx;
+	unsigned int wakelock_log_entries[NUM_WAKELOCK_LOGS];
+	spinlock_t wake_log_lock;
+	bool is_wake_asserted;
+	struct timespec64 pending_assert_ts;
+	s64 total_diff_ns; /* Accumulator for the time difference */
+
+	/* State for continuous wakelock calculation */
+	struct timespec64 prev_assert_ts;
+	struct timespec64 prev_deassert_ts;
+
+	/* Netlink and workqueue for userspace communication */
+	struct workqueue_struct *nl_wq;
+	struct sock *nl_sk;
+	pid_t bthal_userspace_pid; // PID of the bthal service in userspace
 };
+
+/* Work structure for sending netlink messages. Defined after nitrous_bt_lpm. */
+struct nl_work_data {
+	struct work_struct work;
+	struct nitrous_bt_lpm *lpm;
+	char log_name[22];
+};
+
+static void nitrous_nl_send_work_func(struct work_struct *work);
 
 #define PROC_BTWAKE	0
 #define PROC_LPM	1
@@ -120,7 +159,6 @@ static void nitrous_prepare_uart_tx_locked(struct nitrous_bt_lpm *lpm, bool asse
 
 		if (lpm->is_suspended) {
 			/* This shouldn't happen. If it does, it will result in a BT crash */
-			/* TODO (mullerf): Does this happen? If yes, why? */
 			dev_err(lpm->dev,"Tx in device suspended. ret: %d, uc:%d\n",
 				ret, atomic_read(&lpm->dev->power.usage_count));
 			logbuffer_log(lpm->log,"Tx in device suspended. ret: %d, uc:%d",
@@ -146,6 +184,7 @@ static irqreturn_t nitrous_host_wake_isr(int irq, void *data)
 	struct nitrous_bt_lpm *lpm = data;
 	int host_wake;
 	struct timespec64 ts;
+	unsigned long flags;
 
 	host_wake = gpiod_get_value(lpm->gpio_host_wake);
 	dev_dbg(lpm->dev, "Host wake IRQ: %u\n", host_wake);
@@ -156,21 +195,203 @@ static irqreturn_t nitrous_host_wake_isr(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	ktime_get_real_ts64(&ts);
-	/* Check whether host_wake is ACTIVE (== 1) */
-	if (host_wake == 1) {
-		logbuffer_log(lpm->log, "host_wake_isr asserted %ptTt.%03ld",
-			&ts, ts.tv_nsec / NSEC_PER_MSEC);
+	spin_lock_irqsave(&lpm->wake_log_lock, flags);
+
+	if (host_wake == 1) { /* Asserted */
+		/* Hold host-wake wakelock */
 		pm_stay_awake(lpm->dev);
 		exynos_update_ip_idle_status(lpm->idle_bt_rx_ip_index, STATUS_BUSY);
-	} else {
+
+		/* get timestamp for logging */
+		ktime_get_real_ts64(&ts);
+
+		logbuffer_log(lpm->log, "host_wake_isr asserted %ptTt.%03ld",
+			&ts, ts.tv_nsec / NSEC_PER_MSEC);
+
+		/* Store state for detailed logging */
+		if (!lpm->is_wake_asserted) {
+			lpm->is_wake_asserted = true;
+			lpm->pending_assert_ts = ts;
+		}
+	} else { /* De-asserted */
+		exynos_update_ip_idle_status(lpm->idle_bt_rx_ip_index, STATUS_IDLE);
+		/* Release host-wake wakelock */
+		pm_wakeup_dev_event(lpm->dev, lpm->wakelock_ctrl, false);
+
+		/* Get timestamp for logging */
+		ktime_get_real_ts64(&ts);
+
 		logbuffer_log(lpm->log, "host_wake_isr de-asserted %ptTt.%03ld",
 			&ts, ts.tv_nsec / NSEC_PER_MSEC);
-		exynos_update_ip_idle_status(lpm->idle_bt_rx_ip_index, STATUS_IDLE);
-		pm_wakeup_dev_event(lpm->dev, lpm->wakelock_ctrl, false);
+
+		/* Detailed logging calculation */
+		if (lpm->is_wake_asserted) {
+			s64 diff_ns;
+			s64 continuous_host_wakelock_ns;
+			s64 extra_wakelock_ns;
+			struct logbuffer *current_log;
+			bool is_continuous = false;
+
+			/* Convert the configurable wakelock control time (ms) to nanoseconds */
+			extra_wakelock_ns = (s64)lpm->wakelock_ctrl * NSEC_PER_MSEC;
+			s64 current_assert_ns = timespec64_to_ns(&lpm->pending_assert_ts);
+
+			diff_ns = timespec64_to_ns(&ts) - current_assert_ns + extra_wakelock_ns;
+
+			/* Calculate continuous wakelock based on the previous event */
+			if (lpm->prev_deassert_ts.tv_sec == 0) {
+				is_continuous = false;
+				/* First event, no previous event to compare against. */
+				continuous_host_wakelock_ns = diff_ns;
+				/* This event starts a new potential continuous chain. */
+				lpm->prev_assert_ts = lpm->pending_assert_ts;
+			} else {
+				s64 prev_deassert_with_extra_ns =
+					timespec64_to_ns(&lpm->prev_deassert_ts) +
+					extra_wakelock_ns;
+
+				if (current_assert_ns <= prev_deassert_with_extra_ns) {
+					/* Case 1: Continuous wakelock. The current event started
+					 * before the previous event's wakelock window expired.
+					 * The total continuous time is from the PREVIOUS chain's
+					 * start to the CURRENT deassert.
+					 */
+					is_continuous = true;
+					continuous_host_wakelock_ns =
+						timespec64_to_ns(&ts) -
+						timespec64_to_ns(&lpm->prev_assert_ts) +
+						extra_wakelock_ns;
+				} else {
+					/* Case 2: Non-continuous wakelock. A new, separate event.
+					 * There was a gap.  This event starts a new potential
+					 * continuous chain.
+					 */
+					is_continuous = false;
+					continuous_host_wakelock_ns = diff_ns;
+					lpm->prev_assert_ts = lpm->pending_assert_ts;
+				}
+			}
+
+			lpm->total_diff_ns += diff_ns;
+
+			if (lpm->wakelock_log_entries[lpm->current_wakelock_log_idx] >=
+			    WAKELOCK_LOG_MAX_ENTRIES) {
+				struct nl_work_data *work_data =
+					kmalloc(sizeof(*work_data), GFP_ATOMIC);
+				if (work_data) {
+					INIT_WORK(&work_data->work, nitrous_nl_send_work_func);
+					work_data->lpm = lpm;
+					snprintf(work_data->log_name,
+						sizeof(work_data->log_name),
+						"logbuffer_btwakelock%d",
+						lpm->current_wakelock_log_idx);
+					dev_dbg(lpm->dev, "%s: nl_send_work_func\n", __func__);
+					queue_work(lpm->nl_wq, &work_data->work);
+				}
+				lpm->current_wakelock_log_idx =
+					(lpm->current_wakelock_log_idx + 1) % NUM_WAKELOCK_LOGS;
+				/* Reset the entry count for the new buffer before using it */
+				lpm->wakelock_log_entries[lpm->current_wakelock_log_idx] = 0;
+			}
+
+			/* Select the current log buffer */
+			current_log = lpm->wakelock_log[lpm->current_wakelock_log_idx];
+			if (current_log) {
+				/* Log detailed info to the current wakelock_log buffer */
+				logbuffer_log(current_log,
+					"(%d-%d) - Assert: %ptTt.%03ld, De-assert: %ptTt.%03ld, Diff: %lld.%06lld ms, Acc-wake: %lld.%06lld ms, Cont-Wake:%lldms (%c).",
+					lpm->current_wakelock_log_idx,
+					lpm->wakelock_log_entries[lpm->current_wakelock_log_idx],
+					&lpm->pending_assert_ts,
+					lpm->pending_assert_ts.tv_nsec / NSEC_PER_MSEC,
+					&ts, ts.tv_nsec / NSEC_PER_MSEC,
+					diff_ns / NSEC_PER_MSEC,
+					(diff_ns % NSEC_PER_MSEC) / NSEC_PER_USEC,
+					lpm->total_diff_ns / NSEC_PER_MSEC,
+					(lpm->total_diff_ns % NSEC_PER_MSEC) / NSEC_PER_USEC,
+					continuous_host_wakelock_ns / NSEC_PER_MSEC,
+					is_continuous ? '~' : '+');
+
+				/* Increment the entry count for the current buffer */
+				lpm->wakelock_log_entries[lpm->current_wakelock_log_idx]++;
+			}
+
+			/* Always update the previous deassert time for the next comparison. */
+			lpm->prev_deassert_ts = ts;
+			lpm->is_wake_asserted = false;
+		}
 	}
 
+	spin_unlock_irqrestore(&lpm->wake_log_lock, flags);
+
 	return IRQ_HANDLED;
+}
+
+// Netlink receive function
+static void nitrous_nl_recv_msg(struct sk_buff *skb)
+{
+	struct nlmsghdr *nlh;
+	struct nitrous_bt_lpm *lpm;
+
+	// Get the lpm instance from the socket's user data
+	lpm = (struct nitrous_bt_lpm *)skb->sk->sk_user_data;
+	if (!lpm) {
+		pr_err("nitrous: Netlink: lpm instance not found in sk_user_data\n");
+		return;
+	}
+
+	if (skb->len < nlmsg_total_size(0)) {
+		dev_err(lpm->dev, "Netlink message too short\n");
+		return;
+	}
+
+	nlh = nlmsg_hdr(skb);
+
+	// Store the sender's PID for unicast messages
+	if (nlh->nlmsg_pid) { // Ensure PID is not 0 (kernel's PID)
+		lpm->bthal_userspace_pid = nlh->nlmsg_pid;
+		dev_info(lpm->dev, "Netlink: Registered bthal service PID: %u\n",
+			lpm->bthal_userspace_pid);
+	}
+}
+
+static void nitrous_nl_send_work_func(struct work_struct *work)
+{
+	struct nl_work_data *work_data = container_of(work, struct nl_work_data, work);
+	struct nitrous_bt_lpm *lpm = work_data->lpm;
+	struct sk_buff *skb_out;
+	struct nlmsghdr *nlh;
+	int res;
+
+	if (!lpm || !lpm->nl_sk) {
+		kfree(work_data);
+		return;
+	}
+
+	// Check if a userspace PID has been registered for unicast
+	if (lpm->bthal_userspace_pid == 0) {
+		dev_warn(lpm->dev, "%s: No bthal service PID registered for unicast.\n", __func__);
+		kfree(work_data);
+		return;
+	}
+
+	skb_out = nlmsg_new(strlen(work_data->log_name) + 1, 0);
+	if (!skb_out) {
+		kfree(work_data);
+		return;
+	}
+
+	nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, strlen(work_data->log_name) + 1, 0);
+	strscpy(nlmsg_data(nlh), work_data->log_name, strlen(work_data->log_name) + 1);
+
+	dev_info(lpm->dev, "%s: Sending unicast Netlink message to PID %u\n",
+		__func__, lpm->bthal_userspace_pid);
+
+	res = nlmsg_unicast(lpm->nl_sk, skb_out, lpm->bthal_userspace_pid);
+	if (res < 0)
+		dev_dbg(lpm->dev, "Error sending unicast netlink message: %d\n", res);
+
+	kfree(work_data);
 }
 
 static irqreturn_t ntirous_timesync_isr(int irq, void *data)
@@ -317,7 +538,7 @@ static ssize_t nitrous_proc_write(struct file *file, const char *buf,
 	if (copy_from_user(lbuf, buf, count))
 		return -EFAULT;
         /* Null-terminate the string */
-        lbuf[count] = '\0';
+	lbuf[count] = '\0';
 
 	switch (data->operation) {
 	case PROC_LPM:
@@ -424,6 +645,42 @@ static void toggle_timesync(struct nitrous_bt_lpm *lpm) {
 	}
 }
 
+static void nitrous_netlink_exit(struct nitrous_bt_lpm *lpm)
+{
+	if (lpm->nl_wq) {
+		flush_workqueue(lpm->nl_wq);
+		destroy_workqueue(lpm->nl_wq);
+		lpm->nl_wq = NULL;
+	}
+	if (lpm->nl_sk) {
+		netlink_kernel_release(lpm->nl_sk);
+		lpm->nl_sk = NULL;
+	}
+}
+
+static int nitrous_netlink_init(struct nitrous_bt_lpm *lpm)
+{
+	struct netlink_kernel_cfg cfg = {
+		.input = nitrous_nl_recv_msg, // Set input callback for receiving messages
+	};
+
+	lpm->nl_wq = create_singlethread_workqueue("nitrous_nl_wq");
+	if (!lpm->nl_wq)
+		return -ENOMEM;
+
+	lpm->nl_sk = netlink_kernel_create(&init_net, NETLINK_BTHAL_NOTIFY, &cfg);
+	if (!lpm->nl_sk) {
+		destroy_workqueue(lpm->nl_wq);
+		lpm->nl_wq = NULL;
+		return -EFAULT;
+	}
+
+	// Store the lpm instance in the socket's user data for the receive callback
+	lpm->nl_sk->sk_user_data = lpm;
+	lpm->bthal_userspace_pid = 0; // Initialize PID to 0 (not set)
+
+	return 0;
+}
 
 static int nitrous_lpm_init(struct nitrous_bt_lpm *lpm)
 {
@@ -698,7 +955,8 @@ static int nitrous_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct nitrous_bt_lpm *lpm;
-	int rc, wakelock_time = 0;
+	int rc, i, wakelock_time = 0;
+	char log_name[20];
 
 	lpm = devm_kzalloc(dev, sizeof(struct nitrous_bt_lpm), GFP_KERNEL);
 	if (!lpm)
@@ -765,6 +1023,22 @@ static int nitrous_probe(struct platform_device *pdev)
 		lpm->log = NULL;
 	}
 
+	/* Register wakelock log buffers */
+	for (i = 0; i < NUM_WAKELOCK_LOGS; i++) {
+		snprintf(log_name, sizeof(log_name), "btwakelock%d", i);
+		lpm->wakelock_log[i] = logbuffer_register(log_name);
+		if (IS_ERR(lpm->wakelock_log[i])) {
+			dev_warn(dev, "failed to register %s logbuffer\n", log_name);
+			lpm->wakelock_log[i] = NULL;
+		}
+	}
+	lpm->current_wakelock_log_idx = 0;
+	spin_lock_init(&lpm->wake_log_lock);
+
+	rc = nitrous_netlink_init(lpm);
+	if (rc)
+		goto err_netlink_init;
+
 	rc = nitrous_lpm_init(lpm);
 	if (unlikely(rc))
 		goto err_lpm_init;
@@ -796,8 +1070,16 @@ static int nitrous_probe(struct platform_device *pdev)
 
 err_rfkill_init:
 	nitrous_rfkill_cleanup(lpm);
+err_netlink_init:
+	nitrous_netlink_exit(lpm);
 err_lpm_init:
 	nitrous_lpm_cleanup(lpm);
+	if (lpm->log)
+		logbuffer_unregister(lpm->log);
+	for (i = 0; i < NUM_WAKELOCK_LOGS; i++) {
+		if (lpm->wakelock_log[i])
+			logbuffer_unregister(lpm->wakelock_log[i]);
+	}
 	devm_kfree(dev, lpm);
 	return rc;
 }
@@ -805,16 +1087,23 @@ err_lpm_init:
 static int nitrous_remove(struct platform_device *pdev)
 {
 	struct nitrous_bt_lpm *lpm = platform_get_drvdata(pdev);
+	int i;
 
 	if (!lpm) {
 		return -EINVAL;
 	}
 
 	logbuffer_log(lpm->log, "removing");
+
+	nitrous_netlink_exit(lpm);
 	nitrous_rfkill_cleanup(lpm);
 	nitrous_lpm_cleanup(lpm);
 	if (!IS_ERR_OR_NULL(lpm->log))
 		logbuffer_unregister(lpm->log);
+	for (i = 0; i < NUM_WAKELOCK_LOGS; i++) {
+		if (lpm->wakelock_log[i])
+			logbuffer_unregister(lpm->wakelock_log[i]);
+	}
 
 	devm_kfree(&pdev->dev, lpm);
 
