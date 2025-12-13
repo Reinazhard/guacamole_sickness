@@ -270,11 +270,11 @@ static void dp_fill_host_caps(struct dp_device *dp)
 	dp->host.ssc = dp_ssc;
 }
 
-static bool dp_check_fec_caps(struct dp_device *dp, u8 fec_dpcd)
+static bool dp_fec_init(struct dp_device *dp)
 {
 	u8 fec_data;
 
-	if (!drm_dp_sink_supports_fec(fec_dpcd) || !dp->host.fec)
+	if (!dp_get_fec(dp))
 		return false;
 
 	fec_data = DP_FEC_DECODE_EN_DETECTED | DP_FEC_DECODE_DIS_DETECTED;
@@ -318,8 +318,9 @@ static void dp_fill_sink_caps(struct dp_device *dp, u8 dpcd[DP_RECEIVER_CAP_SIZE
 
 	/* Set FEC support */
 	if (drm_dp_dpcd_readb(&dp->dp_aux, DP_FEC_CAPABILITY, &fec_dpcd) == 1) {
-		dp->sink.fec = dp_check_fec_caps(dp, fec_dpcd);
+		dp->sink.fec = drm_dp_sink_supports_fec(fec_dpcd);
 	} else {
+		dp->sink.fec = false;
 		dp->stats.dpcd_read_failures++;
 		dp_warn(dp, "DP Sink: failed to read FEC support register\n");
 	}
@@ -329,6 +330,7 @@ static void dp_fill_sink_caps(struct dp_device *dp, u8 dpcd[DP_RECEIVER_CAP_SIZE
 			sizeof(dsc_dpcd)) {
 		dp->sink.dsc = !!dsc_dpcd[0];
 	} else {
+		dp->sink.dsc = false;
 		dp->stats.dpcd_read_failures++;
 		dp_warn(dp, "DP Sink: failed to read DSC support registers\n");
 	}
@@ -608,8 +610,8 @@ static int dp_init_link_training_cr(struct dp_device *dp)
 	dp_info(dp, "HW configured with Rate(%d) and Lanes(%u)\n",
 		dp->hw_config.link_rate, dp->hw_config.num_lanes);
 
-	/* Configure FEC before link training */
-	dp_hw_set_fec(dp->link.fec);
+	/* Configure FEC_READY before link training */
+	dp_hw_set_fec_ready(dp->link.fec);
 
 	/* Reconfigure DP Link */
 	dp_link_configure(dp);
@@ -1097,6 +1099,10 @@ static int dp_link_up(struct dp_device *dp)
 	dp->link.ssc = dp_get_ssc(dp);
 	dp->link.support_tps = dp_get_supported_pattern(dp);
 	dp->link.fast_training = dp_get_fast_training(dp);
+
+	/* FEC init */
+	dp->link.fec = dp_fec_init(dp);
+
 	dp_info(dp, "DP Link: training start: Rate(%d Mbps) Lanes(%u) EF(%d) SSC(%d) FEC(%d)\n",
 		dp->link.link_rate / 100, dp->link.num_lanes, dp->link.enhanced_frame,
 		dp->link.ssc, dp->link.fec);
@@ -1110,6 +1116,9 @@ static int dp_link_up(struct dp_device *dp)
 		dp->stats.link_negotiation_failures++;
 		return -ENOLINK;
 	}
+
+	/* Post HW Configuration after Link Training */
+	dp_hw_set_fec(dp->link.fec);
 
 	mutex_unlock(&dp->training_lock);
 	return 0;
@@ -1725,6 +1734,7 @@ static void dp_off_by_hpd_plug(struct dp_device *dp)
 			}
 
 			dp->hdcp_and_audio_enabled = false;
+			dp->hdcp_desired = false;
 
 			/* Wait Audio is stopped if Audio is working. */
 			if (dp_get_audio_state(dp) != DP_AUDIO_DISABLE) {
@@ -3114,6 +3124,21 @@ static ssize_t usbc_cable_disconnect_store(struct device *dev, struct device_att
 }
 static DEVICE_ATTR_WO(usbc_cable_disconnect);
 
+static ssize_t hdcp_negotiation_store(struct device *dev, struct device_attribute *attr,
+					   const char *buf, size_t size)
+{
+	struct dp_device *dp = dev_get_drvdata(dev);
+
+	if (dp->state == DP_STATE_RUN && !dp->hdcp_desired) {
+		dp_info(dp, "trigger hdcp negotiation\n");
+		hdcp_dplink_connect_state(DP_CP_DESIRED);
+		dp->hdcp_desired = true;
+	}
+
+	return size;
+}
+static DEVICE_ATTR_WO(hdcp_negotiation);
+
 static struct attribute *dp_attrs[] = { &dev_attr_orientation.attr,
 					&dev_attr_pin_assignment.attr,
 					&dev_attr_hpd.attr,
@@ -3121,6 +3146,7 @@ static struct attribute *dp_attrs[] = { &dev_attr_orientation.attr,
 					&dev_attr_link_status.attr,
 					&dev_attr_irq_hpd.attr,
 					&dev_attr_usbc_cable_disconnect.attr,
+					&dev_attr_hdcp_negotiation.attr,
 					NULL };
 
 static const struct attribute_group dp_group = {

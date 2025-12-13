@@ -912,6 +912,9 @@ struct exynos_panel {
 	struct mutex bl_state_lock;
 	struct exynos_bl_notifier bl_notifier;
 
+	/* Record the current CABC mode if force_off enabled */
+	enum exynos_cabc_mode current_cabc_mode;
+
 	struct mutex lp_state_lock;
 	const struct exynos_binned_lp *current_binned_lp;
 	struct drm_property_blob *lp_mode_blob;
