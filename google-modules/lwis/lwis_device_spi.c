@@ -39,6 +39,7 @@ static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 
 static struct lwis_device_subclass_operations spi_vops = {
 	.register_io = lwis_spi_register_io,
+	.register_io_locked = lwis_spi_register_io,
 	.register_io_barrier = NULL,
 	.device_enable = lwis_spi_device_enable,
 	.device_disable = lwis_spi_device_disable,

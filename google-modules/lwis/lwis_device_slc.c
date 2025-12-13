@@ -35,6 +35,7 @@ static int lwis_slc_disable(struct lwis_device *lwis_dev);
 
 static struct lwis_device_subclass_operations slc_vops = {
 	.register_io = NULL,
+	.register_io_locked = NULL,
 	.register_io_barrier = NULL,
 	.device_enable = lwis_slc_enable,
 	.device_disable = lwis_slc_disable,

@@ -50,6 +50,12 @@ int lwis_ioreg_io_entry_rw(struct lwis_ioreg_device *ioreg_dev, struct lwis_io_e
 			   int access_size);
 
 /*
+ *  lwis_ioreg_io_entry_rw: Read/write registers via io_entry request without lock.
+ */
+int lwis_ioreg_io_entry_rw_locked(struct lwis_ioreg_device *ioreg_dev, struct lwis_io_entry *entry,
+				  int access_size);
+
+/*
  *  lwis_ioreg_read: Read single register.
  */
 int lwis_ioreg_read(struct lwis_ioreg_device *ioreg_dev, int index, uint64_t offset,

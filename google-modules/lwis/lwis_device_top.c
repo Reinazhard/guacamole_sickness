@@ -44,6 +44,7 @@ static int lwis_top_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 static int lwis_top_close(struct lwis_device *lwis_dev);
 static struct lwis_device_subclass_operations top_vops = {
 	.register_io = lwis_top_register_io,
+	.register_io_locked = lwis_top_register_io,
 	.register_io_barrier = NULL,
 	.device_enable = NULL,
 	.device_disable = NULL,
@@ -241,7 +242,7 @@ static int lwis_top_event_subscribe(struct lwis_device *lwis_dev, int64_t trigge
 	spin_unlock_irqrestore(&lwis_top_dev->base_dev.lock, flags);
 
 	/* If the subscription does not exist in hash table, create one */
-	new_subscription = kmalloc(sizeof(struct lwis_event_subscribe_info), GFP_KERNEL);
+	new_subscription = kmalloc(sizeof(struct lwis_event_subscribe_info), GFP_ATOMIC);
 	if (!new_subscription)
 		return -ENOMEM;
 
@@ -406,9 +407,13 @@ static int lwis_top_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 	case LWIS_IO_ENTRY_READ_BATCH:
 	case LWIS_IO_ENTRY_READ_BATCH_V2: {
 		struct lwis_io_entry_rw_batch *rw_batch;
+		size_t sum_offset_size;
 
 		rw_batch = &entry->rw_batch;
-		if (rw_batch->offset + rw_batch->size_in_bytes >= SCRATCH_MEMORY_SIZE) {
+		if (rw_batch->offset >= SCRATCH_MEMORY_SIZE ||
+		    check_add_overflow(rw_batch->offset, rw_batch->size_in_bytes,
+				       &sum_offset_size) ||
+		    sum_offset_size > SCRATCH_MEMORY_SIZE) {
 			dev_err(top_dev->base_dev.dev,
 				"Read range[offset(%llu) + size_in_bytes(%zu)] exceeds scratch memory (%d)\n",
 				rw_batch->offset, rw_batch->size_in_bytes, SCRATCH_MEMORY_SIZE);
@@ -434,9 +439,13 @@ static int lwis_top_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 	case LWIS_IO_ENTRY_WRITE_BATCH:
 	case LWIS_IO_ENTRY_WRITE_BATCH_V2: {
 		struct lwis_io_entry_rw_batch *rw_batch;
+		size_t sum_offset_size;
 
 		rw_batch = &entry->rw_batch;
-		if (rw_batch->offset + rw_batch->size_in_bytes >= SCRATCH_MEMORY_SIZE) {
+		if (rw_batch->offset >= SCRATCH_MEMORY_SIZE ||
+		    check_add_overflow(rw_batch->offset, rw_batch->size_in_bytes,
+				       &sum_offset_size) ||
+		    sum_offset_size > SCRATCH_MEMORY_SIZE) {
 			dev_err(top_dev->base_dev.dev,
 				"Write range[offset(%llu) + size_in_bytes(%zu)] exceeds scratch memory (%d)\n",
 				rw_batch->offset, rw_batch->size_in_bytes, SCRATCH_MEMORY_SIZE);

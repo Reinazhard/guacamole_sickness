@@ -68,6 +68,9 @@ struct lwis_interrupt_list *lwis_interrupt_list_alloc(struct lwis_device *lwis_d
 	list->count = count;
 	list->lwis_dev = lwis_dev;
 
+	for (int i = 0; i < count; i++)
+		spin_lock_init(&list->irq[i].lock);
+
 	return list;
 }
 
@@ -321,11 +324,12 @@ static void interrupt_emit_events(struct lwis_interrupt *irq, uint64_t source_va
 	struct list_head *p;
 	uint64_t reset_value = 0;
 	struct lwis_client *lwis_client;
-	struct list_head *t, *n;
 #ifdef LWIS_INTERRUPT_DEBUG
 	uint64_t mask_value;
 #endif
 	unsigned long flags;
+	unsigned long dev_flags;
+	bool disable_mask = false;
 
 	spin_lock_irqsave(&irq->lock, flags);
 	list_for_each(p, &irq->enabled_event_infos) {
@@ -350,22 +354,29 @@ static void interrupt_emit_events(struct lwis_interrupt *irq, uint64_t source_va
 						    "Caught critical IRQ(%s) event(0x%llx)\n",
 						    irq->name, event->event_id);
 			}
-			/* If enabled once, set interrupt mask to false */
-			list_for_each_safe(t, n, &irq->lwis_dev->clients) {
-				lwis_client = list_entry(t, struct lwis_client, node);
+
+			spin_lock_irqsave(&irq->lwis_dev->lock, dev_flags);
+			list_for_each_entry(lwis_client, &irq->lwis_dev->clients, node) {
 				hash_for_each_possible(lwis_client->event_states, event_state, node,
 						       event->event_id) {
 					if (event_state->event_control.event_id ==
 						    event->event_id &&
 					    event_state->event_control.flags &
 						    LWIS_EVENT_CONTROL_FLAG_IRQ_ENABLE_ONCE) {
-						dev_info_ratelimited(
-							irq->lwis_dev->dev,
-							"IRQ(%s) event(0x%llx) enabled once\n",
-							irq->name, event->event_id);
-						interrupt_set_mask(irq, event->int_reg_bit, false);
+						disable_mask = true;
+						break;
 					}
 				}
+				if (disable_mask)
+					break;
+			}
+			spin_unlock_irqrestore(&irq->lwis_dev->lock, dev_flags);
+
+			if (disable_mask) {
+				dev_info_ratelimited(irq->lwis_dev->dev,
+						     "IRQ(%s) event(0x%llx) enabled once\n",
+						     irq->name, event->event_id);
+				interrupt_set_mask(irq, event->int_reg_bit, false);
 			}
 		}
 

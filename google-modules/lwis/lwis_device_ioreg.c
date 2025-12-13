@@ -32,10 +32,13 @@ static int lwis_ioreg_device_enable(struct lwis_device *lwis_dev);
 static int lwis_ioreg_device_disable(struct lwis_device *lwis_dev);
 static int lwis_ioreg_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
 				  int access_size);
+static int lwis_ioreg_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
+					 int access_size);
 static int lwis_ioreg_register_io_barrier(struct lwis_device *lwis_dev, bool read, bool write);
 
 static struct lwis_device_subclass_operations ioreg_vops = {
 	.register_io = lwis_ioreg_register_io,
+	.register_io_locked = lwis_ioreg_register_io_locked,
 	.register_io_barrier = lwis_ioreg_register_io_barrier,
 	.device_enable = lwis_ioreg_device_enable,
 	.device_disable = lwis_ioreg_device_disable,
@@ -59,6 +62,14 @@ static int lwis_ioreg_register_io(struct lwis_device *lwis_dev, struct lwis_io_e
 {
 	lwis_save_register_io_info(lwis_dev, entry, access_size);
 	return lwis_ioreg_io_entry_rw((struct lwis_ioreg_device *)lwis_dev, entry, access_size);
+}
+
+static int lwis_ioreg_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
+					 int access_size)
+{
+	lwis_save_register_io_info(lwis_dev, entry, access_size);
+	return lwis_ioreg_io_entry_rw_locked((struct lwis_ioreg_device *)lwis_dev, entry,
+					     access_size);
 }
 
 static int lwis_ioreg_register_io_barrier(struct lwis_device *lwis_dev, bool use_read_barrier,
