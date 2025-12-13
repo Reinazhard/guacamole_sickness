@@ -636,14 +636,14 @@ bool aoc_service_read_message(aoc_service *service, void *base,
 		ptr = aoc_service_current_read_pointer(service, base, dir);
 		hdr = (struct aoc_ipc_message_header *)ptr;
 		ptr += sizeof(struct aoc_ipc_message_header);
-
+		u32 length = hdr->length;
 		/* Validate length */
-		if (*size < hdr->length)
+		if (*size < length)
 			return false;
 
 		/* TODO: Length should always be little endian */
-		copy_from_buffer(buffer, ptr, hdr->length);
-		*size = hdr->length;
+		copy_from_buffer(buffer, ptr, length);
+		*size = length;
 
 		aoc_service_increment_read_index(service, dir);
 	}
