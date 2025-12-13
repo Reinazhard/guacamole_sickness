@@ -83,6 +83,7 @@ static const struct maxfg_reg max77779_fg[] = {
 	[MAXFG_TAG_status] = { ATOM_INIT_REG16(MAX77779_FG_Status)},
 	[MAXFG_TAG_fullsocthr] = { ATOM_INIT_REG16(MAX77779_FG_FullSocThr)},
 	[MAXFG_TAG_misccfg] = { ATOM_INIT_REG16(MAX77779_FG_MiscCfg)},
+	[MAXFG_TAG_ichgterm] = { ATOM_INIT_REG16(MAX77779_FG_IChgTerm)},
 };
 
 static const struct maxfg_reg max77779_debug_fg[] = {
@@ -203,6 +204,14 @@ struct max77779_fg_chip {
 	int aafv_cur_idx;
 	bool aafv_modified_fus;
 	struct aafv_fg_config aafv_cfgs[GBMS_AAFV_DATA_MAX];
+
+	/* index of battery EEPROM history */
+	int history_idx;
+
+	/* information for PROP_NEED_CHARGE_TO_FULL */
+	struct maxfg_bypss_charglimt bypass_chargelimit;
+
+	bool present;
 };
 
 /** ------------------------------------------------------------------------ */
@@ -282,7 +291,7 @@ int max77779_reset_state_data(struct max77779_model_data *model_data);
 int max77779_needs_reset_model_data(const struct max77779_model_data *model_data);
 u16 max77779_get_designcap(const struct max77779_model_data *model_data);
 u16 max77779_get_relaxcfg(const struct max77779_model_data *model_data);
-void max77779_model_apply_aaf_fullsoc(struct max77779_model_data *model_data,
+void max77779_model_apply_aafv_fullsoc(struct max77779_model_data *model_data,
 				      const struct aafv_fg_config *cfg);
 
 /*
@@ -371,8 +380,6 @@ ssize_t max77779_gmsr_state_cstr(char *buf, int max);
 void *max77779_get_model_data(struct device *dev);
 
 int max77779_fg_init(struct max77779_fg_chip *chip);
-bool max77779_fg_dbg_is_reg(struct device *dev, unsigned int reg);
-bool max77779_fg_is_reg(struct device *dev, unsigned int reg);
 void max77779_fg_remove(struct max77779_fg_chip *chip);
 
 #if IS_ENABLED(CONFIG_PM)

@@ -13,17 +13,13 @@ const struct regmap_config max77779_fg_regmap_cfg = {
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
 	.max_register = MAX77779_FG_USR,
-	.readable_reg = max77779_fg_is_reg,
-	.volatile_reg = max77779_fg_is_reg,
 };
 
 const struct regmap_config max77779_fg_debug_regmap_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
-	.max_register = MAX77779_FG_NVM_nProtMiscTh,
-	.readable_reg = max77779_fg_dbg_is_reg,
-	.volatile_reg = max77779_fg_dbg_is_reg,
+	.max_register = 0xFF,
 };
 
 static const struct i2c_device_id max77779_fg_id[] = {

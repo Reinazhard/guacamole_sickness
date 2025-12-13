@@ -159,7 +159,7 @@ static int mem16test(u16 *data, u16 code, int count)
 /* load custom model b/137037210 */
 static int max_m5_update_custom_model(struct max_m5_data *m5_data)
 {
-	int retries, ret;
+	int retries, ret, same = 0;
 	bool success;
 	u16 *data;
 
@@ -215,7 +215,6 @@ static int max_m5_update_custom_model(struct max_m5_data *m5_data)
 
 	/* lock and verify lock */
 	for (retries = 3; retries > 0; retries--) {
-		int same;
 
 		ret = max_m5_model_lock(m5_data->regmap->regmap, true);
 		if (ret < 0) {
@@ -239,7 +238,11 @@ static int max_m5_update_custom_model(struct max_m5_data *m5_data)
 	}
 
 	kfree(data);
-	return 0;
+
+	if (same == 0)
+		return -EIO;
+
+	return ret;
 }
 
 /* Step 7: Write custom parameters */
@@ -438,6 +441,26 @@ int max_m5_needs_reset_model_data(const struct max_m5_data *m5_data)
 		return 1;
 
 	return 0;
+}
+
+bool max_m5_check_lock(struct max_m5_data *m5_data)
+{
+	u16 data[2] = { 0 };
+	int ret;
+
+	ret = regmap_raw_read(m5_data->regmap->regmap, MAX_M5_UNLOCK_MODEL_ACCESS,
+			      data, sizeof(data));
+	if (ret < 0)
+		return true;
+
+	if (data[0] != 0x0 || data[1] != 0x0) {
+		dev_err(m5_data->dev, "FG UNLOCK: %#x=%#x, %#x=%#x",
+			MAX_M5_UNLOCK_MODEL_ACCESS, data[0],
+			MAX_M5_UNLOCK_MODEL_ACCESS + 1, data[1]);
+		return false;
+	}
+
+	return true;
 }
 
 /* convert taskperiod to the scaling factor for capacity */
@@ -1589,36 +1612,11 @@ void *max_m5_init_data(struct device *dev, struct device_node *node,
 	return m5_data;
 }
 
-static bool max_m5_is_reg(struct device *dev, unsigned int reg)
-{
-	switch (reg) {
-	case 0x00 ... 0x4F:
-	case 0xB0 ... 0xBF:
-	case 0xD0:		/* IIC */
-	case 0xDC ... 0xDF:
-	case 0xFB:
-	case 0xFF:		/* VFSOC */
-		return true;
-	case 0x60:		/* Model unlock */
-	case 0x62:		/* Unlock Model Access */
-	case 0x63:		/* Unlock Model Access */
-	case 0x80 ... 0xAF:	/* FG Model */
-		/* TODO: add a check on unlock */
-		return true;
-	case 0xEB:              /* CoTrim */
-		return true;
-	}
-
-	return false;
-}
-
 const struct regmap_config max_m5_regmap_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
 	.max_register = MAX_M5_VFSOC,
-	.readable_reg = max_m5_is_reg,
-	.volatile_reg = max_m5_is_reg,
 };
 
 const struct maxfg_reg max_m5[] = {
@@ -1668,6 +1666,7 @@ const struct maxfg_reg max_m5[] = {
 	[MAXFG_TAG_status] = { ATOM_INIT_REG16(MAX_M5_STATUS)},
 	[MAXFG_TAG_fullsocthr] = { ATOM_INIT_REG16(MAX_M5_FULLSOCTHR)},
 	[MAXFG_TAG_misccfg] = { ATOM_INIT_REG16(MAX_M5_MISCCFG)},
+	[MAXFG_TAG_ichgterm] = { ATOM_INIT_REG16(MAX_M5_ICHGTERM)},
 };
 
 int max_m5_regmap_init(struct maxfg_regmap *regmap, struct i2c_client *clnt)

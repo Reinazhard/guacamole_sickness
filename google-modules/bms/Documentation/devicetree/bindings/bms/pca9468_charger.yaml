@@ -41,8 +41,8 @@ properties:
     description: Travel Adapter max voltage that can support CC in Constant Power Mode.
     $ref: /schemas/types.yaml#/definitions/uint32
 
-  pca9468,float-voltage:
-    description: Default Float Voltage config.
+  pca9468,max-float-voltage:
+    description: Max Float Voltage config.
     $ref: /schemas/types.yaml#/definitions/uint32
 
   pca9468,input-itopoff:

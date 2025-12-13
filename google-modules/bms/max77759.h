@@ -116,6 +116,8 @@ struct max77759_foreach_cb_data {
 	bool wlc_rx;	/* charging wireless */
 	bool wlc_tx;	/* battery share */
 
+	bool defender_enabled;
+
 	bool dc_on;	/* DC requested - wired or wireless */
 
 	bool boost_on;	/* Compat: old for WLC program */

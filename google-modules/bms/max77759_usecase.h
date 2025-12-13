@@ -89,6 +89,8 @@ enum wlc_state_t {
 };
 
 extern int gs101_wlc_en(struct max77759_usecase_data *uc_data, enum wlc_state_t state);
+extern int gs101_wlc_en_with_defender_reason(struct max77759_usecase_data *uc_data,
+			enum wlc_state_t state, bool defender_enabled);
 extern int gs101_to_standby(struct max77759_usecase_data *uc_data, int use_case);
 extern int gs101_to_usecase(struct max77759_usecase_data *uc_data, int use_case);
 extern int gs101_force_standby(struct max77759_usecase_data *uc_data);

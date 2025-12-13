@@ -26,8 +26,7 @@ struct pca9468_platform_data {
 	int	irq_gpio;		/* GPIO pin that's connected to INT# */
 	unsigned int	iin_cfg;	/* Input Current Limit - uA unit */
 	unsigned int	iin_cfg_max;	/* from config/dt */
-	unsigned int	v_float;	/* V_Float Voltage - uV unit */
-	unsigned int	v_float_dt;	/* from config/dt */
+	unsigned int	max_v_float_dt;	/* from config/dt */
 	unsigned int 	iin_topoff;	/* Input Topoff current -uV unit */
 	/* Switching frequency: 0 - 833kHz, ... , 3 - 980kHz */
 	unsigned int 	fsw_cfg;
@@ -272,6 +271,7 @@ struct pca9468_charger {
 
 	struct gvotable_election *dc_avail;
 /* Google Integration END */
+	u32			vfloat_reg;
 	bool			ftm_mode; /* factory test, will ignore usb pps */
 };
 

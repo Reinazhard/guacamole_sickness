@@ -40,6 +40,10 @@
 #include <linux/seq_file.h>
 #endif
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+#include <soc/google/google-cdd.h>
+#endif
+
 #define CHG_DELAY_INIT_MS		250
 #define CHG_DELAY_INIT_DETECT_MS	1000
 
@@ -50,6 +54,7 @@
 #define CHG_WORK_ERROR_RETRY_MS		1000
 #define CHG_WORK_EAGAIN_RETRY_MS	5000
 #define CHG_WORK_BD_TRIGGERED_MS	(5 * 60 * 1000)
+#define CHG_WORK_BD_RESET_INT_SEC	(5 * 60)
 
 #define CHG_DRV_CC_HW_TOLERANCE_MAX	250
 
@@ -70,7 +75,6 @@
 #define MSC_USER_VOTER			"msc_user"
 #define MSC_USER_CHG_LEVEL_VOTER	"msc_user_chg_level"
 #define MSC_CHG_TERM_VOTER		"msc_chg_term"
-#define MSC_PWR_VOTER			"msc_pwr_disable"
 #define MSC_HDA_VOTER			"msc_hda"
 #define TEMP_DRYRUN_VOTER		"TEMP_DRYRUN_VOTER"
 
@@ -236,6 +240,9 @@ struct bd_data {
 	ktime_t bd_pretrigger_stats_last_update;
 	struct gbms_ce_tier_stats bd_resume_stats;
 	ktime_t bd_resume_stats_last_update;
+
+	/* notify bd_event */
+	struct power_supply *bat_psy;
 };
 
 struct chg_drv {
@@ -367,6 +374,22 @@ struct chg_drv {
 
 	int online;
 	int present;
+
+	u32 cdd_charger_status;
+	int cdd_off_mode_charging;
+};
+
+enum bd_reset_reason {
+	BD_RESET_NONE = 0,
+	BD_RESET_RESUME_SOC,
+	BD_RESET_RESUME_ABS_TEMP,
+	BD_RESET_TIMEOUT,
+	BD_RESET_RESUME_TEMP,
+};
+
+struct bd_last_read_val {
+	int temp;
+	int soc;
 };
 
 static void reschedule_chg_work(struct chg_drv *chg_drv)
@@ -709,11 +732,19 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 	int ad_type, usbc_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 
 	if (usb_psy) {
-		int voltage_now, current_now;
-		int tcpm_online;
+		int voltage_now, current_output, current_input;
+		int tcpm_online = 0;
 
 		/* TODO: handle POWER_SUPPLY_PROP_REAL_TYPE in qc-compat */
 		usb_type = PSY_GET_PROP(usb_psy, POWER_SUPPLY_PROP_USB_TYPE);
+
+		voltage_max = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_VOLTAGE_MAX);
+		voltage_now = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		current_output = PSY_GET_PROP(usb_psy,
+					   POWER_SUPPLY_PROP_CURRENT_NOW);
+		current_input = current_output;
 
 		if (tcpm_psy) {
 			usbc_type = PSY_GET_PROP(tcpm_psy,
@@ -729,9 +760,12 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 			}
 
 			tcpm_online = PSY_GET_PROP(tcpm_psy, POWER_SUPPLY_PROP_ONLINE);
-			if (tcpm_online == 2)
+			if (tcpm_online == PPS_PSY_PROG_ONLINE) {
 				amperage_max = PSY_GET_PROP(tcpm_psy,
 							    POWER_SUPPLY_PROP_CURRENT_MAX);
+				current_input = GPSY_GET_PROP(chg_drv->chg_psy,
+								GBMS_PROP_CURRENT_NOW);
+			}
 			else
 				amperage_max = PSY_GET_PROP(usb_psy,
 							    POWER_SUPPLY_PROP_CURRENT_MAX);
@@ -740,23 +774,18 @@ static int info_usb_state(union gbms_ce_adapter_details *ad,
 							POWER_SUPPLY_PROP_CURRENT_MAX);
 		}
 
-		voltage_max = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_VOLTAGE_MAX);
-		voltage_now = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_VOLTAGE_NOW);
-		current_now = PSY_GET_PROP(usb_psy,
-					   POWER_SUPPLY_PROP_CURRENT_NOW);
-
 		if (usb_type < ARRAY_SIZE(psy_usb_type_str))
 			usb_type_str = psy_usb_type_str[usb_type];
 
-		pr_info("usbchg=%s typec=%s usbv=%d usbc=%d usbMv=%d usbMc=%d\n",
+
+		pr_info("usbchg=%s typec=%s usbv=%d usbc=%d usbMv=%d usbMc=%d usbOc=%d\n",
 			usb_type_str,
 			tcpm_psy ? psy_usbc_type_str[usbc_type] : "null",
 			voltage_now < 0 ? voltage_now : voltage_now / 1000,
-			current_now / 1000,
+			current_input / 1000,
 			voltage_max < 0 ? voltage_max : voltage_max / 1000,
-			amperage_max < 0 ? amperage_max : amperage_max / 1000);
+			amperage_max < 0 ? amperage_max : amperage_max / 1000,
+			current_output / 1000);
 
 		chg_hda_tz_vote(voltage_max/1000, amperage_max/1000);
 	}
@@ -1525,6 +1554,10 @@ static void bd_reset(struct bd_data *bd_state)
 			    bd_state->bd_trigger_temp &&
 			    bd_state->bd_temp_enable &&
 			    can_resume;
+
+	/* notify google_battery the time to aware reset */
+	if (bd_state->bat_psy)
+		GPSY_SET_INT64_PROP(bd_state->bat_psy, GBMS_PROP_BD_TIME_SUM, bd_state->time_sum);
 }
 
 /* Defender */
@@ -1732,16 +1765,67 @@ static void bd_resume(struct chg_drv *chg_drv)
 			 &bd_state->bd_resume_stats_last_update);
 }
 
+/*
+ * chg_drv->bd_lock:
+ *  - should be acquired by the caller of chg_bd_can_reset
+ * struct bd_last_read_val *rv:
+ *  - rv is NULL when the caller wants to consider charger offline duration
+ */
+static int chg_bd_can_reset(struct chg_drv *chg_drv, const ktime_t now,
+			    struct bd_last_read_val *rv, bool online)
+{
+	struct bd_data *bd_state = &chg_drv->bd_state;
+	const long long delta_time = now - bd_state->disconnect_time;
+	int ret, temp, soc;
+
+	ret = chg_work_read_soc(chg_drv->bat_psy, &soc);
+	if (ret < 0) {
+		pr_warn("MSC_BD: chg_bd_can_reset failed to read soc(%d)\n", ret);
+		return ret;
+	}
+
+	temp = GPSY_GET_INT_PROP(chg_drv->bat_psy, POWER_SUPPLY_PROP_TEMP, &ret);
+	if (ret < 0) {
+		pr_warn("MSC_BD: chg_bd_can_reset failed to read temp(%d)\n", ret);
+		return ret;
+	}
+
+	if (rv) {
+		rv->temp = temp;
+		rv->soc = soc;
+	}
+
+	if (soc < bd_state->bd_resume_soc)
+		return BD_RESET_RESUME_SOC;
+
+	if (temp <= bd_state->bd_resume_abs_temp)
+		return BD_RESET_RESUME_ABS_TEMP;
+
+	/* evaluate following condition only when a caller wants to check offline duration */
+	if (rv == NULL && delta_time > CHG_WORK_BD_RESET_INT_SEC)
+		return BD_RESET_TIMEOUT;
+
+	if (!online && bd_state->bd_resume_time && delta_time > bd_state->bd_resume_time &&
+	    temp <= bd_state->bd_resume_temp)
+		return BD_RESET_RESUME_TEMP;
+
+
+	return BD_RESET_NONE;
+}
+
 /* bd_state->triggered = 1 when charging needs to be disabled */
-static int bd_update_stats(struct chg_drv *chg_drv)
+static int bd_update_stats(struct chg_drv *chg_drv, const ktime_t now, bool online,
+			   bool from_bd_work)
 {
 	struct bd_data *bd_state = &chg_drv->bd_state;
 	struct power_supply *bat_psy = chg_drv->bat_psy;
 	const bool triggered = bd_state->triggered;
-	const ktime_t now = get_boot_sec();
-	int ret, vbatt, temp;
+	const char *log_prefix = (from_bd_work ? "MSC_BD_WORK" : "MSC_BD");
+
+	int ret, vbatt, reset_reason;
 	long long temp_avg;
 	unsigned long long elap;
+	struct bd_last_read_val rv;
 
 	if (!bd_state->enabled)
 		return 0;
@@ -1754,10 +1838,11 @@ static int bd_update_stats(struct chg_drv *chg_drv)
 	if (vbatt < bd_state->bd_trigger_voltage && !triggered)
 		return 0;
 
-	/* it needs to keep averaging after trigger */
-	temp = GPSY_GET_INT_PROP(bat_psy, POWER_SUPPLY_PROP_TEMP, &ret);
-	if (ret < 0)
-		return ret;
+	reset_reason = chg_bd_can_reset(chg_drv, now, &rv, online);
+	if (reset_reason < 0) {
+		pr_err("%s: chg_bd_can_reset: %d\n", log_prefix, reset_reason);
+		return reset_reason;
+	}
 
 	/* it needs to keep averaging if triggered */
 	if (bd_state->last_update == 0)
@@ -1768,43 +1853,73 @@ static int bd_update_stats(struct chg_drv *chg_drv)
 	 * add log here if elapse exceed 2 times of schedule time
 	 */
 	elap = now - bd_state->last_update;
-	if (temp >= bd_state->bd_trigger_temp) {
+	if (rv.temp >= bd_state->bd_trigger_temp) {
 		if (elap > (CHG_WORK_BD_TRIGGERED_MS / 1000 * 2))
 			gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
-				"MSC_BD: longer elap %llu (%llu - %llu), temp=%d, time_sum=%llu, temp_sum=%llu",
-				elap, now, bd_state->last_update, temp, bd_state->time_sum,
+				"%s: longer elap %llu (%llu - %llu), temp=%d, time_sum=%llu, temp_sum=%llu",
+				log_prefix, elap, now, bd_state->last_update, rv.temp, bd_state->time_sum,
 				bd_state->temp_sum);
 		bd_state->time_sum += elap;
-		bd_state->temp_sum += temp * elap;
+		bd_state->temp_sum += rv.temp * elap;
+		/* notify google_battery the time to aware pre-trigger */
+		ret = GPSY_SET_INT64_PROP(chg_drv->bat_psy, GBMS_PROP_BD_TIME_SUM,
+					  bd_state->time_sum);
+		if (ret < 0)
+			pr_warn("fail to notify time_sum:%lld, ret=%d\n", bd_state->time_sum, ret);
 	}
 
 	bd_state->last_voltage = vbatt;
-	bd_state->last_temp = temp;
+	bd_state->last_temp = rv.temp;
 	bd_state->last_update = now;
+
+	temp_avg = div64_s64(bd_state->temp_sum, bd_state->time_sum);
 
 	if (bd_state->time_sum != 0 && !triggered)
 		chg_stats_update(chg_drv, &chg_drv->bd_state.bd_pretrigger_stats,
 				 &chg_drv->bd_state.bd_pretrigger_stats_last_update);
 
-	/* wait until we have at least bd_trigger_time */
-	if (bd_state->time_sum < bd_state->bd_trigger_time)
-		return 0;
+	if (!triggered) {
+		if (bd_state->time_sum)
+			chg_stats_update(chg_drv, &chg_drv->bd_state.bd_pretrigger_stats,
+					 &chg_drv->bd_state.bd_pretrigger_stats_last_update);
 
-	/* exit and entry criteria on temperature while connected */
-	temp_avg = div64_s64(bd_state->temp_sum, bd_state->time_sum);
-	if (triggered && temp <= bd_state->bd_resume_abs_temp) {
-		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
-			"MSC_BD: resume time_sum=%lld, temp_sum=%lld, temp_avg=%lld",
-			bd_state->time_sum, bd_state->temp_sum, temp_avg);
-		bd_resume(chg_drv);
-	} else if (!triggered && temp_avg >= bd_state->bd_trigger_temp) {
-		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
-			"MSC_BD: trigger time_sum=%lld, temp_sum=%lld, temp_avg=%lld",
-			bd_state->time_sum, bd_state->temp_sum, temp_avg);
-		bd_state->triggered = 1;
+		/* check whether BD transits to other state */
+		if (bd_state->time_sum >= bd_state->bd_trigger_time &&
+		    temp_avg >= bd_state->bd_trigger_temp) {
+			gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+				"%s: trigger time_sum=%lld, temp_sum=%lld, temp_avg=%lld",
+				log_prefix, bd_state->time_sum, bd_state->temp_sum, temp_avg);
+			bd_state->triggered = 1;
+		}
+
+		return 0;
 	}
 
-	return 0;
+	/* bd is triggered: check whether it can be terminated */
+	switch (reset_reason) {
+	case BD_RESET_RESUME_SOC:
+		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			"%s: done soc=%d limit=%d", log_prefix, rv.soc, bd_state->bd_resume_soc);
+		break;
+	case BD_RESET_RESUME_ABS_TEMP:
+		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			"%s: resume time_sum=%lld, temp_sum=%lld, temp_avg=%lld",
+			log_prefix, bd_state->time_sum, bd_state->temp_sum, temp_avg);
+		break;
+	case BD_RESET_RESUME_TEMP:
+		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			"%s: done time=%lld limit=%d, temp=%d limit=%d",
+			log_prefix, now - bd_state->disconnect_time, bd_state->bd_resume_time,
+			rv.temp, bd_state->bd_resume_temp);
+		break;
+	default:
+		return 0;
+	}
+
+	/* when reaches here, we need to call bd_resume */
+	bd_resume(chg_drv);
+
+	return reset_reason;
 }
 
 /* @return true if BD needs to be triggered */
@@ -1946,14 +2061,16 @@ static void bd_work(struct work_struct *work)
 	struct chg_drv *chg_drv =
 		container_of(work, struct chg_drv, bd_work.work);
 	struct bd_data *bd_state = &chg_drv->bd_state;
-	const ktime_t now = get_boot_sec();
-	const long long delta_time = now - bd_state->disconnect_time;
 	int interval_ms = CHG_WORK_BD_TRIGGERED_MS;
+	const ktime_t now = get_boot_sec();
+	long long delta_time;
 	int ret, soc = -1;
 
 	__pm_stay_awake(chg_drv->bd_ws);
 
 	mutex_lock(&chg_drv->bd_lock);
+
+	delta_time = now - bd_state->disconnect_time;
 
 	pr_debug("MSC_BD_WORK: triggered=%d dsc_time=%lld delta=%lld\n",
 		bd_state->triggered, bd_state->disconnect_time, delta_time);
@@ -1969,46 +2086,22 @@ static void bd_work(struct work_struct *work)
 		goto bd_rerun;
 	}
 
-	/* soc after disconnect (SSOC must not be locked) */
-	if (bd_state->bd_resume_soc &&
-	    soc < bd_state->bd_resume_soc) {
-		gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
-			"MSC_BD_WORK: done soc=%d limit=%d", soc, bd_state->bd_resume_soc);
-		bd_resume(chg_drv);
-		goto bd_rerun;
-	}
-
 	/* set on time and temperature, reset on abs temperature */
-	ret = bd_update_stats(chg_drv);
+	ret = bd_update_stats(chg_drv, now, false, true);
 	if (ret < 0) {
 		pr_err("MSC_BD_WORK: update stats: %d\n", ret);
 		interval_ms = 1000;
 		goto bd_rerun;
 	}
-	bd_fan_vote(chg_drv, bd_state->triggered, FAN_LVL_HIGH);
 
 	/* reset on time since disconnect & optional temperature reading */
-	if (bd_state->bd_resume_time && delta_time > bd_state->bd_resume_time) {
-		const int temp = bd_state->last_temp; /* or use avg */
-		int triggered;
+	if (ret > BD_RESET_NONE)
+		goto bd_rerun;
 
-		/* single reading < of resume temp, or total average temp */
-		triggered = bd_state->bd_resume_temp &&
-			    temp > bd_state->bd_resume_temp;
-		if (!triggered) {
-			gbms_logbuffer_prlog(bd_state->bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
-				"MSC_BD_WORK: done time=%lld limit=%d, temp=%d limit=%d",
-				delta_time, bd_state->bd_resume_time,
-				temp, bd_state->bd_resume_temp);
-			bd_resume(chg_drv);
-			goto bd_rerun;
-		}
-	}
+	bd_fan_vote(chg_drv, bd_state->triggered, FAN_LVL_HIGH);
 
 	pr_debug("MSC_BD_WORK: trig=%d soc=%d time=%lld limit=%d temp=%d limit=%d avg=%lld\n",
-		bd_state->triggered,
-		soc,
-		delta_time, bd_state->bd_resume_time,
+		bd_state->triggered, soc, delta_time, bd_state->bd_resume_time,
 		bd_state->last_temp, bd_state->bd_resume_abs_temp,
 		div64_s64(bd_state->temp_sum, bd_state->time_sum));
 
@@ -2251,9 +2344,10 @@ static int chg_run_defender(struct chg_drv *chg_drv)
 
 	} else if (chg_drv->bd_state.enabled) {
 		const bool was_triggered = bd_state->triggered;
+		const ktime_t now = get_boot_sec();
 
 		/* bd_work() is not running here */
-		rc = bd_update_stats(chg_drv);
+		rc = bd_update_stats(chg_drv, now, chg_drv->online, false);
 		if (rc < 0)
 			pr_debug("MSC_DB BD update stats: %d\n", rc);
 
@@ -2453,6 +2547,65 @@ static void chg_update_csi(struct chg_drv *chg_drv)
 
 /* ------------------------------------------------------------------------ */
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+static bool chg_is_off_mode_charging(struct chg_drv *chg_drv)
+{
+	u32 status;
+
+	if (chg_drv->cdd_off_mode_charging != -1)
+		goto done;
+
+	google_cdd_get_system_dev_stat(CDD_SYSTEM_DEVICE_CHARGER, &status);
+	/* If the off_mode_charging status has not been updated in google_battery, then return */
+	if (!(status & CDD_CHARGE_INIT_DONE))
+		return false;
+
+	chg_drv->cdd_off_mode_charging = status & CDD_CHARGE_OFF_MODE_CHARGING ? 1 : 0;
+
+done:
+	return chg_drv->cdd_off_mode_charging == 1;
+}
+
+static void chg_update_cdd_charger_stat(struct chg_drv *chg_drv, int usb_online,
+					int wlc_online, int ext_online)
+{
+	int online = usb_online || wlc_online || ext_online;
+	bool off_mode_charging;
+	u32 status;
+
+	off_mode_charging = chg_is_off_mode_charging(chg_drv);
+	status = off_mode_charging ? CDD_CHARGE_OFF_MODE_CHARGING : 0;
+
+	if (wlc_online)
+		status |= CDD_CHARGE_WLC_CHARGING;
+
+	if (ext_online)
+		status |= CDD_CHARGE_EXT_CHARGING;
+
+	if (usb_online) {
+		int voltage_max = PSY_GET_PROP(chg_drv->usb_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+
+		if (voltage_max > CDD_PD_VOLTAGE_UV)
+			status |= CDD_CHARGE_FAST_CHARGING;
+		else
+			status |= CDD_CHARGE_CHARGING;
+	}
+
+	if (!online)
+		status |= CDD_CHARGE_DISCHARGING;
+
+	if (status != chg_drv->cdd_charger_status) {
+		google_cdd_set_system_dev_stat(CDD_SYSTEM_DEVICE_CHARGER, status);
+		chg_drv->cdd_charger_status = status;
+	}
+}
+
+#else
+static inline void chg_update_cdd_charger_stat(struct chg_drv *chg_drv, int usb_online,
+					       int wlc_online, int ext_online) {}
+#endif
+/* ------------------------------------------------------------------------ */
+
 /* No op on battery not present */
 static void chg_work(struct work_struct *work)
 {
@@ -2535,6 +2688,22 @@ static void chg_work(struct work_struct *work)
 	if (chg_drv->online != online || chg_drv->present != present) {
 		struct bd_data *bd_state = &chg_drv->bd_state;
 
+		if (online && !chg_drv->bd_state.triggered) {
+			const ktime_t now = get_boot_sec();
+
+			mutex_lock(&chg_drv->bd_lock);
+
+			/* rc < 0 case is handed inside of chg_bd_can_reset  */
+			rc = chg_bd_can_reset(chg_drv, now, NULL, false);
+			if (rc > BD_RESET_NONE) {
+				pr_info("MSC_BD: chg_bd_reset_on_connect clear all counters\n");
+				bd_reset(&chg_drv->bd_state);
+				bd_fan_vote(chg_drv, false, FAN_LVL_NOT_CARE);
+			}
+
+			mutex_unlock(&chg_drv->bd_lock);
+		}
+
 		gbms_logbuffer_devlog(bd_state->bd_log, chg_drv->device,
 				      LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
 				      "online:%d->%d [USB:%d/WLC:%d/EXT:%d], "
@@ -2602,19 +2771,15 @@ static void chg_work(struct work_struct *work)
 				gvotable_cast_int_vote(hda_tz_votable,
 						       MSC_HDA_VOTER, HDA_TZ_NONE, false);
 
-			if (!chg_drv->bd_state.triggered) {
-				mutex_lock(&chg_drv->bd_lock);
-				bd_reset(&chg_drv->bd_state);
-				mutex_unlock(&chg_drv->bd_lock);
-				bd_fan_vote(chg_drv, false, FAN_LVL_NOT_CARE);
-			}
-
 			rc = chg_reset_state(chg_drv);
 			if (rc == -EAGAIN)
 				schedule_delayed_work(&chg_drv->chg_work,
 						      msecs_to_jiffies(100));
 			else
 				chg_drv->stop_charging = 1;
+
+			/* update cdd_charger_stat for stability dump */
+			chg_update_cdd_charger_stat(chg_drv, usb_online, wlc_online, ext_online);
 		}
 
 		if (chg_is_custom_enabled(upperbd, lowerbd) && chg_drv->disable_pwrsrc)
@@ -2652,9 +2817,12 @@ static void chg_work(struct work_struct *work)
 	}
 
 	/* device might fall off the charger when disable_pwrsrc is set. */
-	if (!chg_drv->disable_pwrsrc)
+	if (!chg_drv->disable_pwrsrc) {
 		chg_work_adapter_details(&ad, usb_online, wlc_online,
 					 ext_online, chg_drv);
+		/* update cdd_charger_stat for stability dump */
+		chg_update_cdd_charger_stat(chg_drv, usb_online, wlc_online, ext_online);
+	}
 
 	rc = chg_work_roundtrip(chg_drv, &chg_drv->chg_state);
 	if (rc == -EAGAIN)
@@ -2686,7 +2854,7 @@ update_charger:
 	pr_debug("MSC_CHG disable_charging=%d, update_interval=%d\n",
 		 chg_drv->disable_charging, update_interval);
 
-	if (!chg_drv->disable_charging && update_interval > 0) {
+	if (!chg_drv->disable_charging && (update_interval > 0 || online_changed)) {
 
 		/* msc_update_charger_cb will write to charger and reschedule */
 		gvotable_cast_int_vote(chg_drv->msc_interval_votable,
@@ -4513,6 +4681,8 @@ static void chg_update_charging_policy(struct chg_drv *chg_drv, const int value)
 		   chg_drv->charging_policy == CHARGING_POLICY_VOTE_LONGLIFE) {
 		chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
 		chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
+		/* reset charging policy */
+		chg_update_charging_state(chg_drv, false, false);
 	}
 
 	chg_drv->charging_policy = value;
@@ -5644,6 +5814,20 @@ static int chg_get_psy(struct chg_drv *chg_drv, const char *psy_name, struct pow
 	return 0;
 }
 
+static void chg_init_charge_level(struct chg_drv *chg_drv)
+{
+	/*
+	 * If charge_stop_level and charge_start_level are zero,
+	 * this indicates they haven't been properly initialized
+	 * (e.g., overwritten by a user space write before driver init).
+	 * Reset them to their default values.
+	 */
+	if (chg_drv->charge_stop_level == 0 && chg_drv->charge_start_level == 0) {
+		chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
+		chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
+	}
+}
+
 static void google_charger_init_work(struct work_struct *work)
 {
 	struct chg_drv *chg_drv = container_of(work, struct chg_drv,
@@ -5660,8 +5844,10 @@ static void google_charger_init_work(struct work_struct *work)
 
 	if (!chg_drv->bat_psy && chg_get_psy(chg_drv, chg_drv->bat_psy_name, &bat_psy))
 		goto retry_init_work;
-	if (!chg_drv->bat_psy)
+	if (!chg_drv->bat_psy) {
 		chg_drv->bat_psy = bat_psy;
+		chg_drv->bd_state.bat_psy = bat_psy;
+	}
 
 	if (!chg_drv->usb_psy && chg_drv->usb_psy_name)	/* usb_psy_name is optional */
 		ret_usb = chg_get_psy(chg_drv, chg_drv->usb_psy_name, &usb_psy);
@@ -5740,9 +5926,8 @@ static void google_charger_init_work(struct work_struct *work)
 		pr_info("dead battery mode\n");
 
 	chg_init_state(chg_drv);
+	chg_init_charge_level(chg_drv);
 	chg_drv->stop_charging = -1;
-	chg_drv->charge_stop_level = DEFAULT_CHARGE_STOP_LEVEL;
-	chg_drv->charge_start_level = DEFAULT_CHARGE_START_LEVEL;
 	chg_drv->charging_policy = CHARGING_POLICY_DEFAULT;
 	mutex_init(&chg_drv->stats_lock);
 	thermal_stats_init(chg_drv);
@@ -5750,6 +5935,9 @@ static void google_charger_init_work(struct work_struct *work)
 	/* reset override charging parameters */
 	chg_drv->user_fv_uv = -1;
 	chg_drv->user_cc_max = -1;
+
+	/* Initialize status before confirming off_mode_chaging status */
+	chg_drv->cdd_off_mode_charging = -1;
 
 	/* dock_defend */
 	if (chg_drv->ext_psy)

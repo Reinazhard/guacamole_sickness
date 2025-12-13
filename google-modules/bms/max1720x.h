@@ -252,47 +252,18 @@ enum max1720x_nvram {
 
 /** ------------------------------------------------------------------------ */
 
-static bool max1720x_is_reg(struct device *dev, unsigned int reg)
-{
-	switch (reg) {
-	case MAX1720X_COMMAND:
-	case MAX1720X_COMMSTAT:
-	case MAX1720X_LOCK:
-	case MAX1720X_ODSCTH:
-	case MAX1720X_ODSCCFG:
-	case MAX1720X_VFOCV:
-	case MAX1720X_VFSOC:
-	case MAX1720X_ALARM:
-	case 0x00 ... 0x4F:
-	case 0xB0 ... 0xDF:
-		return true;
-	}
-
-	return false;
-}
-
 static const struct regmap_config max1720x_regmap_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
 	.max_register = MAX1720X_VFSOC,
-	.readable_reg = max1720x_is_reg,
-	.volatile_reg = max1720x_is_reg,
 };
-
-static bool max1720x_is_nvram_reg(struct device *dev, unsigned int reg)
-{
-	return (reg >= MAX1720X_NVRAM_START &&
-		reg <= MAX1720X_NVRAM_HISTORY_END);
-}
 
 const struct regmap_config max1720x_regmap_nvram_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
-	.max_register = MAX1720X_NVRAM_HISTORY_END,
-	.readable_reg = max1720x_is_nvram_reg,
-	.volatile_reg = max1720x_is_nvram_reg,
+	.max_register = 0xFF,
 };
 
 /** ------------------------------------------------------------------------ */
@@ -361,6 +332,7 @@ static const struct maxfg_reg max1720x[] = {
 
 	[MAXFG_TAG_fullsocthr] = { ATOM_INIT_REG16(MAX1720X_FULLSOCTHR)},
 	[MAXFG_TAG_misccfg] = { ATOM_INIT_REG16(MAX1720X_MISCCFG)},
+	[MAXFG_TAG_ichgterm] = { ATOM_INIT_REG16(MAX1720X_ICHGTERM)},
 };
 
 

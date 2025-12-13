@@ -186,7 +186,8 @@ static int gbee_storage_iter(int index, gbms_tag_t *tag, void *ptr)
 					   GBMS_TAG_GCFE, GBMS_TAG_RAVG,
 					   GBMS_TAG_RFCN, GBMS_TAG_THAS,
 					   GBMS_TAG_AYMD, GBMS_TAG_MYMD,
-					   GBMS_TAG_FGST, GBMS_TAG_FCRU };
+					   GBMS_TAG_FGST, GBMS_TAG_FCRU,
+					   GBMS_TAG_AAWC };
 	const int count = ARRAY_SIZE(keys);
 
 	if (index < 0 || index >= count)
@@ -251,6 +252,7 @@ static bool gbee_storage_is_writable(gbms_tag_t tag)
 	case GBMS_TAG_AYMD:
 	case GBMS_TAG_FGST:
 	case GBMS_TAG_FCRU:
+	case GBMS_TAG_AAWC:
 		return true;
 	default:
 		return false;

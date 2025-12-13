@@ -31,7 +31,7 @@
 #define LN8411_VBATMIN_CHECK_T	1000	/* 1000ms */
 #define LN8411_CCMODE_CHECK1_T	5000	/* 10000ms -> 500ms */
 #define LN8411_CCMODE_CHECK2_T	5000	/* 5000ms */
-#define LN8411_CVMODE_CHECK_T 	10000	/* 10000ms */
+#define LN8411_CVMODE_CHECK_T	2000	/* 2000ms */
 #define LN8411_ENABLE_DELAY_T	250	/* 250ms */
 #define LN8411_CVMODE_CHECK2_T	1000	/* 1000ms */
 #define LN8411_ENABLE_WLC_DELAY_T	300	/* 300ms */
@@ -1073,7 +1073,7 @@ static int ln8411_check_error(struct ln8411_charger *ln8411)
 	return ret;
 }
 
-static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
+static int ln8411_get_iin_original(struct ln8411_charger *ln8411, int *iin)
 {
 	const int offset = 0;
 	int temp;
@@ -1085,8 +1085,21 @@ static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
 	if (temp < offset)
 		temp = offset;
 
-	*iin = conv_chg_mode(ln8411, temp - offset);
+	*iin = temp - offset;
 	return 0;
+}
+
+static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
+{
+    int ret;
+    int temp;
+
+    ret = ln8411_get_iin_original(ln8411, &temp);
+    if (ret < 0)
+        return ret;
+
+    *iin = conv_chg_mode(ln8411, temp);
+    return 0;
 }
 
 /* only needed for logging */
@@ -1165,6 +1178,7 @@ static int ln8411_read_status(struct ln8411_charger *ln8411)
 {
 	int ret = 0;
 	unsigned int reg_val;
+	int vbat;
 
 	ret = regmap_read(ln8411->regmap, LN8411_FAULT3_STS, &reg_val);
 	if (ret < 0) {
@@ -1182,12 +1196,16 @@ static int ln8411_read_status(struct ln8411_charger *ln8411)
 	}
 	*/
 
+	ret = ln8411_get_batt_info(ln8411, BATT_VOLTAGE, &vbat);
+	if (ret)
+		return ret;
+
 	if (ln8411_read_adc(ln8411, ADCCH_IIN) >= ln8411->iin_reg)
 		ret = STS_MODE_IIN_LOOP;
-	else if (ln8411_read_adc(ln8411, ADCCH_VBAT) >= ln8411->vfloat_reg)
+	else if (vbat >= ln8411->vfloat_reg)
 		ret = STS_MODE_VFLT_LOOP;
 	else
-		ret = STS_MODE_LOOP_INACTIVE;;
+		ret = STS_MODE_LOOP_INACTIVE;
 
 	return ret;
 }
@@ -3958,6 +3976,9 @@ skip_pps:
 		ln8411->timer_period = LN8411_TA_CONFIG_WAIT_T;
 	else if (ln8411->ta_type == TA_TYPE_WIRELESS)
 		ln8411->timer_period = LN8411_PDMSG_WLC_WAIT_T;
+	else if ((ln8411->charging_state == DC_STATE_CV_MODE) ||
+		 (ln8411->charging_state == DC_STATE_START_CV))
+		ln8411->timer_period = LN8411_CVMODE_CHECK_T;
 	else
 		ln8411->timer_period = LN8411_PDMSG_WAIT_T;
 
@@ -5102,6 +5123,15 @@ static int ln8411_gbms_mains_get_property(struct power_supply *psy,
 		if (ret < 0)
 			return ret;
 		val->int64val = chg_state.v;
+		break;
+
+	case GBMS_PROP_CURRENT_NOW:
+		/* return the input current - uA unit */
+		mutex_lock(&ln8411->lock);
+		ret = ln8411_get_iin_original(ln8411, &val->prop.intval);
+		if (ret < 0)
+			dev_err(ln8411->dev, "Invalid IIN ADC (%d)\n", ret);
+		mutex_unlock(&ln8411->lock);
 		break;
 
 	default:

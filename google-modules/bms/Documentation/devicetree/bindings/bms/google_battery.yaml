@@ -287,10 +287,6 @@ properties:
     description:
     type: boolean
 
-  google,pullback-current:
-    description:
-    type: boolean
-
   google,allow-higher-fv:
     description:
     type: boolean

@@ -828,7 +828,8 @@ static int gdbatt_gbms_get_property(struct power_supply *psy,
 	case GBMS_PROP_CAPACITY_FADE_RATE:
 	case GBMS_PROP_CAPACITY_FADE_RATE_FCR:
 	case GBMS_PROP_BATT_ID:
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
 		val->prop.intval = fg_1.prop.intval;
 		break;
 	case GBMS_PROP_RECAL_FG:
@@ -895,7 +896,7 @@ static int gdbatt_gbms_set_property(struct power_supply *psy,
 	case GBMS_PROP_RECAL_FG:
 		/* TODO: under porting */
 		break;
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
 		if (dual_fg_drv->first_fg_psy) {
 			ret = GPSY_SET_PROP(dual_fg_drv->first_fg_psy, psp, val->prop.intval);
 			if (ret < 0)
@@ -906,6 +907,14 @@ static int gdbatt_gbms_set_property(struct power_supply *psy,
 			if (ret < 0)
 				pr_err("Cannot set aafv to the second FG, ret=%d\n", ret);
 		}
+		break;
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
+		if (!dual_fg_drv->first_fg_psy)
+			break;
+
+		ret = GPSY_SET_PROP(dual_fg_drv->first_fg_psy, psp, val->prop.intval);
+		if (ret < 0)
+			pr_err("Cannot set NEED_CHARGE_TO_FULL to the first FG, ret=%d\n", ret);
 		break;
 	default:
 		pr_debug("%s: route to gdbatt_set_property, psp:%d\n", __func__, psp);
@@ -925,7 +934,8 @@ static int gdbatt_gbms_property_is_writeable(struct power_supply *psy,
 {
 	switch (psp) {
 	case GBMS_PROP_BATT_CE_CTRL:
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
 		return 1;
 	default:
 		break;

@@ -89,6 +89,8 @@ struct max77759_chgr_data {
 	struct gvotable_election *msc_last_votable;
 	int chg_term_voltage;
 	int chg_term_volt_debounce;
+
+	bool msc_pwr_voter_active;
 };
 
 #endif

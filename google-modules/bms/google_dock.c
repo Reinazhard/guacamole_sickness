@@ -33,6 +33,7 @@
 #define DOCK_USER_VOTER			"DOCK_USER_VOTER"
 #define DOCK_AICL_VOTER			"DOCK_AICL_VOTER"
 #define DOCK_VOUT_VOTER			"DOCK_VOUT_VOTER"
+#define DOCK_VOTER			"DOCK_VOTER"
 
 #define DOCK_DELAY_INIT_MS		500
 #define DOCK_NOTIFIER_DELAY_MS		100
@@ -292,6 +293,12 @@ static void google_dock_notifier_check_dc(struct dock_drv *dock)
 		return;
 
 	dev_info(dock->device, "dc status is %d\n", dc_in);
+
+	if (google_dock_find_mode_votable(dock))
+		gvotable_cast_long_vote(dock->chg_mode_votable,
+					DOCK_VOTER,
+					GBMS_CHGR_MODE_WLC_RX,
+					dc_in);
 
 	if (dc_in) {
 		google_dock_set_icl(dock);

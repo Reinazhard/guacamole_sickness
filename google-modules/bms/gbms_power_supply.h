@@ -96,7 +96,11 @@ enum gbms_property {
 	GBMS_PROP_BATT_ID,			/* GBMS battery id */
 	GBMS_PROP_RECAL_FG,			/* GBMS FG reset */
 	GBMS_PROP_LOGBUFFER_BD,			/* GBMS pass logbuffer_bd address */
-	GBMS_PROP_AAFV,				/* GBMS pass aafv to FG */
+	GBMS_PROP_AAFV_OFFSET,			/* GBMS pass aafv offset to FG */
+	GBMS_PROP_CURRENT_NOW,			/* GBMS get pps current without multiplication */
+	GBMS_PROP_NEED_CHARGE_TO_FULL,		/* GBMS FG requests to bypass 80% limit */
+	GBMS_PROP_BD_TIME_SUM,			/* GBMS get temp-defend time sum */
+	GBMS_PROP_FG_EVENT_LOGGING,		/* GBMS FG event logging */
 };
 
 union gbms_propval {
