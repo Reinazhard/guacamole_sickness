@@ -50,12 +50,12 @@ maxim,config {
 			/* 0x002e */	0x03DE	/* CGain */
 		>;
 		maxim,fg-aafv = /bits/ 32 <
-			200     0   95  0xff
-			400    20   90  0xff
-			600    40   85  0xff
-			800    60   80  0xff
-			1000   80   75  0xff
-			2000  130   63  0xff
+			  0   95  0xf  0x0560
+			 20   90  0xf  0x02b0
+			 40   85  0xf  0x02b0
+			 60   80  0xf  0x02b0
+			 80   75  0xf  0x02b0
+			130   63  0xf  0x02b0
 		>;
 	};
 	/* 1_B3_ATL_3113_2_100621_BC59_RC2_1028.txt http://b/204411635#comment1 */
@@ -101,12 +101,12 @@ maxim,config {
 			/* 0x002e */	0x03DE	/* CGain */
 		>;
 		maxim,fg-aafv = /bits/ 32 <
-			200     0   95  0xff
-			400    20   90  0xff
-			600    40   85  0xff
-			800    60   80  0xff
-			1000   80   75  0xff
-			2000  130   63  0xff
+			  0   95  0xf  0x0560
+			 20   90  0xf  0x02b0
+			 40   85  0xf  0x02b0
+			 60   80  0xf  0x02b0
+			 80   75  0xf  0x02b0
+			130   63  0xf  0x02b0
 		>;
 	};
 	/* 3_B3_LSN_3114_1_092821_BC59_RC2_20220831.txt http://b/244534011#comment1 */
@@ -152,12 +152,9 @@ maxim,config {
 			/* 0x002e */	0x03DE	/* CGain */
 		>;
 		maxim,fg-aafv = /bits/ 32 <
-			200     0   95  0xff
-			400    20   90  0xff
-			600    40   85  0xff
-			800    60   80  0xff
-			1000   80   75  0xff
-			2000  130   63  0xff
+			  0   95  0xf  0x0560
+			 20   90  0xf  0x02b0
+			400   50  0xf  0x02b0
 		>;
 	};
 

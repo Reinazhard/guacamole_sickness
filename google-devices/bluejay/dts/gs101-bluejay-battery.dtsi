@@ -12,6 +12,10 @@
 };
 
 &max77759_fg {
+	maxim,r_regval_1720x = /bits/ 16 <
+        0x2A 0x143b     /* RelaxCfg Register */
+    >;
+
 	maxim,fg-data {
 		#include "gs101-bluejay-battery-data.dtsi"
 	};
@@ -35,18 +39,72 @@
 
 				google,batt-id-1-atl {
 					google,batt-id = <1>;
-					google,aacr-ref-cycles = <599 600 1000>;
-					google,aacr-ref-fade10 = <  0 100  100>;
+
+					google,aacr-ref-cycles = <100 200 300 400 500 600 1000>;
+					google,aacr-ref-fade10 = <  1  13  25  36  45 100  200>;
 					google,aafv-ref-cycles = <200 400 600 800 1000 1001>;
 					google,aafv-ref-offset = <  0  20  40  60   80  130>;
+					google,aacc-chg-temp = <0 550>;
+					google,aacc-chg-weights = < /* units: 1/1000 cycles */
+						100 100 100 100 100 100 100 100 100 100
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+					>;
 				};
 
 				google,batt-id-3-lsn {
 					google,batt-id = <3>;
-					google,aacr-ref-cycles = <599 600 1000>;
-					google,aacr-ref-fade10 = <  0 100  100>;
-					google,aafv-ref-cycles = <200 400 600 800 1000 1001>;
-					google,aafv-ref-offset = <  0  20  40  60   80  130>;
+					google,bhi-algo-ver = <11>;
+
+					google,aacr-ref-cycles = <399 400 1000>;
+					google,aacr-ref-fade10 = <  0 200  200>;
+					google,aafv-ref-cycles = <200 399 400>;
+					google,aafv-ref-offset = <  0  20 400>;
+
+					google,aafv-cliff-cycle = <0>;
+					google,aafv-cliff-offset = <(-1)>;
+					google,aacp-health-over-cliff = <1>;
+					google,aacp-opt-out-cut-off-cycles = <400>;
+					google,aacp-health-over-cutoff = <2>;
+
+					google,aact-config = <1>;
+					google,chg-aact-ecc = <0 400>;
+					google,aact-cv-limits = <4200000 4300000 4450000>;
+					google,aact-temp-limits = <0 100 200 420 460 480 550>;
+					google,aact-cc-limits = <
+						 30  10   0
+						 50  30  30
+						100  70  50
+						 80  50  50
+						 50  50   0
+						 30   0   0
+					>;
+
+					/* support aact multiple-profiles */
+					google,aact-support-multiple-profiles;
+					google,aact-cv-limits-1 = <4450000>;
+					google,aact-temp-limits-1 = <0 100 200 420 460 480 550>;
+					google,aact-cc-limits-1 = <30 50 100 80 50 30>;
+					google,aacc-chg-temp = <0 550>;
+					google,aacc-chg-weights = < /* units: 1/1000 cycles */
+						100 100 100 100 100 100 100 100 100 100
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+						  0   0   0   0   0   0   0   0   0   0
+					>;
 				};
 			};
 			google_bms {
