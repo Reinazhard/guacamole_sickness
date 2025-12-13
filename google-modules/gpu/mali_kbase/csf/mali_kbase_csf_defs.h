@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *
- * (C) COPYRIGHT 2018-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2018-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -55,6 +55,9 @@
  */
 #define MAX_TILER_HEAPS (128)
 
+/* Number of pages used for GPU command queue's User input & output data */
+#define KBASEP_NUM_CS_USER_IO_PAGES (2)
+
 #define CSF_FIRMWARE_ENTRY_READ (1ul << 0)
 #define CSF_FIRMWARE_ENTRY_WRITE (1ul << 1)
 #define CSF_FIRMWARE_ENTRY_EXECUTE (1ul << 2)
@@ -62,6 +65,14 @@
 #define CSF_FIRMWARE_ENTRY_PROTECTED (1ul << 5)
 #define CSF_FIRMWARE_ENTRY_SHARED (1ul << 30)
 #define CSF_FIRMWARE_ENTRY_ZERO (1ul << 31)
+
+#define CSF_SCHED_PROTM_EVENT_ENTER (1 << 0)
+#define CSF_SCHED_PROTM_EVENT_ENTER_FW_ACK (1 << 1)
+#define CSF_SCHED_PROTM_EVENT_RESERVED_FLAG (1 << 2)
+#define CSF_SCHED_PROTM_EVENT_NR_FLAGS (3)
+#define CSF_SCHED_PROTM_EVENT_FLAGS_MASK ((1 << CSF_SCHED_PROTM_EVENT_NR_FLAGS) - 1)
+#define MAX_PROTM_EVENT_SEQ_NR (INT_MAX >> CSF_SCHED_PROTM_EVENT_NR_FLAGS)
+#define GET_PROTM_EVENT_ID_SEQ(event_id) ((event_id) >> CSF_SCHED_PROTM_EVENT_NR_FLAGS)
 
 /**
  * enum kbase_csf_queue_bind_state - bind state of the queue
@@ -279,7 +290,6 @@ enum kbase_queue_group_priority {
  * @CSF_SCHED_PROTM_PROGRESS_TIMEOUT: Timeout used to prevent protected mode execution hang.
  * @MMU_AS_INACTIVE_WAIT_TIMEOUT: Maximum waiting time in ms for the completion
  *                                of a MMU operation.
- * @KCPU_FENCE_SIGNAL_TIMEOUT: Waiting time in ms for triggering a KCPU queue sync state dump.
  * @KBASE_PRFCNT_ACTIVE_TIMEOUT: Waiting time for prfcnt to be ready.
  * @KBASE_CLEAN_CACHE_TIMEOUT: Waiting time for cache flush to complete.
  * @KBASE_AS_INACTIVE_TIMEOUT: Waiting time for MCU address space to become inactive.
@@ -305,7 +315,6 @@ enum kbase_timeout_selector {
 	CSF_FIRMWARE_PING_TIMEOUT,
 	CSF_SCHED_PROTM_PROGRESS_TIMEOUT,
 	MMU_AS_INACTIVE_WAIT_TIMEOUT,
-	KCPU_FENCE_SIGNAL_TIMEOUT,
 	KBASE_PRFCNT_ACTIVE_TIMEOUT,
 	KBASE_CLEAN_CACHE_TIMEOUT,
 	KBASE_AS_INACTIVE_TIMEOUT,
@@ -387,7 +396,9 @@ struct kbase_queue_oom_transact {
  *               pair or User mode input/output page
  * @user_io_addr: Pointer to the permanent kernel mapping of User mode
  *                input/output pages. The pages can be accessed through
- *                the mapping without any cache maintenance.
+ *                the mapping without any cache maintenance. It will be
+ *                NULL initially, set by the pointer of the mapped memory
+ *                and cleared to NULL after pages get freed.
  * @handle:      Handle returned with bind ioctl for creating a
  *               contiguous User mode mapping of input/output pages &
  *               the hardware doorbell page.
@@ -475,7 +486,7 @@ struct kbase_queue_oom_transact {
 struct kbase_queue {
 	struct kbase_context *kctx;
 	u64 user_io_gpu_va;
-	struct tagged_addr phys[2];
+	struct tagged_addr phys[KBASEP_NUM_CS_USER_IO_PAGES];
 	u64 *user_io_addr;
 	u64 handle;
 	int doorbell_nr;
@@ -586,6 +597,8 @@ struct kbase_protected_suspend_buffer {
  * @tiler_mask:     Mask of tiler endpoints the group is allowed to use.
  * @fragment_mask:  Mask of fragment endpoints the group is allowed to use.
  * @compute_mask:   Mask of compute endpoints the group is allowed to use.
+ * @fragment_endpoint_task_limit: The limit on outstanding tasks allowed in each
+ *                                fragment endpoint.
  * @group_uid:      32-bit wide unsigned identifier for the group, unique
  *                  across all kbase devices and contexts.
  * @link:           Link to this queue group in the 'runnable_groups' list of
@@ -610,9 +623,26 @@ struct kbase_protected_suspend_buffer {
  *                           or it becomes unblocked during protected mode. The
  *                           flag helps Scheduler confirm if the group actually
  *                           became non idle or not.
+ * @idle_on_stop: True if the group was idle or blocked on SYNC_WAIT at
+ *                the time it was suspended/terminated. This is used to handle
+ *                a race condition where the group was idle at the time of
+ *                suspension request, but it became active again before the
+ *                suspension request completes. This causes the scheduler to
+ *                treat the group as though it was suspended because of
+ *                preemption.
+ *                This is only used by scheduler_group_schedule().
  * @bound_queues:   Array of registered queues bound to this queue group.
  * @doorbell_nr:    Index of the hardware doorbell page assigned to the
  *                  group.
+ * @user_io_gpu_va: The start GPU VA address of the user input / output pages for
+ *                  queues bound to this group.
+ *                  Only valid (i.e. not 0 ) when the group is scheduled and has a
+ *                  runtime bound csg_reg (group region).
+ * @phys: Pointer to the physical pages allocated for the
+ *        pair of User mode input/output page for queues bound to this group.
+ * @user_io_addr: Pointer to the permanent kernel mapping of User mode
+ *                input/output pages. The pages can be accessed through
+ *                the mapping without any cache maintenance.
  * @protm_event_work: List item corresponding to the protected mode entry
  *                    event for this queue. This would be handled by
  *                    kbase_csf_scheduler_kthread().
@@ -665,6 +695,7 @@ struct kbase_queue_group {
 	u64 tiler_mask;
 	u64 fragment_mask;
 	u64 compute_mask;
+	u32 fragment_endpoint_task_limit;
 
 	u32 group_uid;
 
@@ -676,13 +707,17 @@ struct kbase_queue_group {
 	bool faulted;
 	bool cs_unrecoverable;
 	bool reevaluate_idle_status;
+	bool idle_on_stop;
 
-	struct kbase_queue *bound_queues[MAX_SUPPORTED_STREAMS_PER_GROUP];
+	struct kbase_queue *bound_queues[BASEP_GPU_QUEUE_PER_QUEUE_GROUP_MAX];
 
 	int doorbell_nr;
+	u64 user_io_gpu_va;
+	struct tagged_addr phys[KBASEP_NUM_CS_USER_IO_PAGES];
+	u64 *user_io_addr;
 	struct list_head protm_event_work;
 	atomic_t pending_protm_event_work;
-	DECLARE_BITMAP(protm_pending_bitmap, MAX_SUPPORTED_STREAMS_PER_GROUP);
+	DECLARE_BITMAP(protm_pending_bitmap, BASEP_GPU_QUEUE_PER_QUEUE_GROUP_MAX);
 
 	struct kbase_csf_notification error_fatal;
 
@@ -701,12 +736,6 @@ struct kbase_queue_group {
 	void *csg_reg;
 	u8 csg_reg_bind_retries;
 	u32 sched_act_seq_num;
-#if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
-	/**
-	 * @prev_act: Previous CSG activity transition in a GPU metrics.
-	 */
-	bool prev_act;
-#endif
 };
 
 /**
@@ -1005,6 +1034,20 @@ struct kbase_csf_reset_gpu {
 	bool force_pm_hw_reset;
 };
 
+#if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
+/**
+ * enum gpu_metrics_activity - GPU metrics CSG activity transitions
+ *
+ * @GPU_METRICS_ACT_IDLE: transition to idle
+ * @GPU_METRICS_ACT_ACTIVE: transition to active
+ * @GPU_METRICS_ACT_RESET: transition to reset
+ */
+enum gpu_metrics_activity {
+	GPU_METRICS_ACT_IDLE,
+	GPU_METRICS_ACT_ACTIVE,
+	GPU_METRICS_ACT_RESET,
+};
+#endif
 /**
  * struct kbase_csf_csg_slot - Object containing members for tracking the state
  *                             of CSG slots.
@@ -1016,6 +1059,23 @@ struct kbase_csf_csg_slot {
 	struct kbase_queue_group *resident_group;
 	atomic_t state;
 	u8 priority;
+#if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
+	/**
+	 * @prev_act: Previous GPU metrics CSG activity transition.
+	 */
+	enum gpu_metrics_activity prev_act;
+#endif
+};
+
+/**
+ * struct kbase_csf_heap_reclaim_offslot - Setting for reclaiming offslot CSG's heap.
+ *
+ * @timeout_ms:   Reclaim from CSGs being offslot longer than this.
+ * @pages:        Max number of pages for each reclaim.
+ */
+struct kbase_csf_heap_reclaim_offslot {
+	u32 timeout_ms;
+	u32 pages;
 };
 
 /**
@@ -1027,12 +1087,14 @@ struct kbase_csf_csg_slot {
  *                  lists track the kctxs attached to the reclaim manager.
  * @unused_pages:   Estimated number of unused pages from the @ctxlist array. The
  *                  number is indicative for use with reclaim shrinker's count method.
+ * @offslot_setting: Setting for reclaiming offslot CSG's heap.
  */
 struct kbase_csf_sched_heap_reclaim_mgr {
 	DEFINE_KBASE_SHRINKER heap_reclaim;
 
 	struct list_head ctx_lists[KBASE_QUEUE_GROUP_PRIORITY_COUNT];
 	atomic_t unused_pages;
+	struct kbase_csf_heap_reclaim_offslot offslot_setting;
 };
 
 /**
@@ -1060,6 +1122,54 @@ struct kbase_csf_mcu_shared_regions {
 	struct tagged_addr *pma_phys;
 	unsigned long userio_mem_rd_flags;
 	bool dummy_phys_allocated;
+};
+
+/**
+ * struct kbase_csf_protm_mem_pages_defer_ctrl - Control data for managing the deferred
+ *                                       release of pages during a p.mode session.
+ *
+ * @mem_pools_op_lock:  Lock for synchronising the access to the internal pool lists etc.
+ * @mem_pools_list:     List that parks the pools where pages are deferred for releases.
+ * @op_pending_list:    internal list holding the mem_pools that are potentially ready to be
+ *                      released, before transition to in-flight state by the worker thread.
+ * @op_inflight_list:   List holding the single mem_pool that is in-flight with the release
+ *                      operation by the worker thread, after the associated p.mode session
+ *                      has completed
+ * @drop_op_pool:       Handshake delegating the deferral of control to remove the in-flight
+ *                      mem_pool, after returning from the in-flight call-back in which
+ *                      release of the deferred pages is attempted.
+ * @drop_op_pool_wait:  Event signalling back to the op_pool removal requester that the
+ *                      delegated task has been completed.
+ * @mem_pools_op_workq: Workqueue for performing thread context pages release operations.
+ * @mem_pools_op_work:  Work-item for triggering the release worker.
+ * @pools_term_wq:      Wait-mechanism for pools that have deferred pages undergoing a
+ *                      pool termination, which needs to be deferred until the relevant p.mode
+ *                      session has completed.
+ * @imported_bufs:      Tracking struct for imported buffers that need pmode-defer to free
+ * @protm_event_id:     P.mode event_id, consists of a sequence number and a flags field. The
+ *                      latter has a bit width of CSF_SCHED_PROTM_EVENT_NR_FLAGS (lowest-bits).
+ * @do_defer:           Flag indicating the deferring release action is required or not.
+ *                      When it's false, no deferring release actions is needed.
+ */
+struct kbase_csf_protm_mem_pages_defer_ctrl {
+	spinlock_t mem_pools_op_lock;
+	struct list_head mem_pools_list;
+	struct list_head op_pending_list;
+	struct list_head op_inflight_list;
+	struct kbase_mem_pool *drop_op_pool;
+	wait_queue_head_t drop_op_pool_wait;
+	struct workqueue_struct *mem_pools_op_workq;
+	struct work_struct mem_pools_op_work;
+	wait_queue_head_t pools_term_wq;
+	struct {
+		/** List that holds the buffer alloc items for deferred free */
+		struct list_head allocs_to_free;
+		/** The deferral sequence number for checking the ending condition */
+		int defer_seq;
+	} imported_bufs;
+	atomic_t protm_event_id;
+	/* Set at initialisation, true for GPUs up to Arch-15 */
+	bool do_defer;
 };
 
 /**
@@ -1142,17 +1252,17 @@ struct kbase_csf_mcu_shared_regions {
  *                              have requested protected mode.
  * @protm_event_work_grps:      The list of groups that have requested
  *                              protected mode.
- * @pending_kcpuq_works:    Indicates that kbase_csf_scheduler_kthread()
- *                          should process pending KCPU queue works.
- * @kcpuq_work_queues_lock: Lock protecting the list of KCPU queues that
- *                          need to be processed.
- * @kcpuq_work_queues:      The list of KCPU queue that need to be processed
  * @pending_tick_work:      Indicates that kbase_csf_scheduler_kthread() should
  *                          perform a scheduling tick.
  * @pending_tock_work:      Indicates that kbase_csf_scheduler_kthread() should
  *                          perform a scheduling tock.
  * @pending_gpu_idle_work:  Indicates that kbase_csf_scheduler_kthread() should
  *                          handle the GPU IDLE event.
+ * @pending_runtime_suspend_work: Indicates that kbase_csf_scheduler_kthread()
+ *                                should proceed to suspend the GPU as part of
+ *                                handling the runtime suspend event.
+ * @pending_power_off_work: Indicates that kbase_csf_scheduler_kthread() should
+ *                          proceed to power off the GPU.
  * @ping_work:              Work item that would ping the firmware at regular
  *                          intervals, only if there is a single active CSG
  *                          slot, to check if firmware is alive and would
@@ -1202,22 +1312,46 @@ struct kbase_csf_mcu_shared_regions {
  * @mcu_regs_data:          Scheduler MCU shared regions data for managing the
  *                          shared interface mappings for on-slot queues and
  *                          CSG suspend buffers.
- * @kthread_signal:         Used to wake up the GPU queue submission
- *                          thread when a queue needs attention.
- * @kthread_running:        Whether the GPU queue submission thread should keep
- *                          executing.
+ * @kthread_signal:         Used to wake up the main CSF scheduler thread
+ *                          to handle pending work items.
+ * @kthread_running:        Set to true to indicate that the CSF scheduler
+ *                          thread will handle work items. Work items that
+ *                          are handled by this thread all require the scheduler
+ *                          mutex lock, thus are serialised and executed in a
+ *                          predefined order.
  * @gpuq_kthread:           Dedicated thread primarily used to handle
  *                          latency-sensitive tasks such as GPU queue
  *                          submissions.
+ * @kcpuq_kthread_signal:   Used to wake up the kthread that executes KCPU
+ *                          commands that belong to prioritized contexts.
+ * @kcpuq_kthread_running:  Set to true to indicate that the KCPU queue
+ *                          execution thread will handle pending commands.
+ * @kcpuq_kthread:          Dedicated thread used to execute KCPU commands
+ *                          from prioritized contexts.
+ * @pending_kcpuq_works:    Indicates that kbase_csf_scheduler_kcpuq_kthread()
+ *                          should process pending KCPU queue works.
+ * @kcpuq_work_queues_lock: Lock protecting the list of KCPU queues that
+ *                          need to be processed.
+ * @kcpuq_work_queues:      The list of KCPU queue that need to be processed.
+ * @kcpuq_cmds_completed:   Wait queue for kbase_csf_scheduler_kcpuq_kthread()
+ *                          to finish executing all pending prioritized KCPU
+ *                          queue commands.
  * @gpu_idle_timer_enabled: Tracks whether the GPU idle timer is enabled or disabled.
  * @fw_soi_enabled:         True if FW Sleep-on-Idle is currently enabled.
+ * @missed_suspend_on_idle_evt: Indicates if the previous attempt at suspending
+ *                              the scheduler on GPU becoming idle failed
+ *                              because the GPU could not be powered down at
+ *                              that moment. When this happens, we wait for the
+ *                              PM to inform us when it should be retried via
+ *                              kbase_csf_scheduler_pm_single_refcount().
+ * @pages_defer_ctrl:       Control data for managing p.mode deferred pages on release.
  */
 struct kbase_csf_scheduler {
 	struct rt_mutex lock;
 	spinlock_t interrupt_lock;
 	enum kbase_csf_scheduler_state state;
 	DECLARE_BITMAP(doorbell_inuse_bitmap, CSF_NUM_DOORBELL_MAX);
-	DECLARE_BITMAP(csg_inuse_bitmap, MAX_SUPPORTED_CSGS);
+	DECLARE_BITMAP(csg_inuse_bitmap, BASEP_QUEUE_GROUP_MAX);
 	struct kbase_csf_csg_slot *csg_slots;
 	struct list_head runnable_kctxs;
 	struct list_head groups_to_schedule;
@@ -1228,9 +1362,9 @@ struct kbase_csf_scheduler {
 	struct list_head idle_groups_to_schedule;
 	u32 csg_scan_count_for_tick;
 	u32 total_runnable_grps;
-	DECLARE_BITMAP(csgs_events_enable_mask, MAX_SUPPORTED_CSGS);
-	DECLARE_BITMAP(csg_slots_idle_mask, MAX_SUPPORTED_CSGS);
-	DECLARE_BITMAP(csg_slots_prio_update, MAX_SUPPORTED_CSGS);
+	DECLARE_BITMAP(csgs_events_enable_mask, BASEP_QUEUE_GROUP_MAX);
+	DECLARE_BITMAP(csg_slots_idle_mask, BASEP_QUEUE_GROUP_MAX);
+	DECLARE_BITMAP(csg_slots_prio_update, BASEP_QUEUE_GROUP_MAX);
 	unsigned long last_schedule;
 	struct kthread_worker csf_worker;
 	atomic_t timer_enabled;
@@ -1241,12 +1375,11 @@ struct kbase_csf_scheduler {
 	atomic_t pending_protm_event_works;
 	spinlock_t protm_event_work_grps_lock;
 	struct list_head protm_event_work_grps;
-	atomic_t pending_kcpuq_works;
-	spinlock_t kcpuq_work_queues_lock;
-	struct list_head kcpuq_work_queues;
 	atomic_t pending_tick_work;
 	atomic_t pending_tock_work;
 	atomic_t pending_gpu_idle_work;
+	atomic_t pending_runtime_suspend_work;
+	atomic_t pending_power_off_work;
 	struct delayed_work ping_work;
 	struct kbase_context *top_kctx;
 	struct kbase_queue_group *top_grp;
@@ -1264,6 +1397,13 @@ struct kbase_csf_scheduler {
 	struct completion kthread_signal;
 	bool kthread_running;
 	struct task_struct *gpuq_kthread;
+	struct completion kcpuq_kthread_signal;
+	bool kcpuq_kthread_running;
+	struct task_struct *kcpuq_kthread;
+	atomic_t pending_kcpuq_works;
+	spinlock_t kcpuq_work_queues_lock;
+	struct list_head kcpuq_work_queues;
+	wait_queue_head_t kcpuq_cmds_completed;
 #if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
 	/**
 	 *  @gpu_metrics_tb: Handler of firmware trace buffer for gpu_metrics
@@ -1290,6 +1430,8 @@ struct kbase_csf_scheduler {
 #endif /* CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD */
 	atomic_t gpu_idle_timer_enabled;
 	atomic_t fw_soi_enabled;
+	atomic_t missed_suspend_on_idle_evt;
+	struct kbase_csf_protm_mem_pages_defer_ctrl pages_defer_ctrl;
 };
 
 /*
@@ -1396,6 +1538,9 @@ enum kbase_ipa_core_type {
  *                    GPU frequency. If true, returned values represent
  *                    an interval of time expressed in seconds (when the
  *                    scaling factor is set to 1).
+ * @gpu_active_cycle_wrap: Indicates how many times the GPU_ACTIVE
+ *                         counter value has wrapped around, to
+ *                         provide a 64-bit value to userspace.
  */
 struct kbase_ipa_control_prfcnt {
 	u64 latest_raw_value;
@@ -1404,6 +1549,7 @@ struct kbase_ipa_control_prfcnt {
 	enum kbase_ipa_core_type type;
 	u8 select_idx;
 	bool gpu_norm;
+	u64 gpu_active_cycle_wrap;
 };
 
 /**
@@ -1739,11 +1885,18 @@ struct kbase_csf_user_reg {
  *                               be fully re-loaded. This may be set when the
  *                               boot or re-init of MCU fails after a successful
  *                               soft reset.
+ * @firmware_booted_once:   Indicates whether FW has successfully booted in
+ *                          normal mode once. This is used to skip waiting for
+ *                          subsequent FW boots and proceed directly to global
+ *                          initialization. This flag would be cleared if we
+ *                          need to wait for the FW to boot again, such as
+ *                          during full reload or GPU reset.
  * @firmware_hctl_core_pwr: Flag for indicating that the host diver is in
  *                          charge of the shader core's power transitions, and
  *                          the mcu_core_pwroff timeout feature is disabled
  *                          (i.e. configured 0 in the register field). If
  *                          false, the control is delegated to the MCU.
+ * @firmware_unrecoverable: Flag for indicating that firmware is unrecoverable.
  * @firmware_reload_work:   Work item for facilitating the procedural actions
  *                          on reloading the firmware.
  * @glb_init_request_pending: Flag to indicate that Global requests have been
@@ -1804,10 +1957,10 @@ struct kbase_csf_user_reg {
  * @page_fault_cnt:             Counter that is incremented on every GPU page fault, just before the
  *                              MMU is unblocked to retry the memory transaction that caused the GPU
  *                              page fault. The access to counter is serialized appropriately.
- * @mcu_halted:             Flag to inform MCU FSM that the MCU has already halted.
  * @fw_io:                  Firmware I/O interface.
  * @compute_progress_timeout_cc: Value of GPU cycle count register when progress
  *                               timer timeout is reported for the compute iterator.
+ * @neural_allowed_mask:         A mask for optionally disabling neural cores across all CSGs
  * @num_doorbells: Number of doorbells supported by the GPU.
  * @glb_fatal_ts: Pixel: GLB_FATAL fault timestamp for SSCD.
  */
@@ -1835,7 +1988,9 @@ struct kbase_csf_device {
 	bool firmware_reloaded;
 	bool firmware_reload_needed;
 	bool firmware_full_reload_needed;
+	bool firmware_booted_once;
 	bool firmware_hctl_core_pwr;
+	bool firmware_unrecoverable;
 	struct work_struct firmware_reload_work;
 	bool glb_init_request_pending;
 	struct work_struct glb_fatal_work;
@@ -1872,9 +2027,9 @@ struct kbase_csf_device {
 	u32 page_fault_cnt_ptr_address;
 	u32 *page_fault_cnt_ptr;
 	u32 page_fault_cnt;
-	bool mcu_halted;
 	struct kbase_csf_fw_io fw_io;
 	u64 compute_progress_timeout_cc;
+	u64 neural_allowed_mask;
 	u32 num_doorbells;
 	/* pixel: GLB_FATAL timestamp */
 	ktime_t glb_fatal_ts;
@@ -1906,5 +2061,90 @@ struct kbase_as {
 	struct kbase_fault gf_data;
 	struct kbase_mmu_setup current_setup;
 };
+
+/**
+ * kbase_csf_wait_event_timeout_helper - Check condition and FW unresponding,
+ * and return values via variables for further use.
+ * @kbdev: KBase device.
+ * @condition: C expression for the event to wait for
+ * @unrec_value: Return value of firmware_unrecoverable
+ * @con_value: Return value of condition
+ *
+ * To avoid inconsistent firmware_unrecoverable reading in the case of it
+ * changing right after wait_event_timeout() due to GPU reset, value of condition
+ * and firmware_unrecoverable is stored when calling wait_event_timeout().
+ *
+ * Return: true if either FW unresponding or condition met, otherwise false.
+ */
+#define kbase_csf_wait_event_timeout_helper(kbdev, condition, unrec_value, con_value) \
+	({                                                                            \
+		bool __ret;                                                           \
+		unrec_value = kbdev->csf.firmware_unrecoverable;                      \
+		con_value = (condition);                                              \
+		__ret = unrec_value || con_value;                                     \
+		__ret;                                                                \
+	})
+
+/**
+ * kbase_csf_wait_event_timeout - Wait until condition gets true, timeout occurs,
+ * or FW is unresponsive.
+ * @kbdev: KBase device.
+ * @wq_head:   The waitqueue to wait on.
+ * @condition: C expression for the event to wait for
+ * @timeout:   Timeout, in jiffies
+ *
+ * If the event depends on FW, there is a chance to skip wait when FW is unresponsive.
+ * The rest of the functionalities is equal to wait_event_timeout().
+ *
+ * Return: Same as wait_event_timeout().
+ * In the case of condition not met and FW unresponsive, treat it as timed out by returning 0.
+ */
+#define kbase_csf_wait_event_timeout(kbdev, wq_head, condition, timeout)                         \
+	({                                                                                       \
+		bool __unrecoverable = false;                                                    \
+		bool __condition = false;                                                        \
+		long __ret = wait_event_timeout(                                                 \
+			wq_head,                                                                 \
+			kbase_csf_wait_event_timeout_helper(kbdev, (condition), __unrecoverable, \
+							    __condition),                        \
+			timeout);                                                                \
+		if (__ret > 0 && __unrecoverable) {                                              \
+			__ret = 0;                                                               \
+			dev_warn(kbdev->dev, "Immediate time out for unresponsive FW");          \
+		}                                                                                \
+		__ret;                                                                           \
+	})
+
+/**
+ * kbase_csf_wait_event_killable_timeout - Wait until condition gets true, timeout occurs,
+ * FW is unresponsive or interrupted by a kill signal.
+ * @kbdev: KBase device.
+ * @wq_head:   The waitqueue to wait on.
+ * @condition: C expression for the event to wait for
+ * @timeout:   Timeout, in jiffies
+ *
+ * If the event depends on FW, there is a chance to skip wait when FW is unresponsive.
+ * The rest of the functionalities is equal to wait_event_killable_timeout().
+ *
+ * Return: Same as wait_event_killable_timeout().
+ * In the case of condition not met and FW unresponsive, treat it as timed out by returning 0.
+ */
+#if KERNEL_VERSION(4, 13, 1) <= LINUX_VERSION_CODE
+#define kbase_csf_wait_event_killable_timeout(kbdev, wq_head, condition, timeout)              \
+	({                                                                                     \
+		bool __unrecoverable = false;                                                  \
+		bool __condition = false;                                                      \
+		long __ret = wait_event_killable_timeout(                                      \
+			wq_head,                                                               \
+			kbase_csf_wait_event_timeout_helper(kbdev, condition, __unrecoverable, \
+							    __condition),                      \
+			timeout);                                                              \
+		if (__ret > 0 && __unrecoverable) {                                            \
+			__ret = 0;                                                             \
+			dev_warn(kbdev->dev, "Immediate time out for unresponsive FW");        \
+		}                                                                              \
+		__ret;                                                                         \
+	})
+#endif
 
 #endif /* _KBASE_CSF_DEFS_H_ */

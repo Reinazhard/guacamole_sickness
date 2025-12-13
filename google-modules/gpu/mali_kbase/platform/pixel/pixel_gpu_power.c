@@ -292,7 +292,7 @@ static int gpu_pm_power_on_top_nolock(struct kbase_device *kbdev)
 		google_init_gpu_ratio(pc->pm.bcl_dev);
 #endif
 
-#if !IS_ENABLED(CONFIG_SOC_GS101) && defined(CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING)
+#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
 	ATRACE_BEGIN("SMC_PROTECTION_ENABLE");
 	if (exynos_smc(SMC_PROTECTION_SET, 0, PROT_G3D, SMC_PROTECTION_ENABLE) != 0) {
 		dev_err(kbdev->dev, "Couldn't enable protected mode after GPU power-on");
@@ -350,7 +350,7 @@ static void gpu_pm_power_off_top_nolock(struct kbase_device *kbdev)
 	}
 
 	if (pc->pm.state == GPU_POWER_LEVEL_GLOBAL) {
-#if !IS_ENABLED(CONFIG_SOC_GS101) && defined(CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING)
+#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
 		if (exynos_smc(SMC_PROTECTION_SET, 0, PROT_G3D, SMC_PROTECTION_DISABLE) != 0) {
 			dev_err(kbdev->dev, "Couldn't disable protected mode before GPU power-off");
 		}
@@ -473,8 +473,6 @@ static void gpu_pm_callback_power_suspend(struct kbase_device *kbdev)
 
 	gpu_pm_power_off_top(kbdev);
 }
-
-#if IS_ENABLED(KBASE_PM_RUNTIME)
 
 /**
  * gpu_pm_callback_power_runtime_init() - Initialize runtime power management.
@@ -604,7 +602,6 @@ static void gpu_pm_callback_power_runtime_active(struct kbase_device *kbdev)
 	ATRACE_END();
 }
 #endif /* CONFIG_MALI_PIXEL_GPU_SLEEP */
-#endif /* IS_ENABLED(KBASE_PM_RUNTIME) */
 
 static void gpu_pm_hw_reset(struct kbase_device *kbdev)
 {
@@ -656,19 +653,11 @@ struct kbase_pm_callback_conf pm_callbacks = {
 	.power_on_callback = gpu_pm_callback_power_on,
 	.power_suspend_callback = gpu_pm_callback_power_suspend,
 	.power_resume_callback = NULL,
-#if IS_ENABLED(KBASE_PM_RUNTIME)
 	.power_runtime_init_callback = gpu_pm_callback_power_runtime_init,
 	.power_runtime_term_callback = gpu_pm_callback_power_runtime_term,
 	.power_runtime_off_callback = NULL,
 	.power_runtime_on_callback = NULL,
 	.power_runtime_idle_callback = NULL,
-#else /* KBASE_PM_RUNTIME */
-	.power_runtime_init_callback = NULL,
-	.power_runtime_term_callback = NULL,
-	.power_runtime_off_callback = NULL,
-	.power_runtime_on_callback = NULL,
-	.power_runtime_idle_callback = NULL,
-#endif /* KBASE_PM_RUNTIME */
 	.soft_reset_callback = NULL,
 	.hardware_reset_callback = gpu_pm_hw_reset,
 #ifdef CONFIG_MALI_PIXEL_GPU_SLEEP
@@ -803,7 +792,6 @@ int gpu_pm_init(struct kbase_device *kbdev)
 		goto error;
 	}
 
-#if MALI_USE_CSF
 	if (of_property_read_u32(np, "firmware_idle_hysteresis_time_ms",
 				&pc->pm.firmware_idle_hysteresis_time_ms)) {
 		dev_err(kbdev->dev, "firmware_idle_hysteresis_time_ms not set in DT\n");
@@ -839,7 +827,6 @@ int gpu_pm_init(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_PIXEL_GPU_SLEEP
 	kbdev->csf.gpu_idle_hysteresis_ns /= pc->pm.firmware_idle_hysteresis_gpu_sleep_scaler;
 #endif /* CONFIG_MALI_PIXEL_GPU_SLEEP */
-#endif /* MALI_USE_CSF */
 
 #if IS_ENABLED(CONFIG_EXYNOS_PMU_IF)
 	pc->pm.domain = exynos_pd_lookup_name(g3d_power_domain_name);

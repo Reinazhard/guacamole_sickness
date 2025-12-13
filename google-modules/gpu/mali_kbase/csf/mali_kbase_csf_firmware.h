@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *
- * (C) COPYRIGHT 2018-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2018-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -68,16 +68,6 @@
 
 /* Offset of name inside a trace buffer entry in the firmware image */
 #define TRACE_BUFFER_ENTRY_NAME_OFFSET (0x1C)
-
-/* All implementations of the host interface with major version 0 must comply
- * with these restrictions:
- */
-/* GLB_GROUP_NUM: No more than 31 */
-#define MAX_SUPPORTED_CSGS 31
-/* GROUP_STREAM_NUM: At least 8 CSs per CSG, but no more than 32 */
-#define MIN_SUPPORTED_STREAMS_PER_GROUP 8
-/* MAX_SUPPORTED_STREAMS_PER_GROUP: Maximum CSs per csg. */
-#define MAX_SUPPORTED_STREAMS_PER_GROUP 32
 
 #define BUILD_INFO_METADATA_SIZE_OFFSET (0x4)
 #define BUILD_INFO_GIT_SHA_LEN (40U)
@@ -178,6 +168,7 @@ struct kbase_csf_cmd_stream_group_info {
  *                CSG capability structures.
  * @prfcnt_size: Performance counters size.
  * @instr_features: Instrumentation features. (csf >= 1.1.0)
+ * @prfcnt_features: Performance Counter features.
  * @groups: Address of an array of CSG capability structures.
  */
 struct kbase_csf_global_iface {
@@ -188,6 +179,7 @@ struct kbase_csf_global_iface {
 	u32 group_stride;
 	u32 prfcnt_size;
 	u32 instr_features;
+	u32 prfcnt_features;
 	struct kbase_csf_cmd_stream_group_info *groups;
 };
 
@@ -198,6 +190,18 @@ struct kbase_csf_global_iface {
  * @doorbell_nr: Index of the HW doorbell page
  */
 void kbase_csf_ring_doorbell(struct kbase_device *kbdev, int doorbell_nr);
+
+/**
+ * kbase_csf_global_request_complete() - Indicate whether a global request has
+ *                                       completed.
+ *
+ * @kbdev:    An instance of the GPU platform device
+ * @req_mask: Bits in the GLB_REQ register to check
+ *
+ * Return: true if all bits in the req_mask are set in the GLB_ACK register,
+ *         false otherwise.
+ */
+bool kbase_csf_global_request_complete(struct kbase_device *kbdev, u32 const req_mask);
 
 /**
  * kbase_csf_read_firmware_memory - Read a value in a GPU address
@@ -427,6 +431,9 @@ static inline bool kbase_csf_firmware_mcu_halted(struct kbase_device *kbdev)
 #if IS_ENABLED(CONFIG_MALI_NO_MALI)
 	return true;
 #else
+	if (kbase_io_is_aw_removed(kbdev))
+		return true;
+
 	return (kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(MCU_STATUS)) == MCU_STATUS_VALUE_HALT);
 #endif /* CONFIG_MALI_NO_MALI */
 }
@@ -491,7 +498,6 @@ void kbase_csf_firmware_disable_mcu_wait(struct kbase_device *kbdev);
  */
 void kbase_csf_stop_firmware_and_wait(struct kbase_device *kbdev);
 
-#ifdef KBASE_PM_RUNTIME
 /**
  * kbase_csf_firmware_trigger_mcu_sleep - Send the command to put MCU in sleep
  *                                        state.
@@ -510,7 +516,23 @@ void kbase_csf_firmware_trigger_mcu_sleep(struct kbase_device *kbdev);
  */
 bool kbase_csf_firmware_is_mcu_in_sleep(struct kbase_device *kbdev);
 
-#endif
+
+/**
+ * kbase_csf_firmware_trigger_gpu_suspend - Send global GPU_SUSPEND request
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ */
+void kbase_csf_firmware_trigger_gpu_suspend(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_firmware_wait_for_gpu_suspend -	Wait for global GPU_SUSPEND
+ *					to be acknowledged by FW.
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ *
+ * Return: true if GPU_SUSPEND request has completed, otherwise false.
+ */
+int kbase_csf_firmware_wait_for_gpu_suspend(struct kbase_device *kbdev);
 
 /**
  * kbase_csf_firmware_trigger_reload() - Trigger the reboot of MCU firmware, for
@@ -836,8 +858,6 @@ void kbase_csf_debug_dump_registers(struct kbase_device *kbdev);
  */
 int kbase_csf_firmware_req_core_dump(struct kbase_device *const kbdev);
 
-#ifdef KBASE_PM_RUNTIME
-
 /**
  * kbase_csf_firmware_soi_update - Update FW Sleep-on-Idle config
  *
@@ -866,7 +886,5 @@ void kbase_csf_firmware_glb_idle_timer_update(struct kbase_device *kbdev);
  */
 int kbase_csf_firmware_soi_disable_on_scheduler_suspend(struct kbase_device *kbdev);
 
-#endif /* KBASE_PM_RUNTIME */
 
-
-#endif
+#endif /* _KBASE_CSF_FIRMWARE_H_ */

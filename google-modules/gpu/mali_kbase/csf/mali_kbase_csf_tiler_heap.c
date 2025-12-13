@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2019-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2019-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -202,6 +202,7 @@ static int init_chunk(struct kbase_csf_tiler_heap *const heap,
 
 	list_add_tail(&chunk->link, &heap->chunks_list);
 	heap->chunk_count++;
+	heap->peak_chunk_count = MAX(heap->peak_chunk_count, heap->chunk_count);
 
 	return err;
 }
@@ -339,7 +340,7 @@ static struct kbase_csf_tiler_heap_chunk *alloc_new_chunk(struct kbase_context *
 		goto unroll_region;
 	}
 
-	if (WARN(atomic_read(&chunk->region->cpu_alloc->gpu_mappings) > 1,
+	if (WARN(atomic64_read(&chunk->region->cpu_alloc->gpu_mappings) > 1,
 		 "NO_USER_FREE chunks should not have been aliased")) {
 		goto unroll_region;
 	}
@@ -408,6 +409,9 @@ static int create_chunk(struct kbase_csf_tiler_heap *const heap)
 		goto initialization_failure;
 
 	dev_dbg(heap->kctx->kbdev->dev, "Created tiler heap chunk 0x%llX\n", chunk->gpu_va);
+
+	KBASE_TLSTREAM_TILER_HEAP_CHUNK_ALLOC(heap->kctx->kbdev, heap->kctx->id, heap,
+					      chunk->gpu_va);
 
 	return 0;
 initialization_failure:
@@ -516,6 +520,7 @@ static void delete_heap(struct kbase_csf_tiler_heap *heap)
 	 * be used past this point.
 	 */
 	kbase_csf_heap_context_allocator_free(&kctx->csf.tiler_heaps.ctx_alloc, heap->gpu_va);
+	KBASE_TLSTREAM_TILER_HEAP_CONTEXT_FREE(kctx->kbdev, kctx->id, heap);
 
 	WARN_ON(heap->chunk_count);
 	KBASE_TLSTREAM_AUX_TILER_HEAP_STATS(kctx->kbdev, kctx->id, heap->heap_id, 0, 0,
@@ -705,11 +710,16 @@ int kbase_csf_tiler_heap_init(struct kbase_context *const kctx, u32 const chunk_
 
 	heap->kctx = kctx;
 	heap->chunk_size = chunk_size;
+	heap->chunk_count = 0;
+	heap->peak_chunk_count = 0;
 	heap->max_chunks = max_chunks;
 	heap->target_in_flight = target_in_flight;
 	heap->buf_desc_checked = false;
 	INIT_LIST_HEAD(&heap->chunks_list);
 	INIT_LIST_HEAD(&heap->link);
+
+	KBASE_TLSTREAM_TILER_HEAP_INIT(kctx->kbdev, kctx->id, heap, heap->heap_id,
+				       heap->chunk_size);
 
 	/* Check on the buffer descriptor virtual Address */
 	if (buf_desc_va) {
@@ -759,6 +769,9 @@ int kbase_csf_tiler_heap_init(struct kbase_context *const kctx, u32 const chunk_
 		err = -ENOMEM;
 		goto heap_context_alloc_failed;
 	}
+	KBASE_TLSTREAM_TILER_HEAP_CONTEXT_ALLOC(
+		kctx->kbdev, kctx->id, heap, heap->gpu_va,
+		PFN_UP(MAX_TILER_HEAPS * ctx_alloc->heap_context_size_aligned));
 
 	gpu_va_reg = ctx_alloc->region;
 
@@ -804,6 +817,7 @@ int kbase_csf_tiler_heap_init(struct kbase_context *const kctx, u32 const chunk_
 							 chunk->gpu_va);
 	}
 #endif
+
 	kctx->running_total_tiler_heap_nr_chunks += heap->chunk_count;
 	kctx->running_total_tiler_heap_memory += (u64)heap->chunk_size * heap->chunk_count;
 	if (kctx->running_total_tiler_heap_memory > kctx->peak_total_tiler_heap_memory)
@@ -820,6 +834,7 @@ create_chunks_failed:
 	kbase_vunmap(kctx, &heap->gpu_va_map);
 heap_context_vmap_failed:
 	kbase_csf_heap_context_allocator_free(ctx_alloc, heap->gpu_va);
+	KBASE_TLSTREAM_TILER_HEAP_CONTEXT_FREE(ctx_alloc->kctx->kbdev, ctx_alloc->kctx->id, heap);
 heap_context_alloc_failed:
 	if (heap->buf_desc_reg)
 		kbase_vunmap(kctx, &heap->buf_desc_map);
@@ -872,8 +887,11 @@ int kbase_csf_tiler_heap_term(struct kbase_context *const kctx, u64 const heap_g
 	/* Deletion requires the kctx->reg_lock, so must only operate on it whilst unlinked from
 	 * the kctx's csf.tiler_heaps.list, and without holding the csf.tiler_heaps.lock
 	 */
-	if (likely(heap))
+	if (likely(heap)) {
+		void *heap_ptr = heap;
 		delete_heap(heap);
+		KBASE_TLSTREAM_TILER_HEAP_TERM(kctx->kbdev, kctx->id, heap_ptr);
+	}
 
 	return err;
 }
@@ -1042,6 +1060,7 @@ int kbase_csf_tiler_heap_alloc_new_chunk(struct kbase_context *kctx, u64 gpu_hea
 					    PFN_UP(heap->chunk_size * heap->chunk_count),
 					    heap->max_chunks, heap->chunk_size, heap->chunk_count,
 					    heap->target_in_flight, nr_in_flight);
+	KBASE_TLSTREAM_TILER_HEAP_CHUNK_ALLOC(kctx->kbdev, kctx->id, heap, chunk->gpu_va);
 
 	mutex_unlock(&kctx->csf.tiler_heaps.lock);
 
@@ -1114,8 +1133,8 @@ static bool delete_chunk_physical_pages(struct kbase_csf_tiler_heap *heap, u64 c
 	}
 
 	dev_dbg(kctx->kbdev->dev,
-		"Reclaim: delete chunk(0x%llx) in heap(0x%llx), header value(0x%llX)\n",
-		chunk_gpu_va, heap->gpu_va, *hdr_val);
+		 "Reclaim: delete chunk(0x%llx) in heap(0x%llx), header value(0x%llX)\n",
+		 chunk_gpu_va, heap->gpu_va, *hdr_val);
 
 	mutex_lock(&heap->kctx->jit_evict_lock);
 	list_move(&chunk->region->jit_node, &kctx->jit_destroy_head);
@@ -1404,5 +1423,23 @@ int kbase_csf_tiler_heap_free_chunk(struct kbase_context *kctx, u64 gpu_heap_va,
 unlock:
 	mutex_unlock(&kctx->csf.tiler_heaps.lock);
 
+	return err;
+}
+
+int kbase_csf_tiler_heap_size(struct kbase_context *kctx, u64 gpu_heap_va, u64 *size,
+			      u64 *peak_size)
+{
+	struct kbase_csf_tiler_heap *heap = NULL;
+	int err = 0;
+
+	mutex_lock(&kctx->csf.tiler_heaps.lock);
+	heap = find_tiler_heap(kctx, gpu_heap_va);
+	if (likely(heap)) {
+		*size = (u64)heap->chunk_size * heap->chunk_count;
+		*peak_size = (u64)heap->chunk_size * heap->peak_chunk_count;
+	} else {
+		err = -EINVAL;
+	}
+	mutex_unlock(&kctx->csf.tiler_heaps.lock);
 	return err;
 }

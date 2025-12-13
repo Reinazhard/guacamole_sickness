@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2011-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -203,7 +203,6 @@ static int kbase_gpuprops_get_props(struct kbase_device *kbdev)
 {
 	struct kbase_gpu_props *gpu_props;
 	struct kbasep_gpuprops_regdump *regdump;
-
 	int i, err;
 	u64 gpu_features_mask = 0;
 
@@ -244,11 +243,7 @@ static int kbase_gpuprops_get_props(struct kbase_device *kbdev)
 	else
 		gpu_props->max_threads = regdump->thread_max_threads;
 
-#if MALI_USE_CSF
 	gpu_props->impl_tech = KBASE_UBFX32(regdump->thread_features, 22U, 2);
-#else /* MALI_USE_CSF */
-	gpu_props->impl_tech = KBASE_UBFX32(regdump->thread_features, 30U, 2);
-#endif /* MALI_USE_CSF */
 
 	// [Pixel-mod] provide a way to mask features from device tree
 	err = of_property_read_u64(kbdev->dev->of_node, "gpu_features_mask", &gpu_features_mask);
@@ -473,7 +468,7 @@ int kbase_gpuprops_update_l2_features(struct kbase_device *kbdev)
 		/* pm.active_count is expected to be 1 here, which is set in
 		 * kbase_hwaccess_pm_powerup().
 		 */
-		WARN_ON(kbdev->pm.active_count != 1);
+		WARN_ON(atomic_read(&kbdev->pm.active_count) != 1);
 		/* The new settings for L2 cache can only be applied when it is
 		 * off, so first do the power down.
 		 */
@@ -688,15 +683,15 @@ static void kbase_populate_user_data(struct kbase_device *kbdev, struct gpu_prop
 	 * GPUs like tTIx have additional fields like LSC_SIZE that are
 	 * otherwise reserved/RAZ on older GPUs.
 	 */
-#if !MALI_USE_CSF
-	data->core_props.num_exec_engines = KBASE_UBFX64(regdump->core_features, 0, 4);
-#endif
 
 	data->l2_props.log2_cache_size = KBASE_UBFX64(regdump->l2_features, 16U, 8);
 	data->coherency_info.coherency = regdump->mem_features;
 
-	data->tiler_props.bin_size_bytes = 1U << KBASE_UBFX64(regdump->tiler_features, 0U, 6);
-	data->tiler_props.max_active_levels = KBASE_UBFX32(regdump->tiler_features, 8U, 4);
+	{
+		data->tiler_props.bin_size_bytes = 1U
+						   << KBASE_UBFX64(regdump->tiler_features, 0U, 6);
+		data->tiler_props.max_active_levels = KBASE_UBFX32(regdump->tiler_features, 8U, 4);
+	}
 
 	if (regdump->thread_max_workgroup_size == 0)
 		data->thread_props.max_workgroup_size = THREAD_MWS_DEFAULT;
@@ -714,15 +709,9 @@ static void kbase_populate_user_data(struct kbase_device *kbdev, struct gpu_prop
 	else
 		data->thread_props.tls_alloc = regdump->thread_tls_alloc;
 
-#if MALI_USE_CSF
 	data->thread_props.max_registers = KBASE_UBFX32(regdump->thread_features, 0U, 22);
 	data->thread_props.max_task_queue = KBASE_UBFX32(regdump->thread_features, 24U, 8);
 	data->thread_props.max_thread_group_split = 0;
-#else
-	data->thread_props.max_registers = KBASE_UBFX32(regdump->thread_features, 0U, 16);
-	data->thread_props.max_task_queue = KBASE_UBFX32(regdump->thread_features, 16U, 8);
-	data->thread_props.max_thread_group_split = KBASE_UBFX32(regdump->thread_features, 24U, 6);
-#endif
 
 	if (data->thread_props.max_registers == 0) {
 		data->thread_props.max_registers = THREAD_MR_DEFAULT;
@@ -745,7 +734,6 @@ static void kbase_populate_user_data(struct kbase_device *kbdev, struct gpu_prop
 		data->raw_props.js_features[i] = regdump->js_features[i];
 
 	data->raw_props.tiler_features = regdump->tiler_features;
-
 	data->raw_props.thread_max_threads = regdump->thread_max_threads;
 	data->raw_props.thread_max_workgroup_size = regdump->thread_max_workgroup_size;
 	data->raw_props.thread_max_barrier_size = regdump->thread_max_barrier_size;

@@ -65,11 +65,6 @@ extern struct kbase_clk_rate_trace_op_conf pixel_clk_rate_trace_ops;
 
 extern struct kbase_platform_funcs_conf platform_funcs;
 
-#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
-#define PLATFORM_PROTECTED_CALLBACKS (&pixel_protected_ops);
-extern struct protected_mode_ops pixel_protected_ops;
-#endif /* CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING */
-
 /**
  * DVFS Utilization evaluation period
  *
@@ -362,10 +357,6 @@ struct pixel_context {
 #endif /* CONFIG_MALI_PIXEL_GPU_SLEEP */
 	} pm;
 
-#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
-	bool tz_protection_enabled;
-#endif /* CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING */
-
 #ifdef CONFIG_MALI_MIDGARD_DVFS
 	struct {
 		struct mutex lock;
@@ -374,10 +365,6 @@ struct pixel_context {
 		struct work_struct control_work;
 		atomic_t util;
 		atomic_t mcu_util;
-#if !MALI_USE_CSF
-		atomic_t util_gl;
-		atomic_t util_cl;
-#endif
 
 		struct workqueue_struct *clockdown_wq;
 		struct delayed_work clockdown_work;
@@ -390,9 +377,7 @@ struct pixel_context {
 		int table_size;
 		int step_up_val;
 		int level;
-#if MALI_USE_CSF
 		int level_before_headroom;
-#endif
 		int level_target;
 		int level_max;
 		int level_min;
@@ -400,12 +385,10 @@ struct pixel_context {
 		int level_scaling_min;
 		int level_scaling_compute_min;
 		struct gpu_dvfs_level_lock level_locks[GPU_DVFS_LEVEL_LOCK_COUNT];
-#if MALI_USE_CSF
 		u32 capacity_headroom;
 		u32 capacity_history[8];
 		u8 capacity_history_depth;
 		u8 capacity_history_index;
-#endif
 
 		struct {
 			enum gpu_dvfs_governor_type curr;
@@ -418,21 +401,15 @@ struct pixel_context {
 			bool last_power_state;
 			int last_level;
 			int *transtab;
-#if !MALI_USE_CSF
-			struct gpu_dvfs_metrics_uid_stats *work_uid_stats[BASE_JM_MAX_NR_SLOTS * SLOT_RB_SIZE];
-#else
-			struct gpu_dvfs_metrics_uid_stats *work_uid_stats[MAX_SUPPORTED_CSGS];
-#endif /* !MALI_USE_CSF */
+			struct gpu_dvfs_metrics_uid_stats *work_uid_stats[BASEP_QUEUE_GROUP_MAX];
 			DECLARE_HASHTABLE(uid_stats_table, 8);
 		} metrics;
-#if MALI_USE_CSF
 		struct {
 			int mcu_protm_scale_num;
 			int mcu_protm_scale_den;
 			int mcu_down_util_scale_num;
 			int mcu_down_util_scale_den;
 		} tunable;
-#endif
 
 #ifdef CONFIG_MALI_PIXEL_GPU_QOS
 		struct {
