@@ -84,6 +84,7 @@
 
 		channel-max-pending-msgs = <128>;
 		block-channel-threshold = <64>;
+		skip-mmap-offload = "true";
 	};
 
 	aoc_gpiochip: aoc_gpiochip {

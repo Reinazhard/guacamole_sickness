@@ -1,108 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
-load(
-    "//build/kernel/kleaf:kernel.bzl",
-    "dtb_image",
-    "kernel_build",
-    "kernel_build_config",
-    "kernel_dtstree",
-    "kernel_images",
-    "kernel_module",
-    "kernel_module_group",
-    "kernel_modules_install",
-    "kernel_unstripped_modules_archive",
-    "merged_kernel_uapi_headers",
-)
-load("//private/devices/google/common:constants.bzl", "PIXEL_GKI_MODULES_LIST")
-load("//private/devices/google/common/kleaf:create_file.bzl", "create_file")
+load("//build/kernel/kleaf:kernel.bzl", "kernel_module")
+load("//private/devices/google/common/kleaf:device_build.bzl", "device_build")
 load(":constants.bzl", "GS101_DTBS", "GS101_MODULE_OUTS")
 
 package(
     default_visibility = [
         "//private/devices/google:__subpackages__",
     ],
-)
-
-kernel_build_config(
-    name = "build_config",
-    srcs = [
-        # do not sort
-        "//common:set_kernel_dir_build_config",
-        "build.config.gs101",
-    ],
-)
-
-kernel_dtstree(
-    name = "dtstree",
-    srcs = glob(["dts/**"]) + [
-        "//private/google-modules/soc/gs:gs.dt-bindings",
-    ],
-    makefile = "dts/Makefile",
-)
-
-create_file(
-    name = "kconfig_ext",
-    srcs = ["Kconfig.ext.gs101"],
-    out = "Kconfig.ext",
-)
-
-filegroup(
-    name = "defconfig_fragments",
-    srcs = ["gs101_defconfig"],
-)
-
-filegroup(
-    name = "devices_defconfig_fragments",
-    srcs = [
-        ":defconfig_fragments",
-        "//private/devices/google/bluejay:bluejay_defconfig",
-        "//private/devices/google/raviole:raviole_defconfig",
-    ],
-)
-
-filegroup(
-    name = "kernel_sources",
-    srcs = [
-        # keep sorted
-        "//common:kernel_aarch64_sources",
-        "//private/google-modules/bms/misc:bms-misc.kconfig",
-        "//private/google-modules/display/common:common.kconfig",
-        "//private/google-modules/display/samsung:display.samsung.kconfig",
-        "//private/google-modules/fingerprint/goodix/fps_touch_handler:fps_touch_handler.kconfig",
-        "//private/google-modules/power/mitigation:bcl.kconfig",
-        "//private/google-modules/power/reset:reset.kconfig",
-        "//private/google-modules/radio/samsung/s5300:cpif.kconfig",
-        "//private/google-modules/soc/gs:gs_soc.kconfig",
-        "//private/google-modules/touch/common:touch.common.kconfig",
-        "//private/google-modules/touch/fts/ftm5_legacy:ftm5.kconfig",
-        "//private/google-modules/touch/sec:sec.kconfig",
-        "//private/google-modules/trusty:trusty.kconfig",
-    ],
-)
-
-kernel_build(
-    name = "kernel",
-    srcs = [":kernel_sources"],
-    outs = GS101_DTBS + [".config"],
-    base_kernel = "//common:kernel_aarch64",
-    build_config = ":build_config",
-    collect_unstripped_modules = True,
-    defconfig_fragments = [":devices_defconfig_fragments"],
-    dtstree = ":dtstree",
-    kconfig_ext = ":kconfig_ext",
-    make_goals = [
-        "modules",
-        "dtbs",
-    ],
-    module_outs = GS101_MODULE_OUTS,
-    strip_modules = True,
-)
-
-dtb_image(
-    name = "dtb_image",
-    srcs = [":kernel/" + dtb for dtb in GS101_DTBS],
-    out = "dtb.img",
 )
 
 kernel_module(
@@ -133,7 +38,7 @@ kernel_module(
         "drivers/input/keycombo.ko",
         "drivers/input/keydebug.ko",
         "drivers/input/misc/vl53l1/stmvl53l1.ko",
-        "drivers/iommu/iovad-best-fit-algo.ko",
+        "drivers/iommu/iovad-vendor-hooks.ko",
         "drivers/iommu/samsung-iommu-group.ko",
         "drivers/iommu/samsung-secure-iova.ko",
         "drivers/iommu/samsung_iommu.ko",
@@ -267,9 +172,20 @@ kernel_module(
     ],
 )
 
-kernel_module_group(
-    name = "kernel_ext_modules",
-    srcs = [
+device_build(
+    name = "gs101_base",
+    build_configs = ["build.config.gs101"],
+    ddk_uapi_headers = [
+        # keep sorted
+        "//private/google-modules/aoc/alsa:uapi_headers",
+        "//private/google-modules/display/samsung:uapi_headers",
+        "//private/google-modules/soc/gs:exynos_uapi_headers",
+        "//private/google-modules/soc/gs:misc_uapi_headers",
+        "//private/google-modules/touch/common:uapi_headers",
+        "//private/google-modules/video/gchips:uapi_headers",
+    ],
+    defconfig_fragments = ["gs101_defconfig"],
+    ext_modules = [
         # keep sorted
         ":gs101_soc",
         "//private/google-modules/amplifiers/audiometrics",
@@ -292,153 +208,62 @@ kernel_module_group(
         "//private/google-modules/trusty",
         "//private/google-modules/video/gchips:video.gchips",
     ],
-)
-
-# Extra modules needed for some (but not all) devices, to be loaded after
-# common ones. Separate so <device> builds can exclude them.
-kernel_module_group(
-    name = "kernel_ext_device_modules",
-    srcs = [
-        # FIXME: SoC modules need to be loaded first or the device will crash.
-        #        Module dependencies should not rely on the order. This needs be fixed.
-        ":kernel_ext_modules",
-        "//private/devices/google/bluejay:kernel_ext_modules",
-        "//private/devices/google/raviole:kernel_ext_modules",
-    ],
-)
-
-kernel_modules_install(
-    name = "kernel_modules_install",
-    kernel_build = ":kernel",
-    kernel_modules = [":kernel_ext_device_modules"],
-)
-
-filegroup(
-    name = "vendor_ramdisk_modules_list",
-    srcs = ["vendor_ramdisk.modules.gs101"],
-)
-
-create_file(
-    name = "vendor_ramdisk_device_modules_list",
-    srcs = [
-        # do not sort
-        ":vendor_ramdisk_modules_list",
-        "vendor_ramdisk.modules.devices",
-    ],
-    out = "vendor_ramdisk.modules",
-)
-
-# Note: gs101 devices don't have system_dlkm partition.
-create_file(
-    name = "system_dlkm_modules_list",
-    out = "system_dlkm.modules",
-    # The list is used to filter modules with `grep -w`.
-    content = ["^kernel/" + m for m in PIXEL_GKI_MODULES_LIST],
-)
-
-create_file(
-    name = "vendor_dlkm_modules_list",
-    out = "vendor_dlkm.modules",
-    # The list is used to filter modules with `grep -w`.
-    content = ["^kernel/" + m for m in GS101_MODULE_OUTS] + ["^extra/.*"],
-)
-
-create_file(
-    name = "dlkm_modules_list",
-    srcs = [
-        # do not sort
-        ":system_dlkm_modules_list",
-        ":vendor_dlkm_modules_list",
-    ],
-    out = "dlkm.modules",
-)
-
-filegroup(
-    name = "vendor_dlkm_modules_blocklist",
-    srcs = ["vendor_dlkm.blocklist.gs101"],
-)
-
-create_file(
-    name = "vendor_dlkm_device_modules_blocklist",
-    srcs = [
-        # do not sort
-        ":vendor_dlkm_modules_blocklist",
-        "vendor_dlkm.blocklist.devices",
-    ],
-    out = "vendor_dlkm.blocklist",
-)
-
-create_file(
-    name = "vendor_dlkm_props",
-    srcs = ["vendor_dlkm.props.gs101"],
-    out = "vendor_dlkm.props",
-)
-
-filegroup(
-    name = "dtbos",
-    srcs = [
-        "//private/devices/google/bluejay:dtbos",
-        "//private/devices/google/raviole:dtbos",
-    ],
-)
-
-kernel_images(
-    name = "kernel_images",
-    base_kernel_images = "//common:kernel_aarch64_images",
-    build_dtbo = True,
-    build_initramfs = True,
-    build_vendor_dlkm = True,
-    dtbo_srcs = [":dtbos"],
-    kernel_build = ":kernel",
-    kernel_modules_install = ":kernel_modules_install",
-    modules_list = ":vendor_ramdisk_device_modules_list",
-    ramdisk_compression = "lz4",
-    vendor_dlkm_archive = True,
-    vendor_dlkm_etc_files = [":insmod_cfgs"],
-    vendor_dlkm_modules_blocklist = ":vendor_dlkm_device_modules_blocklist",
-    vendor_dlkm_modules_list = ":dlkm_modules_list",
-    vendor_dlkm_props = ":vendor_dlkm_props",
-    deps = ["//private/devices/google/common:sepolicy"],
-)
-
-filegroup(
-    name = "insmod_cfgs",
-    srcs = glob(["insmod_cfg/*.cfg"]),
-)
-
-kernel_unstripped_modules_archive(
-    name = "kernel_unstripped_modules_archive",
-    kernel_build = ":kernel",
-    kernel_modules = [":kernel_ext_device_modules"],
-)
-
-merged_kernel_uapi_headers(
-    name = "merged_kernel_uapi_headers",
-    kernel_build = ":kernel",
-    kernel_modules = [":kernel_ext_device_modules"],
-)
-
-copy_to_dist_dir(
-    name = "dist",
-    data = [
+    kconfig_exts = ["Kconfig.ext.gs101"],
+    kconfigs = [
         # keep sorted
-        ":dtb_image",
-        ":dtbos",
-        ":insmod_cfgs",
-        ":kernel",
-        ":kernel_images",
-        ":kernel_modules_install",
-        ":kernel_unstripped_modules_archive",
-        ":merged_kernel_uapi_headers",
-        "//common:kernel_aarch64",
-        "//common:kernel_aarch64_gki_boot_image",
-        "//common:kernel_aarch64_headers",
-        "//private/devices/google/common:kernel_gki_modules",
-    ] + select({
-        "//private/devices/google/common:enable_download_fips140": ["@gki_prebuilt_fips140//fips140.ko"],
-        "//private/devices/google/common:disable_download_fips140": [],
-    }),
-    dist_dir = "out/gs101/dist",
-    flat = True,
-    log = "info",
+        "//private/google-modules/bms/misc:bms-misc.kconfig",
+        "//private/google-modules/display/common:common.kconfig",
+        "//private/google-modules/display/samsung:display.samsung.kconfig",
+        "//private/google-modules/fingerprint/goodix/fps_touch_handler:fps_touch_handler.kconfig",
+        "//private/google-modules/power/mitigation:bcl.kconfig",
+        "//private/google-modules/power/reset:reset.kconfig",
+        "//private/google-modules/radio/samsung/s5300:cpif.kconfig",
+        "//private/google-modules/soc/gs:gs_soc.kconfig",
+        "//private/google-modules/touch/common:touch.common.kconfig",
+        "//private/google-modules/touch/fts/ftm5_legacy:ftm5.kconfig",
+        "//private/google-modules/touch/sec:sec.kconfig",
+        "//private/google-modules/trusty:trusty.kconfig",
+    ],
+    vendor_dlkm_modules_blocklists = ["vendor_dlkm.blocklist.gs101"],
+    vendor_ramdisk_modules_lists = ["vendor_ramdisk.modules.gs101"],
+)
+
+device_build(
+    name = "gs101",
+    base_device = ":gs101_base",
+    build_dtb = True,
+    build_dtbo = True,
+    build_vendor_dlkm = True,
+    defconfig_fragments = [
+        "//private/devices/google/bluejay:bluejay/defconfig_fragments",
+        "//private/devices/google/raviole:raviole/defconfig_fragments",
+    ],
+    dtb_outs = GS101_DTBS,
+    dts_makefile = "dts/Makefile",
+    dts_srcs = glob(["dts/**"]) + [
+        "//private/google-modules/soc/gs:gs.dt-bindings",
+    ],
+    ext_dtbos = [
+        "//private/devices/google/bluejay:bluejay/dtbos",
+        "//private/devices/google/raviole:raviole/dtbos",
+    ],
+    ext_modules = [
+        "//private/devices/google/bluejay:bluejay/ext_modules",
+        "//private/devices/google/raviole:raviole/ext_modules",
+    ],
+    insmod_cfgs = glob(["insmod_cfg/*.cfg"]),
+    module_outs = GS101_MODULE_OUTS,
+    vendor_dlkm_modules_blocklists = ["vendor_dlkm.blocklist.devices"],
+    vendor_ramdisk_modules_lists = ["vendor_ramdisk.modules.devices"],
+)
+
+# For compatibility
+alias(
+    name = "dist",
+    actual = ":gs101/dist",
+)
+
+alias(
+    name = "kernel_compile_commands",
+    actual = ":gs101/kernel_compile_commands",
 )

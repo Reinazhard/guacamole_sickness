@@ -1140,6 +1140,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu1 {
@@ -1148,6 +1149,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu2 {
@@ -1156,6 +1158,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu3 {
@@ -1164,6 +1167,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu4 {
@@ -1172,6 +1176,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu5 {
@@ -1180,6 +1185,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu6 {
@@ -1188,6 +1194,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 			cpu7 {
@@ -1196,6 +1203,7 @@
 					l3-cachemiss-ev = <0x002A>;
 					inst-ev = <0x0008>;
 					cyc-ev = <0x0011>;
+					stall-backend-mem-ev = <0x0024>;
 				};
 			};
 		};
