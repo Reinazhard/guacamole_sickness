@@ -29212,6 +29212,7 @@ enum wlc_capext_feature_bitpos {
 
 	WLC_CAPEXT_FEATURE_BITPOS_FBT			= 55,	/* feature with sub-features */
 	WLC_CAPEXT_FEATURE_BITPOS_CDEF			= 56,
+
 	WLC_CAPEXT_FEATURE_BITPOS_TXPWRCAP		= 58,	/* feature with sub-features */
 	WLC_CAPEXT_FEATURE_BITPOS_MIMO_PS		= 59,
 
@@ -29241,6 +29242,7 @@ enum wlc_capext_feature_bitpos {
 
 	WLC_CAPEXT_FEATURE_BITPOS_CLM_RESTRICT		= 80,
 	WLC_CAPEXT_FEATURE_BITPOS_EVT_EXT		= 81,
+
 	WLC_CAPEXT_FEATURE_BITPOS_TDMTX			= 83,
 	WLC_CAPEXT_FEATURE_BITPOS_NATOE			= 84,
 

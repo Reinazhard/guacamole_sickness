@@ -95,5 +95,9 @@ extern uint32 dhd_plat_get_rc_vendor_id(void);
 extern uint32 dhd_plat_get_rc_device_id(void);
 
 extern uint16 dhd_plat_align_rxbuf_size(uint16 rxbufpost_sz);
+#ifdef DHD_COREDUMP
+void dhd_plat_register_coredump(void);
+void dhd_plat_unregister_coredump(void);
+#endif /* DHD_COREDUMP */
 #endif /* __linux__ */
 #endif /* __DHD_PLAT_H__ */

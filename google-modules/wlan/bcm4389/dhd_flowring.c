@@ -666,6 +666,7 @@ dhd_flowid_find(dhd_pub_t *dhdp, uint8 ifindex, uint8 prio, char *sa, char *da)
 	} else {
 
 		if (ETHER_ISMULTI(da) &&
+
 			TRUE) {
 			ismcast = TRUE;
 			hash = 0;
@@ -801,6 +802,7 @@ dhd_flowid_alloc(dhd_pub_t *dhdp, uint8 ifindex, uint8 prio, char *sa, char *da)
 
 		/* For bcast/mcast assign first slot in in interface */
 		hash = (ETHER_ISMULTI(da) &&
+
 			TRUE) ?  0 : DHD_FLOWRING_HASHINDEX(da, prio);
 
 		cur = if_flow_lkup[ifindex].fl_hash[hash];

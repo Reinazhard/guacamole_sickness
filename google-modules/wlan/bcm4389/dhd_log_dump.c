@@ -258,16 +258,24 @@ dhd_log_dump(void *handle, void *event_info, u8 event)
 {
 	dhd_info_t *dhd = handle;
 	log_dump_type_t *type = (log_dump_type_t *)event_info;
+	dhd_pub_t *dhdp = NULL;
+	BCM_REFERENCE(dhdp);
 
 	if (!dhd || !type) {
 		DHD_ERROR(("%s: dhd/type is NULL\n", __FUNCTION__));
 		return;
 	}
 
+	dhdp = &dhd->pub;
+
 #ifdef WL_CFG80211
-	/* flush the fw preserve logs */
-	wl_flush_fw_log_buffer(dhd_linux_get_primary_netdev(&dhd->pub),
-		FW_LOGSET_MASK_ALL);
+	if (!dhd_query_bus_erros(dhdp)) {
+		/* flush the fw preserve logs */
+		wl_flush_fw_log_buffer(dhd_linux_get_primary_netdev(&dhd->pub),
+			FW_LOGSET_MASK_ALL);
+	} else {
+		DHD_PRINT(("%s: skip flush fw log buffer\n", __FUNCTION__));
+	}
 #endif
 
 	/* there are currently 3 possible contexts from which

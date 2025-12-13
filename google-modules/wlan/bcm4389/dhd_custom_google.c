@@ -885,10 +885,6 @@ dhd_wlan_init(void)
 	}
 #endif /* CONFIG_BROADCOM_WIFI_RESERVED_MEM */
 
-#ifdef DHD_COREDUMP
-	platform_device_register(&sscd_dev);
-#endif /* DHD_COREDUMP */
-
 	ret = dhd_wifi_init_gpio();
 	if (ret < 0) {
 		DHD_ERROR(("%s: failed to initiate GPIO, ret=%d\n",
@@ -919,13 +915,12 @@ dhd_wlan_deinit(void)
 	if (gpio_is_valid(wlan_host_wake_up)) {
 		gpio_free(wlan_host_wake_up);
 	}
+
+	/* drive wl_reg_on low before freeing gpio */
+	dhd_wlan_power(0);
 	if (gpio_is_valid(wlan_reg_on)) {
 		gpio_free(wlan_reg_on);
 	}
-
-#ifdef DHD_COREDUMP
-	platform_device_unregister(&sscd_dev);
-#endif /* DHD_COREDUMP */
 
 	return 0;
 }
@@ -1010,6 +1005,20 @@ uint16 dhd_plat_align_rxbuf_size(uint16 rxbufpost_sz)
 	return rxbufpost_sz;
 #endif
 }
+
+#ifdef DHD_COREDUMP
+void
+dhd_plat_register_coredump(void)
+{
+	platform_device_register(&sscd_dev);
+}
+
+void
+dhd_plat_unregister_coredump(void)
+{
+	platform_device_unregister(&sscd_dev);
+}
+#endif /* DHD_COREDUMP */
 
 #ifndef BCMDHD_MODULAR
 /* Required only for Built-in DHD */

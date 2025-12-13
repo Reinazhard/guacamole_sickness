@@ -16,38 +16,42 @@
  * modifications of the software.
  *
  *
- * <<Broadcom-WL-IPTag/Open:>>
+ * <<Broadcom-WL-IPTag/Dual:>>
  *
-*/
+ * + epivers.py --workspace=../../../../components/dhd/src ../../../../build/dhd/android-u/gg_pixel22-gg/pcie@gg/bcmdhd/include/epivers.h
+ *
+ * FILE-CSTYLED
+ *
+ */
 
 #ifndef _epivers_h_
 #define _epivers_h_
 
-#define EPI_MAJOR_VERSION	101
+#define EPI_MAJOR_VERSION	101u
 
-#define EPI_MINOR_VERSION	102
+#define EPI_MINOR_VERSION	102u
 
-#define EPI_RC_NUMBER		28
+#define EPI_RC_NUMBER		28u
 
-#define EPI_INCREMENTAL_NUMBER	16
+#define EPI_INCREMENTAL_NUMBER	25u
 
-#define EPI_BUILD_NUMBER	0
+#define EPI_VERSION		(101, 102, 28, 25)
 
-#define EPI_VERSION		101, 102, 28, 16
+#define EPI_VERSION_NUM		0x65661c19u
 
-#define EPI_VERSION_NUM		0x65661c10
+#define EPI_UNIQUE_NUM		0x65661c19u
 
-#define EPI_VERSION_DEV		101.102.28
+#define EPI_VERSION_DEV		(101.102.28)
 
 /* Driver Version String, ASCII, 32 chars max */
-#if defined (WLTEST)
-#define EPI_VERSION_STR		"101.102.28.16 (wlan=r1089532 WLTEST)"
-#elif (defined (BCMDBG_ASSERT) && \
-	!defined (BCMDBG_ASSERT_DISABLED) && \
-	!defined (ASSERT_FP_DISABLE))
-#define EPI_VERSION_STR		"101.102.28.16 (wlan=r1089532 ASSRT)"
+#if defined(WLTEST)
+#define EPI_VERSION_STR		"101.102.28.25 (gf088a0c WLTEST)"
+#elif (defined(BCMDBG_ASSERT) && \
+	!defined(BCMDBG_ASSERT_DISABLED) && \
+	!defined(ASSERT_FP_DISABLE))
+#define EPI_VERSION_STR		"101.102.28.25 (gf088a0c ASSRT)"
 #else
-#define EPI_VERSION_STR		"101.102.28.16 (wlan=r1089532)"
+#define EPI_VERSION_STR		"101.102.28.25 (gf088a0c)"
 #endif /* BCMINTERNAL */
 
 #endif /* _epivers_h_ */

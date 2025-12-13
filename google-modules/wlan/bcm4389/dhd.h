@@ -1830,6 +1830,7 @@ typedef struct dhd_pub {
 	bool rx_cpl_lat_capable; /* FW supports latency posting in Rx cpl ring */
 	rx_cpl_lat_info_t rxcpl_lat_info; /* Rx Cpl latency information */
 	tx_cpl_info_t txcpl_info; /* TX completion timestamp info */
+
 #ifdef SUPPORT_OTA_UPDATE
 	ota_update_info_t ota_update_info;
 #endif /* SUPPORT_OTA_UPDATE */
@@ -3994,6 +3995,9 @@ static INLINE void dhd_pktid_logging_dump(dhd_pub_t *dhdp) { }
 #endif /* LINUX || linux */
 #endif /* DHD_MAP_PKTID_LOGGING */
 
+#ifdef DHD_DUMP_RXPKTIDMAP
+void dhd_dump_rxpktidmap(dhd_pub_t *dhd);
+#endif /* DHD_DUMP_RXPKTIDMAP */
 #ifdef DHD_PCIE_RUNTIMEPM
 #define DEFAULT_DHD_RUNTIME_MS 100
 #ifndef CUSTOM_DHD_RUNTIME_MS
