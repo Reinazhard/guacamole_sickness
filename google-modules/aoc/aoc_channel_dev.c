@@ -581,6 +581,8 @@ static ssize_t aocc_read(struct file *file, char __user *buf, size_t count,
 	mutex_lock(&private->pending_msg_lock);
 	node = list_first_entry_or_null(&private->pending_aoc_messages,
 					struct aoc_message_node, msg_list);
+	if (node)
+		list_del(&node->msg_list);
 	mutex_unlock(&private->pending_msg_lock);
 
 	if (!node) {
@@ -602,7 +604,6 @@ static ssize_t aocc_read(struct file *file, char __user *buf, size_t count,
 	retval = node->msg_size - retval;
 
 	mutex_lock(&private->pending_msg_lock);
-	list_del(&node->msg_list);
 	atomic_dec(&private->pending_msg_count);
 	if (atomic_read(&private->pending_msg_count) <
 	    aocc_block_channel_threshold && private->is_channel_blocked) {

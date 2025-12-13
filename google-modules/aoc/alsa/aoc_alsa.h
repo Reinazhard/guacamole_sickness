@@ -65,6 +65,7 @@ enum uc_device_id {
 
 #define AOC_CMD_DEBUG_ENABLE
 #define WAITING_TIME_MS 500
+#define DSP_MOD_WAITING_TIME_MS 700
 
 #define PCM_TIMER_INTERVAL_NANOSECS 10e6
 #define COMPR_OFFLOAD_TIMER_INTERVAL_NANOSECS 5000e6
@@ -244,6 +245,12 @@ enum { CHRE_GAIN_PATH_PDM = 0, CHRE_GAIN_PATH_AEC, CHRE_GAIN_PATH_TOT };
 
 enum { AOC_CHIRP_INTERVAL = 0, AOC_CHIRP_ENABLE, AOC_CHIRP_MODE, AOC_CHIRP_GAIN };
 
+enum PCM_OPTION_INDEX {
+	PCM_OPTION_INDEX_BIT_DEPTH,   /* Sample bit depth of the stream */
+	PCM_OPTION_INDEX_FORMAT,      /* Sample format of the stream */
+	PCM_OPTION_INDEX_BITFIELD_1,  /* Custom bit fields */
+};
+
 struct aoc_chip {
 	struct snd_card *card;
 	struct snd_soc_jack jack; /* TODO: temporary use, need refactor  */
@@ -297,6 +304,7 @@ struct aoc_chip {
 	int sidetone_enable;
 	int mic_loopback_enabled;
 	int gapless_offload_enable;
+	int mmap_offload_enable;
 	int chirp_enable;
 	int chirp_interval;
 	int chirp_mode;
@@ -325,6 +333,7 @@ struct aoc_chip {
 
 	bool hotword_supported;
 	bool chre_supported;
+	bool skip_mmap_offload;
 
 	struct AUDIO_OUTPUT_BT_A2DP_ENC_CFG a2dp_encoder_cfg;
 	struct CMD_AUDIO_OUTPUT_USB_CONFIG usb_sink_cfg;
@@ -349,6 +358,7 @@ struct aoc_alsa_stream {
 	uint32_t compr_padding;
 	uint32_t compr_delay;
 	uint64_t compr_pcm_io_sample_base;
+	uint64_t compr_pcm_decoder_base;
 	int offload_temp_data_buf_size;
 	struct timer_list timer; /* For advancing the hw ptr */
 	struct hrtimer hr_timer; /* For advancing the hw ptr */
@@ -557,6 +567,7 @@ int aoc_compr_offload_send_metadata(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_partial_drain(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_close(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_get_io_samples(struct aoc_alsa_stream *alsa_stream, uint64_t *sample);
+int aoc_compr_offload_get_decoder_frames(struct aoc_alsa_stream *alsa_stream, uint64_t *frames);
 int aoc_compr_offload_flush_buffer(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_pause(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_resume(struct aoc_alsa_stream *alsa_stream);
@@ -564,6 +575,8 @@ int aoc_compr_offload_linear_gain_get(struct aoc_chip *chip, long *val);
 int aoc_compr_offload_linear_gain_set(struct aoc_chip *chip, long *val);
 int aoc_compr_offload_reset_io_sample_base(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_get_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position);
+int aoc_compr_get_decoder_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position);
+int aoc_compr_offload_reset_decorder_base(struct aoc_alsa_stream *alsa_stream);
 #if !(IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201))
 int aoc_compr_offload_playback_rate_get(struct aoc_chip *chip, long *val);
 int aoc_compr_offload_playback_rate_set(struct aoc_chip *chip, long *val);

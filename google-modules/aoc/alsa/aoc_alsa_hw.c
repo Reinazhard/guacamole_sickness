@@ -258,7 +258,12 @@ static int aoc_audio_control(const char *cmd_channel, const uint8_t *cmd,
 
 	/* Getting responses from Aoc for the command just sent */
 	count = 0;
-	time_expired = jiffies + msecs_to_jiffies(WAITING_TIME_MS);
+	uint16_t command_id = ((struct CMD_HDR *)cmd)->id;
+	if (command_id == CMD_AUDIO_OUTPUT_DSP_MODE_SET_ID) {
+		time_expired = jiffies + msecs_to_jiffies(DSP_MOD_WAITING_TIME_MS);
+	} else {
+		time_expired = jiffies + msecs_to_jiffies(WAITING_TIME_MS);
+	}
 	while (((err = aoc_service_read(dev, buffer, buffer_size,
 					NONBLOCKING)) < 1) &&
 	       time_is_after_jiffies(time_expired)) {
@@ -1645,6 +1650,9 @@ int aoc_audio_path_open(struct aoc_chip *chip, int src, int dest, bool be_on)
 	src_idx = AOC_ID_TO_INDEX(src);
 	dest_idx = AOC_ID_TO_INDEX(dest);
 
+	if (src_idx == IDX_HIFI && src_for_capture)
+		return 0;
+
 	/* voice call capture or playback */
 	if ((src_idx == 3 && src_for_capture) || (src_idx == 4 && !src_for_capture))
 		return aoc_phonecall_path_open(chip, src_idx, dest_idx, dest & AOC_TX);
@@ -1671,6 +1679,9 @@ int aoc_audio_path_close(struct aoc_chip *chip, int src, int dest, bool be_on)
 	src_for_capture = src & AOC_TX;
 	src_idx = AOC_ID_TO_INDEX(src);
 	dest_idx = AOC_ID_TO_INDEX(dest);
+
+	if (src_idx == IDX_HIFI && src_for_capture)
+		return 0;
 
 	/* voice call capture or playback */
 	if ((src_idx == 3 && src_for_capture) || (src_idx == 4 && !src_for_capture))
@@ -4012,6 +4023,30 @@ int aoc_compr_offload_close(struct aoc_alsa_stream *alsa_stream)
 	}
 
 	return 0;
+}
+
+int aoc_compr_offload_get_decoder_frames(struct aoc_alsa_stream *alsa_stream, uint64_t *frames)
+{
+#if !(IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201))
+	int err;
+	struct CMD_AUDIO_OUTPUT_GET_DECODER_TOT_FRAMES cmd;
+
+	AocCmdHdrSet(&(cmd.parent), CMD_AUDIO_OUTPUT_GET_DECODER_TOT_FRAMES_ID,
+		     sizeof(cmd));
+
+	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd,
+				sizeof(cmd), (uint8_t *)&cmd,
+				alsa_stream->chip);
+	if (err < 0)
+		pr_err("ERR:%d in getting compress offload decoder frames\n",
+		       err);
+	else
+		*frames = cmd.frames;
+
+	return err < 0 ? err : 0;
+#else
+	return 0;
+#endif
 }
 
 int aoc_compr_offload_get_io_samples(struct aoc_alsa_stream *alsa_stream, uint64_t *sample)

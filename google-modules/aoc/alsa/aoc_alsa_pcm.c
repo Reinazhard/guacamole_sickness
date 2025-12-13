@@ -137,6 +137,7 @@ void aoc_timer_stop_sync(struct aoc_alsa_stream *alsa_stream)
 bool aoc_pcm_update_pos(struct aoc_alsa_stream *alsa_stream, unsigned long consumed)
 {
 	unsigned long buffer_cnt;
+	unsigned int adjust_pos = 0;
 
 	/* Update the pcm pointer  */
 	if (unlikely(alsa_stream->n_overflow)) {
@@ -164,7 +165,16 @@ bool aoc_pcm_update_pos(struct aoc_alsa_stream *alsa_stream, unsigned long consu
 		alsa_stream->prev_buffer_cnt = buffer_cnt;
 	}
 
-	return (alsa_stream->pos_delta >= alsa_stream->period_size) ? true : false;
+	/* Update the pos to a multiple of the period size */
+	if (alsa_stream->pos_delta > alsa_stream->period_size) {
+		adjust_pos = alsa_stream->pos_delta % alsa_stream->period_size;
+		if (adjust_pos) {
+			alsa_stream->pos -= adjust_pos;
+			alsa_stream->prev_consumed -= adjust_pos;
+		}
+	}
+
+	return alsa_stream->pos_delta >= alsa_stream->period_size;
 }
 
 /* Hardware definition

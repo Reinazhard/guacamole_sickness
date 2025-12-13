@@ -153,16 +153,13 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 		dev_info(prvdata->dev, "waiting for aoc reset to finish\n");
 		if (wait_event_timeout(prvdata->aoc_reset_wait_queue, prvdata->aoc_reset_done,
 				       aoc_reset_timeout_ms) == 0) {
+			dev_err(prvdata->dev, "AoC reset timed out\n");
 			ret = exynos_pmu_read(custom_out_offset, &custom_out);
 			dev_err(prvdata->dev,
 				"AoC reset timeout custom_out=%d, ret=%d\n", custom_out, ret);
 			ret = exynos_pmu_read(custom_in_offset, &custom_in);
 			dev_err(prvdata->dev,
 				"AoC reset timeout custom_in=%d, ret=%d\n", custom_in, ret);
-			dev_err(prvdata->dev, "PCU_WATCHDOG_CONTROL = 0x%x\n",
-				readl(pcu + AOC_PCU_WATCHDOG_CONTROL_OFFSET));
-			dev_err(prvdata->dev, "PCU_WATCHDOG_VALUE = 0x%x\n",
-				readl(pcu + AOC_PCU_WATCHDOG_VALUE_OFFSET));
 		} else {
 			aoc_reset_successful = true;
 			break;

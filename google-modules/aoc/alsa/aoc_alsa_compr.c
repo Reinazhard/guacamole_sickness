@@ -76,10 +76,26 @@ int aoc_compr_offload_reset_io_sample_base(struct aoc_alsa_stream *alsa_stream)
 	return err;
 }
 
+int aoc_compr_offload_reset_decorder_base(struct aoc_alsa_stream *alsa_stream)
+{
+	int err = 0;
+
+	err = aoc_compr_get_decoder_position(alsa_stream,
+		&alsa_stream->compr_pcm_decoder_base);
+	if (err < 0) {
+		pr_err("ERR: fail to get audio playback samples, err = %d\n", err);
+		return err;
+	}
+	pr_info("%s: compr_pcm_decoder_base = %llu\n",
+		__func__, alsa_stream->compr_pcm_decoder_base);
+	return err;
+}
+
 void aoc_compr_offload_isr(struct aoc_service_dev *dev)
 {
 	struct aoc_alsa_stream *alsa_stream;
 	unsigned long consumed, n;
+	unsigned long avail;
 
 	if (!dev) {
 		pr_err("ERR: NULL compress offload aoc service pointer\n");
@@ -118,6 +134,13 @@ void aoc_compr_offload_isr(struct aoc_service_dev *dev)
 	}
 
 	consumed = aoc_ring_bytes_read(dev->service, AOC_DOWN);
+
+	/* Advance the write ptr in the DRAM ring buffer for mmap-based playback */
+	if (alsa_stream->stream_type == MMAPED) {
+		avail = aoc_ring_bytes_available_to_write(dev->service, AOC_DOWN);
+		if (!aoc_service_advance_write_index(dev->service, AOC_DOWN, avail))
+			dev_err(&(dev->dev), "ERR: in advancing offload playback writer ptr\n");
+	}
 
 	/* TODO: To do more on no pointer update? */
 	if (consumed == alsa_stream->prev_consumed)
@@ -350,6 +373,10 @@ static int aoc_compr_playback_open(struct snd_compr_stream *cstream)
 	alsa_stream->send_metadata = 1;
 	alsa_stream->eof_reach = 0;
 	alsa_stream->gapless_offload_enable = chip->gapless_offload_enable;
+
+	if (!chip->skip_mmap_offload && chip->mmap_offload_enable)
+		alsa_stream->stream_type = MMAPED;
+
 	snd_compr_use_pause_in_draining(cstream);
 
 	err = aoc_audio_open(alsa_stream);
@@ -573,6 +600,30 @@ out:
 	return err;
 }
 
+int aoc_compr_get_decoder_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position)
+{
+	uint64_t current_decoder_frame = 0;
+
+	if (position == NULL) {
+		pr_err("%s: invalid position\n", __func__);
+		return -EINVAL;
+	}
+
+	if (alsa_stream->stream_type != MMAPED)
+		return 0;
+
+	if (aoc_compr_offload_get_decoder_frames(alsa_stream, &current_decoder_frame) < 0) {
+		pr_err("%s: failed to get playback decoder frames\n", __func__);
+		return -EINVAL;
+	}
+
+	*position = current_decoder_frame - alsa_stream->compr_pcm_decoder_base;
+
+	pr_debug("%s: current_decoder_frame=%llu base=%llu, position=%llu\n", __func__,
+			current_decoder_frame, alsa_stream->compr_pcm_decoder_base, *position);
+	return 0;
+}
+
 int aoc_compr_get_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position)
 {
 	uint64_t current_sample = 0;
@@ -787,9 +838,11 @@ static int aoc_compr_set_params(struct snd_soc_component *component,
 	struct snd_compr_runtime *runtime = cstream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
 	struct snd_codec *codec = &params->codec;
+	struct aoc_service_dev *dev = alsa_stream->dev;
 
 	uint8_t *temp_data_buf;
 	int buffer_size;
+	unsigned long avail;
 #if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
 	int i;
 #endif
@@ -815,6 +868,14 @@ static int aoc_compr_set_params(struct snd_soc_component *component,
 	alsa_stream->period_size = params->buffer.fragment_size;
 	alsa_stream->params_rate = params->codec.sample_rate;
 
+	/* Advance the write ptr in the DRAM ring buffer for mmap-based playback */
+	if (alsa_stream->stream_type == MMAPED) {
+		avail = aoc_ring_bytes_available_to_write(dev->service, AOC_DOWN);
+		if (!aoc_service_advance_write_index(dev->service, AOC_DOWN,
+						min(avail, alsa_stream->buffer_size)))
+			dev_err(&(dev->dev), "ERR: in advancing offload playback writer ptr\n");
+	}
+
 	/* TODO: need to double check on the AoC decoder requirements */
 	alsa_stream->channels  =  params->codec.ch_out;
 	alsa_stream->compr_offload_codec =
@@ -822,10 +883,14 @@ static int aoc_compr_set_params(struct snd_soc_component *component,
 	memset(alsa_stream->compr_offload_codec_options, 0,
 		sizeof(alsa_stream->compr_offload_codec_options));
 #if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
-	if (alsa_stream->compr_offload_codec == AUDIO_OUTPUT_DECODER_PCM)
+	if (alsa_stream->compr_offload_codec == AUDIO_OUTPUT_DECODER_PCM) {
 		for(i = 0;i < CODEC_RESERVED_SIZE;i ++)
 			alsa_stream->compr_offload_codec_options[i] =
 				(uint8_t)codec->reserved[i];
+
+		alsa_stream->compr_offload_codec_options[PCM_OPTION_INDEX_BITFIELD_1] =
+			alsa_stream->stream_type == MMAPED ? 1 : 0;
+	}
 #endif
 	if (alsa_stream->compr_offload_codec == AUDIO_OUTPUT_DECODER_UNKNOWN) {
 		pr_err("ERR: unsupport codec %x\n", params->codec.id);
