@@ -53,6 +53,21 @@ Description:
 		soft_ocp_gpu_lvl.
 		The reported value is the readback of the corresponding threshold.
 
+What:		/sys/devices/virtual/pmic/mitigation/triggered_rel/<SUBSYSTEM>
+Date:		Aug, 2025
+Contact:	"Jasmine Cha" <chajasmine@google.com>
+	        "Sam Ou" <samou@google.com>
+Description:
+		SUBSYSTEM can be selected from uvlo1_rel, uvlo2_rel, dvfs_rel.
+		The reported value is the readback of the corresponding threshold.
+
+What:		/sys/devices/virtual/pmic/mitigation/triggered_det/<SUBSYSTEM>
+Date:		Mar, 2025
+Contact:	"Jasmine Cha" <chajasmine@google.com>
+Description:
+		SUBSYSTEM can be selected from uvlo1_det, uvlo2_det, smpl_det.
+		The reported value is the readback of the corresponding threshold.
+
 What:		/sys/devices/virtual/pmic/mitigation/clock_div/<SUBSYSTEM>
 Date:		May, 2023
 Contact:	"George Lee" <geolee@google.com>
@@ -255,6 +270,13 @@ Contact:	"Hiroshi Akiyama" <hiroshiakiyama@google.com>
 Description:
 		Number of cycles uvlo2 is asserted in latest uvlo2 event.
 
+What:		/sys/devices/virtual/pmic/mitigation/instruction/dvfs_ramp_enable
+Date:		Aug, 2025
+Contact:	"Sam Ou" <samou@google.com>
+Description:
+		The DVFS release ramp enable flag.
+		1 means enabled; 0 means disabled.
+
 What:		/sys/devices/virtual/pmic/mitigation/qos/<SUBSYSTEM>
 Date:		May, 2023
 Contact:	"George Lee" <geolee@google.com>
@@ -321,6 +343,12 @@ Contact:	"Sam Ou" <samou@google.com>
 Description:
 		meter_channels:
 		The reported value indicates the meter channel number.
+
+What:		/sys/devices/virtual/pmic/mitigation/br_stats/max_odpm_stats
+Date:		Aug, 2025
+Contact:	"Sam Ou" <samou@google.com>
+Description:
+		max_odpm_stats: max instant odpm information (see uapi/brownout_stats.h)
 
 What:		/sys/devices/virtual/pmic/mitigation/mitigation/<PMIC>_mitigation_threshold
 Date:		Dec, 2023

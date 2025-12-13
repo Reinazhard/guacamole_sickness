@@ -16,15 +16,37 @@
 #include <uapi/linux/sched/types.h>
 #include "bcl.h"
 
-void compute_mitigation_modules(struct bcl_device *bcl_dev,
-				struct bcl_mitigation_conf *mitigation_conf, u32 *odpm_lpf_value)
+#include <trace/events/bcl_exynos.h>
+
+static void compute_odpm_lpf(struct bcl_device *bcl_dev,
+				struct timespec64 triggered_time,
+				struct bcl_mitigation_conf *mitigation_conf,
+				struct odpm_lpf *odpm_lpf,
+				struct max_odpm_lpf *max_odpm_lpf)
 {
 	int i;
+	u32 odpm_lpf_value, odpm_lpf_thres;
 	for (i = 0; i < METER_CHANNEL_MAX; i++) {
-		if (odpm_lpf_value[i] >= mitigation_conf[i].threshold) {
+		odpm_lpf_value = odpm_lpf->value[i];
+		odpm_lpf_thres = mitigation_conf[i].threshold;
+		if (odpm_lpf_value >= odpm_lpf_thres) {
+			/* Compute mitigation modules */
 			atomic_or(BIT(mitigation_conf[i].module_id),
 					  &bcl_dev->mitigation_module_ids);
+
+			if (odpm_lpf_value >= odpm_lpf_thres * 3)
+				max_odpm_lpf[i].count_lvl_2++;
+			else if (odpm_lpf_value >= odpm_lpf_thres * 2)
+				max_odpm_lpf[i].count_lvl_1++;
+			else
+				max_odpm_lpf[i].count_lvl_0++;
 		}
+		if (odpm_lpf_value >= max_odpm_lpf[i].value) {
+			max_odpm_lpf[i].time = triggered_time;
+			max_odpm_lpf[i].value = odpm_lpf_value;
+			max_odpm_lpf[i].triggered_idx = bcl_dev->br_stats->triggered_idx;
+		}
+
 	}
 }
 #if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
@@ -67,9 +89,11 @@ static void data_logging_main_odpm_lpf_task(struct bcl_device *bcl_dev)
 					  (u32 *)bcl_dev->br_stats->main_odpm_lpf.value);
 #endif
 	ktime_get_real_ts64((struct timespec64 *)&bcl_dev->br_stats->main_odpm_lpf.time);
-	compute_mitigation_modules(bcl_dev,
+	compute_odpm_lpf(bcl_dev,
+				   bcl_dev->br_stats->main_odpm_lpf.time,
 				   bcl_dev->main_mitigation_conf,
-				   bcl_dev->br_stats->main_odpm_lpf.value);
+				   &bcl_dev->br_stats->main_odpm_lpf,
+				   bcl_dev->max_odpm_stats->main_max_odpm_lpf);
 }
 
 static void data_logging_sub_odpm_lpf_task(struct bcl_device *bcl_dev)
@@ -92,9 +116,11 @@ static void data_logging_sub_odpm_lpf_task(struct bcl_device *bcl_dev)
 					  (u32 *)bcl_dev->br_stats->sub_odpm_lpf.value);
 #endif
 	ktime_get_real_ts64((struct timespec64 *)&bcl_dev->br_stats->sub_odpm_lpf.time);
-	compute_mitigation_modules(bcl_dev,
+	compute_odpm_lpf(bcl_dev,
+				   bcl_dev->br_stats->sub_odpm_lpf.time,
 				   bcl_dev->sub_mitigation_conf,
-				   bcl_dev->br_stats->sub_odpm_lpf.value);
+				   &bcl_dev->br_stats->sub_odpm_lpf,
+				   bcl_dev->max_odpm_stats->sub_max_odpm_lpf);
 }
 
 static void google_bcl_write_irq_triggered_event(struct bcl_device *bcl_dev, int idx)
@@ -137,6 +163,36 @@ void google_bcl_upstream_state(struct bcl_zone *zone, enum MITIGATION_MODE state
 		sysfs_notify(&bcl_dev->mitigation_dev->kobj, "triggered_state", "smpl_triggered");
 }
 
+static void trace_batt(struct bcl_device *bcl_dev)
+{
+	int ret;
+	int capacity, cycle_count, voltage_now, current_now;
+	union power_supply_propval val;
+
+	if (!bcl_dev->batt_psy)
+		return;
+	if (!trace_clock_set_rate_enabled())
+		return;
+
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CAPACITY, &val);
+	capacity = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CYCLE_COUNT, &val);
+	cycle_count = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_VOLTAGE_NOW, &val);
+	voltage_now = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CURRENT_NOW, &val);
+	current_now = ret ? 0 : val.intval;
+
+	trace_clock_set_rate("BCL_BATT_CAPACITY", capacity, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_CYCLE_COUNT", cycle_count, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_VOLTAGE_NOW", voltage_now, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_CURRENT_NOW", current_now, raw_smp_processor_id());
+}
+
 void google_bcl_start_data_logging(struct bcl_device *bcl_dev, int idx)
 {
 	if (!bcl_dev->enabled_br_stats)
@@ -155,12 +211,16 @@ void google_bcl_start_data_logging(struct bcl_device *bcl_dev, int idx)
 
 	bcl_dev->triggered_idx = idx;
 	sysfs_notify(&bcl_dev->mitigation_dev->kobj, "br_stats", "triggered_idx");
+
+	trace_batt(bcl_dev);
 }
 
 void google_bcl_remove_data_logging(struct bcl_device *bcl_dev)
 {
-	if (bcl_dev->data_logging_initialized)
+	if (bcl_dev->data_logging_initialized) {
 		kfree(bcl_dev->br_stats);
+		kfree(bcl_dev->max_odpm_stats);
+	}
 	bcl_dev->data_logging_initialized = false;
 }
 
@@ -171,6 +231,12 @@ int google_bcl_init_data_logging(struct bcl_device *bcl_dev)
 	bcl_dev->br_stats = kmalloc(bcl_dev->br_stats_size, GFP_KERNEL);
 	if (!bcl_dev->br_stats)
 		return -ENOMEM;
+	bcl_dev->max_odpm_stats = kzalloc(sizeof(struct max_odpm_stats), GFP_KERNEL);
+	if (!bcl_dev->max_odpm_stats) {
+		kfree(bcl_dev->br_stats);
+		return -ENOMEM;
+	}
+
 	google_bcl_init_brownout_stats(bcl_dev);
 	bcl_dev->data_logging_initialized = true;
 

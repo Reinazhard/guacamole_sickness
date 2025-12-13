@@ -159,6 +159,10 @@ properties:
     description: vimon power loop enable
     $ref: /schemas/types.yaml#/definitions/flag
 
+  bat_ktimer_supported:
+    description: BATFET Kernel Timer Support
+    $ref: /schemas/types.yaml#/definitions/bool
+
   bat_ktimer_en:
     description: BATFET Kernel Timer Enable
     $ref: /schemas/types.yaml#/definitions/bool

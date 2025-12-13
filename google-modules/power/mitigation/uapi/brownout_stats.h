@@ -14,28 +14,6 @@
 #define COMPATIBLE_METER_CHANNEL_MAX	16
 static_assert(METER_CHANNEL_MAX <= COMPATIBLE_METER_CHANNEL_MAX);
 
-/* Brownout triggered source need to be sync with the dt-bindings.
- * google-modules/soc/gs/include/dt-bindings/soc/google/zumapro-bcl.h
- */
-#define SMPL_WARN	0
-#define OCP_WARN_CPUCL1	1
-#define OCP_WARN_CPUCL2	2
-#define SOFT_OCP_WARN_CPUCL1	3
-#define SOFT_OCP_WARN_CPUCL2	4
-#define OCP_WARN_TPU	5
-#define SOFT_OCP_WARN_TPU	6
-#define OCP_WARN_GPU	7
-#define SOFT_OCP_WARN_GPU	8
-#define PMIC_SOC	9
-#define UVLO1	10
-#define UVLO2	11
-#define BATOILO1	12
-#define BATOILO2	13
-#define PMIC_120C	14
-#define PMIC_140C	15
-#define PMIC_OVERHEAT	16
-#define BATOILO	BATOILO1
-#define TRIGGERED_SOURCE_MAX	17
 #define VIMON_BUF_SIZE		256
 #define VIMON_BYTES_PER_ENTRY	2
 #define MAX77779_VIMON_DATA_SIZE	(VIMON_BUF_SIZE / VIMON_BYTES_PER_ENTRY)
@@ -70,6 +48,18 @@ struct odpm_lpf {
 	u32 value[COMPATIBLE_METER_CHANNEL_MAX];
 };
 
+struct max_odpm_lpf {
+	struct timespec64 time;
+	u32 value;
+	u32 triggered_idx;
+	/* Exceeding odpm threshold */
+	u32 count_lvl_0;
+	/* Exceeding odpm threshold times 2 */
+	u32 count_lvl_1;
+	/* Exceeding odpm threshold times 3 */
+	u32 count_lvl_2;
+};
+
 struct vimon_data {
 	s32 data[MAX77779_VIMON_DATA_SIZE];
 	s32 v_data[MAX77779_VIMON_CH_DATA_SIZE];
@@ -90,5 +80,11 @@ struct brownout_stats {
 	u32 triggered_state;
 };
 static_assert(sizeof(struct brownout_stats) <= PAGE_SIZE);
+
+struct max_odpm_stats {
+	struct max_odpm_lpf main_max_odpm_lpf[COMPATIBLE_METER_CHANNEL_MAX];
+	struct max_odpm_lpf sub_max_odpm_lpf[COMPATIBLE_METER_CHANNEL_MAX];
+};
+static_assert(sizeof(struct max_odpm_stats) <= PAGE_SIZE);
 
 #endif /* __BROWNOUT_STATS_H */

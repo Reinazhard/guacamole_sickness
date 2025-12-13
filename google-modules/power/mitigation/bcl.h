@@ -54,6 +54,8 @@
 #define TIMEOUT_5000US			5000
 #define TIMEOUT_10000US			10000
 #define TIMEOUT_10MS			10
+#define TIMEOUT_30MS			30
+#define TIMEOUT_3S			3000
 #define TIMEOUT_5MS			5
 #define TIMEOUT_1MS			1
 #define DATA_LOGGING_TIME_MS		48
@@ -80,13 +82,23 @@
 #define MAX77779_VIMON_NA_PRE_LSB 781250
 #define BAT_KTIMER_LIMIT_MS 34
 #define LAST_CURR_RD_CNT_MAX 10
+#define BATOILO_QBAT_OPEN_DELAY 0x9 /* 48ms */
+#define BATOILO_QBAT_OPEN_DISABLE 0x0
+#define OCP_TIMEOUT_TRIG_FAULT_OUT_MASK BIT(4)
+#define USB_ENABLE_MASK BIT(0)
+#define TEST_MODE2_FAULT_OUT_MASK BIT(2)
+#define RTC_SCRATCH_WRITE_RETRY 5
+#define FAULT_OUT_SHUTDOWN_RETRY 10
+#define DVFS_RELEASE_TIME_MS_MAX 10000
 
 #if IS_ENABLED(CONFIG_SOC_GS101)
 #define MAIN_OFFSRC1 S2MPG10_PM_OFFSRC
 #define MAIN_OFFSRC2 S2MPG10_PM_OFFSRC
 #define SUB_OFFSRC1 S2MPG11_PM_OFFSRC
 #define SUB_OFFSRC2 S2MPG11_PM_OFFSRC
+#define RTC_SCRATCH1 S2MPG10_RTC_NONCE1_7
 #define MAIN_PWRONSRC S2MPG10_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG10_COMMON_TEST_MODE2
 #elif IS_ENABLED(CONFIG_SOC_GS201)
 #define MAIN_OFFSRC1 S2MPG12_PM_OFFSRC1
 #define MAIN_OFFSRC2 S2MPG12_PM_OFFSRC2
@@ -94,6 +106,7 @@
 #define SUB_OFFSRC2 S2MPG13_PM_OFFSRC
 #define RTC_SCRATCH1 S2MPG12_RTC_SCRATCH1
 #define MAIN_PWRONSRC S2MPG12_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG12_COMMON_TEST_MODE2
 #elif IS_ENABLED(CONFIG_SOC_ZUMA)
 #define MAIN_OFFSRC1 S2MPG14_PM_OFFSRC1
 #define MAIN_OFFSRC2 S2MPG14_PM_OFFSRC2
@@ -101,6 +114,7 @@
 #define SUB_OFFSRC2 S2MPG15_PM_OFFSRC2
 #define RTC_SCRATCH1 S2MPG14_RTC_SCRATCH1
 #define MAIN_PWRONSRC S2MPG14_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG14_COMMON_TEST_MODE2
 #endif
 
 /* SMPL zone name changed after gs201 */
@@ -179,6 +193,12 @@ enum IFPMIC {
 	MAX77779
 };
 
+enum PMIC_SIG_PARAM {
+	SIG_LEVEL,
+	SIG_REL_TIME,
+	SIG_DEGLITCH_TIME,
+};
+
 struct irq_duration_stats {
 	atomic_t lt_5ms_count;
 	atomic_t bt_5ms_10ms_count;
@@ -212,6 +232,13 @@ enum MPMM_SOURCE {
 	MID,
 	BIG,
 	MPMMEN
+};
+
+enum RAMP_LEVEL {
+	RAMP_LEVEL_1,
+	RAMP_LEVEL_2,
+	RAMP_LEVEL_3,
+	RAMP_LEVEL_MAX,
 };
 
 struct qos_throttle_limit {
@@ -270,6 +297,7 @@ struct bcl_core_conf {
 	unsigned int con_heavy;
 	unsigned int con_light;
 	unsigned int clkdivstep;
+	unsigned int clkdivstep_last;
 	unsigned int vdroop_flt;
 	unsigned int clk_stats;
 	unsigned int clk_out;
@@ -351,18 +379,23 @@ struct bcl_device {
 	struct notifier_block psy_nb;
 	struct bcl_zone *zone[TRIGGERED_SOURCE_MAX];
 	struct delayed_work soc_work;
+	struct delayed_work ramp_work;
 	struct workqueue_struct *qos_update_wq;
 	struct thermal_zone_device *soc_tz;
 	struct thermal_zone_device_ops soc_tz_ops;
 	bool throttle;
+	int ramp_lvl;
+	bool dvfs_ramp_enable;
 
 	int trip_high_temp;
 	int trip_low_temp;
 	int trip_val;
 	struct mutex sysreg_lock;
 
+	struct i2c_client *main_i2c;
 	struct i2c_client *main_pmic_i2c;
 	struct i2c_client *main_rtc_i2c;
+	struct i2c_client *sub_i2c;
 	struct i2c_client *sub_pmic_i2c;
 	struct i2c_client *main_meter_i2c;
 	struct i2c_client *sub_meter_i2c;
@@ -378,7 +411,9 @@ struct bcl_device {
 	struct delayed_work rd_last_curr_work;
 
 	bool batt_psy_initialized;
-	bool enabled;
+	bool initialized;
+	bool sw_mitigation_enabled;
+	bool hw_mitigation_enabled;
 
 	unsigned int main_offsrc1;
 	unsigned int main_offsrc2;
@@ -394,6 +429,8 @@ struct bcl_device {
 	unsigned int modem_gpio1_pin;
 	unsigned int modem_gpio2_pin;
 	unsigned int rffe_channel;
+
+	unsigned int dvfs_rel;
 
 	/* debug */
 	struct dentry *debug_entry;
@@ -443,6 +480,7 @@ struct bcl_device {
 	unsigned int triggered_idx;
 	ssize_t br_stats_size;
 	struct brownout_stats *br_stats;
+	struct max_odpm_stats *max_odpm_stats;
 	/* module id */
 	struct bcl_mitigation_conf main_mitigation_conf[METER_CHANNEL_MAX];
 	struct bcl_mitigation_conf sub_mitigation_conf[METER_CHANNEL_MAX];
@@ -485,8 +523,10 @@ struct bcl_device {
 
 	bool usb_otg_conf;
 
+	bool is_bat_ktimer_supported;
 	bool bat_ktimer_en;
 	unsigned int bat_ktimer;
+
 	struct wakeup_source *ws;
 };
 
@@ -510,11 +550,12 @@ int pmic_read(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 *value);
 int meter_write(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 value);
 int meter_read(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 *value);
 u64 settings_to_current(struct bcl_device *bcl_dev, int pmic, int idx, u32 setting);
-void google_bcl_qos_update(struct bcl_zone *zone, bool throttle);
+void google_bcl_qos_update(struct bcl_zone *triggered_zone, bool throttle);
 int google_bcl_setup_qos(struct bcl_device *bcl_dev);
 void google_bcl_remove_qos(struct bcl_device *bcl_dev);
 void google_init_debugfs(struct bcl_device *bcl_dev);
-int uvlo_reg_read(struct device *dev, enum IFPMIC ifpmic, int triggered, unsigned int *val);
+int uvlo_reg_read(struct device *dev, enum IFPMIC ifpmic, int triggered, unsigned int *val,
+					enum PMIC_SIG_PARAM pmic_sig_param);
 int batoilo_reg_read(struct device *dev, enum IFPMIC ifpmic, int oilo, unsigned int *val);
 int max77759_get_irq(struct bcl_device *bcl_dev, u8 *irq_val);
 int max77759_clr_irq(struct bcl_device *bcl_dev, int idx);
@@ -535,7 +576,6 @@ int max77779_vimon_register_callback(struct bcl_device *bcl_dev);
 int max77779_adjust_bat_open_to(struct bcl_device *bcl_dev, bool enable);
 int max77779_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 set_batoilo1_lvl,
                                 u8 set_batoilo2_lvl);
-
 #else
 int max77759_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 set_batoilo1_lvl);
 #endif
@@ -543,7 +583,11 @@ int max77759_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 
 #if IS_ENABLED(CONFIG_REGULATOR_S2MPG14) || IS_ENABLED(CONFIG_REGULATOR_S2MPG12)
 int google_bcl_setup_votable(struct bcl_device *bcl_dev);
 void google_bcl_remove_votable(struct bcl_device *bcl_dev);
-
 #endif
+
+void google_bcl_enable_timer(struct bcl_device *bcl_dev);
+void google_bcl_start_timer(struct bcl_device *bcl_dev);
+void google_bcl_cancel_timer(struct bcl_device *bcl_dev);
+void google_bcl_disable_timer(struct bcl_device *bcl_dev);
 
 #endif /* __BCL_H */
