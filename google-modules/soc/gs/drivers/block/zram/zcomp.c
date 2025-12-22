@@ -8,7 +8,6 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/highmem.h>
-#include <linux/blkdev.h>
 #include <linux/bio.h>
 #include <linux/swap.h>
 
@@ -24,9 +23,6 @@
  * uncompressed in memory.
  */
 static size_t huge_class_size = 0;
-
-/* The 32 is align with SWAP_CLUSTER_MAX and BLK_MAX_REQUEST_COUNT */
-#define ZRAM_BLK_MAX_REQUEST_COUNT 32
 
 struct zcomp_backend {
 	const char algo_name[ZCOMP_ALGO_NAME_MAX];
@@ -57,8 +53,6 @@ int zcomp_register(const char *algo_name, const struct zcomp_operation *op)
 	struct zcomp *zcomp;
 	size_t len;
 	int ret = 0;
-
-	BUILD_BUG_ON(ZRAM_BLK_MAX_REQUEST_COUNT != SWAP_CLUSTER_MAX);
 
 	if (!algo_name || !op)
 		return -EINVAL;
@@ -187,207 +181,26 @@ static inline bool zcomp_async(struct zcomp *comp)
 	return comp->op->compress_async ? true : false;
 }
 
-/*
- * The caller needs to hold cookie_pool.lock
- */
-static bool refill_zcomp_cookie(struct zcomp *zcomp)
-{
-	int i;
-	struct zcomp_cookie *cookie;
-
-	WARN_ON(zcomp->cookie_pool.count != 0);
-
-	for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_ATOMIC);
-		if (!cookie)
-			break;
-		list_add(&cookie->list, &zcomp->cookie_pool.head);
-		zcomp->cookie_pool.count++;
-	}
-
-	return !zcomp->cookie_pool.count;
-}
-
-static struct zcomp_cookie *alloc_zcomp_cookie(struct zcomp *zcomp)
-{
-	struct zcomp_cookie *cookie = NULL;
-
-	WARN_ON(in_interrupt());
-
-	spin_lock(&zcomp->cookie_pool.lock);
-	if (list_empty(&zcomp->cookie_pool.head)) {
-		if (refill_zcomp_cookie(zcomp))
-			goto out;
-	}
-
-	cookie = list_first_entry(&zcomp->cookie_pool.head,
-					struct zcomp_cookie, list);
-	list_del(&cookie->list);
-	zcomp->cookie_pool.count--;
-out:
-	spin_unlock(&zcomp->cookie_pool.lock);
-
-	return cookie;
-}
-
-static void free_zcomp_cookie(struct zcomp *zcomp, struct zcomp_cookie *cookie)
-{
-	spin_lock(&zcomp->cookie_pool.lock);
-	list_add(&cookie->list, &zcomp->cookie_pool.head);
-	zcomp->cookie_pool.count++;
-
-	if (zcomp->cookie_pool.count >= BATCH_ZCOMP_REQUEST * 2) {
-		int i;
-
-		for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-			cookie = list_last_entry(&zcomp->cookie_pool.head,
-						struct zcomp_cookie, list);
-			list_del(&cookie->list);
-			kfree(cookie);
-			zcomp->cookie_pool.count--;
-		}
-	}
-	spin_unlock(&zcomp->cookie_pool.lock);
-}
-
-static void init_zcomp_cookie_pool(struct zcomp *zcomp)
-{
-	INIT_LIST_HEAD(&zcomp->cookie_pool.head);
-	spin_lock_init(&zcomp->cookie_pool.lock);
-	zcomp->cookie_pool.count = 0;
-}
-
-static void destroy_zcomp_cookie_pool(struct zcomp *zcomp)
-{
-	struct zcomp_cookie *cookie;
-
-	spin_lock(&zcomp->cookie_pool.lock);
-	while (!list_empty(&zcomp->cookie_pool.head)) {
-		cookie = list_first_entry(&zcomp->cookie_pool.head,
-					struct zcomp_cookie, list);
-		list_del(&cookie->list);
-		kfree(cookie);
-		zcomp->cookie_pool.count--;
-	}
-	spin_unlock(&zcomp->cookie_pool.lock);
-}
-
-static int flush_pending_io(struct zcomp *comp)
-{
-	int err = 0;
-	LIST_HEAD(req_list);
-
-	spin_lock(&comp->request_lock);
-	list_splice_init(&comp->request_list, &req_list);
-	comp->pend_request = 0;
-	spin_unlock(&comp->request_lock);
-
-	while (!list_empty(&req_list)) {
-		struct zcomp_cookie *cookie;
-
-		cookie = list_last_entry(&req_list, struct zcomp_cookie, list);
-		list_del(&cookie->list);
-		if (comp->op->compress_async(comp, cookie->page, cookie)) {
-			if (cookie->bio)
-				bio_io_error(cookie->bio);
-			err = -EIO;
-		}
-	}
-
-	return err;
-}
-
-static void zram_unplug(struct blk_plug_cb *cb, bool from_schedule)
-{
-	flush_pending_io((struct zcomp *)(cb->data));
-	kfree(cb);
-}
-
-/*
- * If the comp is plugged, append the cookie to request list and return true
- * otherwise, return false.
- */
-static void zram_append_request(struct zcomp *comp, struct zcomp_cookie *cookie)
-{
-	spin_lock(&comp->request_lock);
-	list_add(&cookie->list, &comp->request_list);
-	comp->pend_request++;
-	spin_unlock(&comp->request_lock);
-}
-
-static unsigned long nr_pend_request(struct zcomp *comp)
-{
-	unsigned long ret;
-
-	spin_lock(&comp->request_lock);
-	ret = comp->pend_request;
-	spin_unlock(&comp->request_lock);
-
-	return ret;
-}
-
 int zcomp_compress(struct zcomp *comp, u32 index, struct page *page,
 			struct bio *bio)
 {
-	/*
-	 * Async IO should return 1 instead of 0 to indicate
-	 * IO submit is successful because IO completion
-	 * callback should be handled at different context.
-	 */
-	int ret = 1;
 	unsigned long element;
-	struct zcomp_cookie *cookie;
 
 	if (zcomp_page_same_pattern(page, &element)) {
 		zram_slot_update(comp->zram, index, element, 0);
 		return 0;
 	}
 
-	if (!zcomp_async(comp)) {
-		struct zcomp_cookie stack_cookie;
+	if (!zcomp_async(comp))
+		return comp->op->compress(comp, index, page, bio);
+	else
+		return comp->op->compress_async(comp, index, page, bio);
+}
 
-		cookie = &stack_cookie;
-		cookie->zram = comp->zram;
-		cookie->index = index;
-		cookie->page = page;
-		cookie->bio = bio;
-
-		return comp->op->compress(comp, page, cookie);
-	}
-
-	cookie = alloc_zcomp_cookie(comp);
-	if (!cookie)
-		return -ENOMEM;
-
-	cookie->zram = comp->zram;
-	cookie->index = index;
-	cookie->page = page;
-	cookie->bio = bio;
-	/*
-	 * Since __zram_make_request has bio_endio, zcomp_async needs
-	 * to hold the bio completion until the IO request is done if
-	 * the IO is submitted successfully. zcomp_copy_buffer in
-	 * zcomp instance will handle it. If the IO submission fails,
-	 * we release the bio chain here so that __zram_make_request's
-	 * bio_endio will finally call the IO completion to handle
-	 * the error propagation.
-	 */
-	if (bio)
-		bio_inc_remaining(bio);
-
-	if (blk_check_plugged(zram_unplug, comp, sizeof(struct blk_plug_cb)) &&
-	    nr_pend_request(comp) < ZRAM_BLK_MAX_REQUEST_COUNT) {
-		zram_append_request(comp, cookie);
-	} else {
-		flush_pending_io(comp);
-		if (comp->op->compress_async(comp, page, cookie)) {
-			if (cookie->bio)
-				bio_io_error(cookie->bio);
-			ret = -EIO;
-		}
-	}
-
-	return ret;
+void zcomp_prepare_decompress(struct zcomp *comp)
+{
+	if (comp->op->prepare_decompress)
+		comp->op->prepare_decompress(comp);
 }
 
 int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
@@ -430,8 +243,6 @@ out:
 void zcomp_destroy(struct zcomp *comp)
 {
 	comp->op->destroy(comp);
-	if (zcomp_async(comp))
-		destroy_zcomp_cookie_pool(comp);
 }
 
 /*
@@ -460,12 +271,6 @@ struct zcomp *zcomp_create(const char *algo_name, struct zram *zram)
 		return ERR_PTR(error);
 	}
 
-	if (zcomp_async(comp)) {
-		init_zcomp_cookie_pool(comp);
-		INIT_LIST_HEAD(&comp->request_list);
-		spin_lock_init(&comp->request_lock);
-		comp->pend_request = 0;
-	}
 	comp->zram = zram;
 	up_read(&zcomp_rwsem);
 
@@ -479,23 +284,17 @@ struct zcomp *zcomp_create(const char *algo_name, struct zram *zram)
  * Once zcomp instance finishes the compression, it need to copy the compressed
  * buffer to zram's memory space.
  *
- * @err: the error from zcomp instance
  * @buffer: memory address compressed objecd is stored
  * @comp_len: compressed object size
- * @cookie: the one we got when comopress function is called
+ * @zram: zram instance
+ * @page: original buffer to be compressed
+ * @index: swap slot index
  */
-int zcomp_copy_buffer(int err, void *buffer, int comp_len,
-		      struct zcomp_cookie *cookie)
+int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
+		      struct page *page, u32 index)
 {
 	void *dst_addr;
 	unsigned long handle;
-	struct zram *zram = cookie->zram;
-	struct page *page = cookie->page;
-	struct bio *bio = cookie->bio;
-	u32 index = cookie->index;
-
-	if (err)
-		goto out;
 
 	if (comp_len >= huge_class_size)
 		comp_len = PAGE_SIZE;
@@ -507,8 +306,7 @@ int zcomp_copy_buffer(int err, void *buffer, int comp_len,
 			__GFP_MOVABLE |
 			__GFP_CMA);
 	if (IS_ERR((void *)handle)) {
-		err = PTR_ERR((void *)handle);
-		goto out;
+		return PTR_ERR((void *)handle);
 	}
 
 	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
@@ -522,17 +320,7 @@ int zcomp_copy_buffer(int err, void *buffer, int comp_len,
 	}
 	zs_unmap_object(zram->mem_pool, handle);
 	zram_slot_update(zram, index, handle, comp_len);
-out:
-	if (zcomp_async(zram->comp)) {
-		if (!bio) { /* rw_page case */
-			zram_page_write_endio(zram, page, err);
-		} else {
-			zram_bio_endio(zram, bio, true, err);
-		}
 
-		free_zcomp_cookie(zram->comp, cookie);
-	}
-
-	return err;
+	return 0;
 }
 EXPORT_SYMBOL(zcomp_copy_buffer);
