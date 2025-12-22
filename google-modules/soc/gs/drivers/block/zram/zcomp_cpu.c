@@ -49,8 +49,8 @@ void zcomp_stream_put(struct zcomp *comp)
 	local_unlock(&zstrm->lock);
 }
 
-int zcomp_cpu_compress(struct zcomp *comp, struct page *page,
-				struct zcomp_cookie *cookie)
+int zcomp_cpu_compress(struct zcomp *comp, u32 index, struct page *page,
+		       struct bio *bio)
 {
 	int err;
 	unsigned int comp_len;
@@ -80,9 +80,10 @@ int zcomp_cpu_compress(struct zcomp *comp, struct page *page,
 	if (unlikely(err)) {
 		zcomp_stream_put(comp);
 		pr_err("Compression failed! err=%d\n", err);
+		return err;
 	}
 
-	err = zcomp_copy_buffer(err, stream->buffer, comp_len, cookie);
+	err = zcomp_copy_buffer(stream->buffer, comp_len, comp->zram, page, index);
 	zcomp_stream_put(comp);
 
 	return err;
