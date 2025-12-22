@@ -141,7 +141,11 @@ unsigned long zram_get_element(struct zram *zram, u32 index);
 bool zram_test_flag(struct zram *zram, u32 index, enum zram_pageflags flag);
 
 struct bio;
-void zram_bio_endio(struct zram *zram, struct bio *bio, bool is_write, int err);
+void zram_bio_endio(struct zram *zram, struct bio *bio);
 void zram_page_write_endio(struct zram *zram, struct page *page, int err);
 unsigned long zram_stat_read(struct zram *zram, enum zram_stat_item item);
+
+void zram_accessed(struct zram *zram, u32 index);
+int zram_read_page(struct zram *zram, struct page *page, u32 index,
+		   struct bio *parent);
 #endif

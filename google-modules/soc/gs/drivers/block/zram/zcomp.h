@@ -15,6 +15,9 @@ struct bio;
 #define ZCOMP_ALGO_NAME_MAX 64
 #define BATCH_ZCOMP_REQUEST (128)
 
+/* The 32 is align with SWAP_CLUSTER_MAX and BLK_MAX_REQUEST_COUNT */
+#define ZCOMP_BLK_MAX_REQUEST_COUNT 32
+
 /*
  * For compression request, zcomp generates a cookie and pass it to
  * the zcomp instance. The zcomp instance need to call zcomp_copy_buffer
@@ -36,8 +39,9 @@ struct zcomp_cookie_pool {
 };
 
 struct zcomp_operation {
-	int (*compress)(struct zcomp *comp, struct page *page, struct zcomp_cookie *cookie);
-	int (*compress_async)(struct zcomp *comp, struct page *page, struct zcomp_cookie *cookie);
+	int (*compress)(struct zcomp *comp, u32 index, struct page *page, struct bio *bio);
+	int (*compress_async)(struct zcomp *comp, u32 index, struct page *page, struct bio *bio);
+	void (*prepare_decompress)(struct zcomp *comp);
 	int (*decompress)(struct zcomp *comp, void *src, unsigned int src_len, struct page *page);
 
 	int (*create)(struct zcomp *comp, const char *name);
@@ -67,11 +71,12 @@ void zcomp_destroy(struct zcomp *comp);
 
 int zcomp_compress(struct zcomp *comp, u32 index, struct page *page,
 			struct bio *bio);
+void zcomp_prepare_decompress(struct zcomp *comp);
 int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page);
 
 int zcomp_register(const char *algo_name, const struct zcomp_operation *operation);
 int zcomp_unregister(const char *algo_name);
 
-int zcomp_copy_buffer(int err, void *buffer, int comp_len,
-			struct zcomp_cookie *cookie);
+int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
+		      struct page *page, u32 index);
 #endif /* _ZCOMP_H_ */
