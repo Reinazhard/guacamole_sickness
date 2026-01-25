@@ -470,18 +470,42 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 {
 	static atomic_t init_done = ATOMIC_INIT(0);
 	struct task_struct *thread;
+	int ret;
 
 	if (!atomic_cmpxchg(&init_done, 0, 1)) {
 		thread = kthread_run(simple_lmk_reaper_thread, NULL,
 				     "simple_lmkd_reaper");
-		BUG_ON(IS_ERR(thread));
+		if (WARN_ON(IS_ERR(thread))) {
+			ret = PTR_ERR(thread);
+			pr_err("Failed to create reaper thread: %d\n", ret);
+			goto err_reset;
+		}
+
 		thread = kthread_run(simple_lmk_reclaim_thread, NULL,
 				     "simple_lmkd");
-		BUG_ON(IS_ERR(thread));
-		BUG_ON(vmpressure_notifier_register(&vmpressure_notif));
+		if (WARN_ON(IS_ERR(thread))) {
+			ret = PTR_ERR(thread);
+			pr_err("Failed to create reclaim thread: %d\n", ret);
+			goto err_reset;
+		}
+
+		ret = vmpressure_notifier_register(&vmpressure_notif);
+		if (WARN_ON(ret)) {
+			pr_err("Failed to register vmpressure notifier: %d\n",
+			       ret);
+			goto err_reset;
+		}
 	}
 
 	return 0;
+
+err_reset:
+	/*
+	 * Threads that did start will remain idle since needs_reclaim and
+	 * needs_reap will stay at 0. Reset init_done to allow retry.
+	 */
+	atomic_set(&init_done, 0);
+	return ret;
 }
 
 static const struct kernel_param_ops simple_lmk_init_ops = {
