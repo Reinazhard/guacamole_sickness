@@ -298,15 +298,13 @@ static void scan_and_kill(void)
 	/*
 	 * Sort the victims by descending order of anonymous pages so the reaper
 	 * thread can prioritize reaping the victims with the most anonymous
-	 * pages first. Then wake the reaper thread if it's asleep. The lock
-	 * orders the needs_reap store before waitqueue_active().
+	 * pages first. Then wake the reaper thread if it's asleep.
 	 */
 	write_lock(&mm_free_lock);
 	sort(victims, nr_to_kill, sizeof(*victims), victim_cmp, victim_swap);
 	atomic_set(&needs_reap, 1);
 	write_unlock(&mm_free_lock);
-	if (waitqueue_active(&reaper_waitq))
-		wake_up(&reaper_waitq);
+	wake_up(&reaper_waitq);
 
 	/* Wait until all the victims die or until the timeout is reached */
 	if (!wait_for_completion_timeout(&reclaim_done, RECLAIM_EXPIRES))
@@ -327,9 +325,10 @@ static int simple_lmk_reclaim_thread(void *data)
 	set_freezable();
 
 	while (1) {
-		wait_event_freezable(oom_waitq, atomic_read(&needs_reclaim));
+		wait_event_freezable(oom_waitq,
+				     atomic_read_acquire(&needs_reclaim));
 		scan_and_kill();
-		atomic_set(&needs_reclaim, 0);
+		atomic_set_release(&needs_reclaim, 0);
 	}
 
 	return 0;
@@ -415,7 +414,7 @@ static int simple_lmk_reaper_thread(void *data)
 
 	while (1) {
 		wait_event_freezable(reaper_waitq,
-				     atomic_cmpxchg_relaxed(&needs_reap, 1, 0));
+				     atomic_cmpxchg(&needs_reap, 1, 0));
 		reap_victims();
 	}
 
@@ -456,10 +455,8 @@ static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 				    unsigned long pressure, void *data)
 {
 	if (pressure == 100) {
-		atomic_set(&needs_reclaim, 1);
-		smp_mb__after_atomic();
-		if (waitqueue_active(&oom_waitq))
-			wake_up(&oom_waitq);
+		atomic_set_release(&needs_reclaim, 1);
+		wake_up(&oom_waitq);
 	}
 
 	return NOTIFY_OK;
