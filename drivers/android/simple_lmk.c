@@ -47,7 +47,12 @@ static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
 	const struct victim_info *lhs = (typeof(lhs))lhs_ptr;
 	const struct victim_info *rhs = (typeof(rhs))rhs_ptr;
 
-	return rhs->size - lhs->size;
+	/* Avoid integer overflow in subtraction */
+	if (rhs->size > lhs->size)
+		return 1;
+	if (rhs->size < lhs->size)
+		return -1;
+	return 0;
 }
 
 static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
