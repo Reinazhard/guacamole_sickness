@@ -21,6 +21,14 @@
 /* Kill up to this many victims per reclaim */
 #define MAX_VICTIMS 1024
 
+/* OOM score adj range for bucketing: Android uses -1000 to 1000 typically */
+#define OOM_ADJ_MIN -1024
+#define OOM_ADJ_MAX 1024
+#define OOM_ADJ_BUCKET_COUNT (OOM_ADJ_MAX - OOM_ADJ_MIN + 1)
+
+/* Convert OOM score adj to bucket index */
+#define adj_to_bucket(adj) ((adj) - OOM_ADJ_MIN)
+
 /* Timeout in jiffies for each reclaim */
 #define RECLAIM_EXPIRES msecs_to_jiffies(CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC)
 
@@ -31,7 +39,7 @@ struct victim_info {
 };
 
 static struct victim_info victims[MAX_VICTIMS] __cacheline_aligned_in_smp;
-static struct task_struct *task_bucket[SHRT_MAX + 1] __cacheline_aligned;
+static struct task_struct *task_bucket[OOM_ADJ_BUCKET_COUNT] __cacheline_aligned;
 static DECLARE_WAIT_QUEUE_HEAD(oom_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 static DECLARE_COMPLETION(reclaim_done);
@@ -99,9 +107,15 @@ static unsigned long find_victims(int *vindex)
 		    (thread_group_empty(tsk) && tsk->flags & PF_EXITING))
 			continue;
 
+		/* Clamp adj to our supported range */
+		if (adj < OOM_ADJ_MIN)
+			adj = OOM_ADJ_MIN;
+		else if (adj > OOM_ADJ_MAX)
+			adj = OOM_ADJ_MAX;
+
 		/* Store the task in a linked-list bucket based on its adj */
-		tsk->simple_lmk_next = task_bucket[adj];
-		task_bucket[adj] = tsk;
+		tsk->simple_lmk_next = task_bucket[adj_to_bucket(adj)];
+		task_bucket[adj_to_bucket(adj)] = tsk;
 
 		/* Track the min and max adjs to speed up the loop below */
 		if (adj > max_adj)
@@ -113,13 +127,22 @@ static unsigned long find_victims(int *vindex)
 	/* Start searching for victims from the highest adj (least important) */
 	for (i = max_adj; i >= min_adj; i--) {
 		int old_vindex;
+		int bucket_idx;
 
-		tsk = task_bucket[i];
+		/* Clamp and convert adj to bucket index */
+		if (i < OOM_ADJ_MIN)
+			bucket_idx = 0;
+		else if (i > OOM_ADJ_MAX)
+			bucket_idx = OOM_ADJ_BUCKET_COUNT - 1;
+		else
+			bucket_idx = adj_to_bucket(i);
+
+		tsk = task_bucket[bucket_idx];
 		if (!tsk)
 			continue;
 
 		/* Clear out this bucket for the next time reclaim is done */
-		task_bucket[i] = NULL;
+		task_bucket[bucket_idx] = NULL;
 
 		/* Iterate through every task with this adj */
 		old_vindex = *vindex;
@@ -157,9 +180,17 @@ static unsigned long find_victims(int *vindex)
 		/* Stop when we are out of space or have enough pages found */
 		if (*vindex == MAX_VICTIMS || pages_found >= MIN_FREE_PAGES) {
 			/* Zero out any remaining buckets we didn't touch */
-			if (i > min_adj)
-				memset(&task_bucket[min_adj], 0,
-				       (i - min_adj) * sizeof(*task_bucket));
+			if (i > min_adj) {
+				int start_bucket = adj_to_bucket(min_adj);
+				int end_bucket = adj_to_bucket(i);
+				if (start_bucket < 0)
+					start_bucket = 0;
+				if (end_bucket >= OOM_ADJ_BUCKET_COUNT)
+					end_bucket = OOM_ADJ_BUCKET_COUNT - 1;
+				if (end_bucket > start_bucket)
+					memset(&task_bucket[start_bucket], 0,
+					       (end_bucket - start_bucket) * sizeof(*task_bucket));
+			}
 			break;
 		}
 	}
