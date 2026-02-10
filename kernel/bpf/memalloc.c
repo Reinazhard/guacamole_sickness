@@ -187,11 +187,11 @@ static void inc_active(struct bpf_mem_cache *c, unsigned long *flags)
 	WARN_ON_ONCE(local_inc_return(&c->active) != 1);
 }
 
-static void dec_active(struct bpf_mem_cache *c, unsigned long flags)
+static void dec_active(struct bpf_mem_cache *c, unsigned long *flags)
 {
 	local_dec(&c->active);
 	if (IS_ENABLED(CONFIG_PREEMPT_RT))
-		local_irq_restore(flags);
+		local_irq_restore(*flags);
 }
 
 static void add_obj_to_free_list(struct bpf_mem_cache *c, void *obj)
@@ -201,15 +201,19 @@ static void add_obj_to_free_list(struct bpf_mem_cache *c, void *obj)
 	inc_active(c, &flags);
 	__llist_add(obj, &c->free_llist);
 	c->free_cnt++;
-	dec_active(c, flags);
+	dec_active(c, &flags);
 }
 
 /* Mostly runs from irq_work except __init phase. */
-static void alloc_bulk(struct bpf_mem_cache *c, int cnt, int node)
+static void alloc_bulk(struct bpf_mem_cache *c, int cnt, int node, bool atomic)
 {
 	struct mem_cgroup *memcg = NULL, *old_memcg;
+	gfp_t gfp;
 	void *obj;
 	int i;
+
+	gfp = __GFP_NOWARN | __GFP_ACCOUNT;
+	gfp |= atomic ? GFP_NOWAIT : GFP_KERNEL;
 
 	for (i = 0; i < cnt; i++) {
 		/*
@@ -242,7 +246,7 @@ static void alloc_bulk(struct bpf_mem_cache *c, int cnt, int node)
 		 * will allocate from the current numa node which is what we
 		 * want here.
 		 */
-		obj = __alloc(c, node, GFP_NOWAIT | __GFP_NOWARN | __GFP_ACCOUNT);
+		obj = __alloc(c, node, gfp);
 		if (!obj)
 			break;
 		add_obj_to_free_list(c, obj);
@@ -253,8 +257,11 @@ static void alloc_bulk(struct bpf_mem_cache *c, int cnt, int node)
 
 static void free_one(void *obj, bool percpu)
 {
-	if (percpu)
+	if (percpu) {
 		free_percpu(((void __percpu **)obj)[1]);
+		kfree(obj);
+		return;
+	}
 
 	kfree(obj);
 }
@@ -346,7 +353,7 @@ static void free_bulk(struct bpf_mem_cache *c)
 			cnt = --c->free_cnt;
 		else
 			cnt = 0;
-		dec_active(c, flags);
+		dec_active(c, &flags);
 		if (llnode)
 			enque_to_free(tgt, llnode);
 	} while (cnt > (c->high_watermark + c->low_watermark) / 2);
@@ -389,7 +396,7 @@ static void check_free_by_rcu(struct bpf_mem_cache *c)
 		llist_for_each_safe(llnode, t, llist_del_all(&c->free_llist_extra_rcu))
 			if (__llist_add(llnode, &c->free_by_rcu))
 				c->free_by_rcu_tail = llnode;
-		dec_active(c, flags);
+		dec_active(c, &flags);
 	}
 
 	if (llist_empty(&c->free_by_rcu))
@@ -413,7 +420,7 @@ static void check_free_by_rcu(struct bpf_mem_cache *c)
 	inc_active(c, &flags);
 	WRITE_ONCE(c->waiting_for_gp.first, __llist_del_all(&c->free_by_rcu));
 	c->waiting_for_gp_tail = c->free_by_rcu_tail;
-	dec_active(c, flags);
+	dec_active(c, &flags);
 
 	if (unlikely(READ_ONCE(c->draining))) {
 		free_all(llist_del_all(&c->waiting_for_gp), !!c->percpu_size);
@@ -434,7 +441,7 @@ static void bpf_mem_refill(struct irq_work *work)
 		/* irq_work runs on this cpu and kmalloc will allocate
 		 * from the current numa node which is what we want here.
 		 */
-		alloc_bulk(c, c->batch, NUMA_NO_NODE);
+		alloc_bulk(c, c->batch, NUMA_NO_NODE, true);
 	else if (cnt > c->high_watermark)
 		free_bulk(c);
 
@@ -495,7 +502,7 @@ static void prefill_mem_cache(struct bpf_mem_cache *c, int cpu)
 	 */
 	if (!c->percpu_size && c->unit_size <= 256)
 		cnt = 4;
-	alloc_bulk(c, cnt, cpu_to_node(cpu));
+	alloc_bulk(c, cnt, cpu_to_node(cpu), false);
 }
 
 /* When size != 0 bpf_mem_cache for each cpu.
@@ -530,7 +537,8 @@ int bpf_mem_alloc_init(struct bpf_mem_alloc *ma, int size, bool percpu)
 		unit_size = size;
 
 #ifdef CONFIG_MEMCG_KMEM
-		objcg = get_obj_cgroup_from_current();
+		if (memcg_bpf_enabled())
+			objcg = get_obj_cgroup_from_current();
 #endif
 		ma->objcg = objcg;
 
@@ -753,8 +761,7 @@ void bpf_mem_alloc_destroy(struct bpf_mem_alloc *ma)
 			rcu_in_progress += atomic_read(&c->call_rcu_ttrace_in_progress);
 			rcu_in_progress += atomic_read(&c->call_rcu_in_progress);
 		}
-		if (ma->objcg)
-			obj_cgroup_put(ma->objcg);
+		obj_cgroup_put(ma->objcg);
 		destroy_mem_alloc(ma, rcu_in_progress);
 	}
 	if (ma->caches) {
@@ -770,8 +777,7 @@ void bpf_mem_alloc_destroy(struct bpf_mem_alloc *ma)
 				rcu_in_progress += atomic_read(&c->call_rcu_in_progress);
 			}
 		}
-		if (ma->objcg)
-			obj_cgroup_put(ma->objcg);
+		obj_cgroup_put(ma->objcg);
 		destroy_mem_alloc(ma, rcu_in_progress);
 	}
 }
@@ -804,12 +810,17 @@ static void notrace *unit_alloc(struct bpf_mem_cache *c)
 		}
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	WARN_ON(cnt < 0);
 
 	if (cnt < c->low_watermark)
 		irq_work_raise(c);
+	/* Enable IRQ after the enqueue of irq work completes, so irq work
+	 * will run after IRQ is enabled and free_llist may be refilled by
+	 * irq work before other task preempts current task.
+	 */
+	local_irq_restore(flags);
+
 	return llnode;
 }
 
@@ -845,11 +856,16 @@ static void notrace unit_free(struct bpf_mem_cache *c, void *ptr)
 		llist_add(llnode, &c->free_llist_extra);
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	if (cnt > c->high_watermark)
 		/* free few objects from current cpu into global kmalloc pool */
 		irq_work_raise(c);
+	/* Enable IRQ after irq_work_raise() completes, otherwise when current
+	 * task is preempted by task which does unit_alloc(), unit_alloc() may
+	 * return NULL unexpectedly because irq work is already pending but can
+	 * not been triggered and free_llist can not be refilled timely.
+	 */
+	local_irq_restore(flags);
 }
 
 static void notrace unit_free_rcu(struct bpf_mem_cache *c, void *ptr)
@@ -867,10 +883,10 @@ static void notrace unit_free_rcu(struct bpf_mem_cache *c, void *ptr)
 		llist_add(llnode, &c->free_llist_extra_rcu);
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	if (!atomic_read(&c->call_rcu_in_progress))
 		irq_work_raise(c);
+	local_irq_restore(flags);
 }
 
 /* Called from BPF program or from sys_bpf syscall.
