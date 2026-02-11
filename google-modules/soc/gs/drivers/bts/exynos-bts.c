@@ -294,6 +294,14 @@ static void bts_aggregate_work(struct work_struct *work)
 	trace_clock_set_rate("BTS_mif_freq", mif_freq, raw_smp_processor_id());
 	trace_clock_set_rate("BTS_int_freq", int_freq, raw_smp_processor_id());
 
+	rt_mutex_unlock(&dev->mutex_lock);
+
+	/*
+	 * Apply PM QoS updates AFTER releasing rt_mutex to prevent
+	 * notifier chains (which call DM_CALL) from executing while
+	 * BTS lock is held. This eliminates lock ordering hazards and
+	 * reduces hold time for display-critical paths.
+	 */
 #if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
 	exynos_pm_qos_update_request(&exynos_mif_qos, mif_freq);
 	exynos_pm_qos_update_request(&exynos_int_qos, int_freq);
@@ -301,8 +309,6 @@ static void bts_aggregate_work(struct work_struct *work)
 	pm_qos_update_request(&exynos_mif_qos, mif_freq);
 	pm_qos_update_request(&exynos_int_qos, int_freq);
 #endif
-
-	rt_mutex_unlock(&dev->mutex_lock);
 }
 
 
