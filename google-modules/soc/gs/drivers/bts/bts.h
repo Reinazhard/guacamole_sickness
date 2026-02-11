@@ -90,6 +90,8 @@ struct bts_device {
 
 	/* bts spinlock */
 	spinlock_t lock;
+	/* seqcount for optimistic read-side concurrency */
+	seqcount_spinlock_t bw_seqcount;
 	/* mutex-lock to protect accessing setting DVFS */
 	struct rt_mutex mutex_lock;
 

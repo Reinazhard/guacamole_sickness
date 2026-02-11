@@ -181,20 +181,30 @@ static void bts_aggregate_work(struct work_struct *work)
 	dev->peak_bw = 0;
 	dev->total_bw = 0;
 
-	spin_lock(&dev->lock);
-	for (i = 0; i < btsdev->num_bts; i++) {
+	/* Use seqcount retry loop for optimistic read-side locking */
+	do {
+		unsigned int seq = read_seqcount_begin(&dev->bw_seqcount);
+		
+		total_read = 0;
+		total_write = 0;
+		rt_bw = 0;
+		
+		for (i = 0; i < btsdev->num_bts; i++) {
 #if !IS_ENABLED(CONFIG_SOC_ZUMA)
-		if (btsdev->peak_bw < btsdev->bts_bw[i].peak)
-			btsdev->peak_bw = btsdev->bts_bw[i].peak;
+			if (btsdev->peak_bw < btsdev->bts_bw[i].peak)
+				btsdev->peak_bw = btsdev->bts_bw[i].peak;
 #endif
-		/* Calculate total RT BW based on RT clients */
-		if (btsdev->bts_bw[i].is_rt)
-			rt_bw += btsdev->bts_bw[i].rt;
+			/* Calculate total RT BW based on RT clients */
+			if (btsdev->bts_bw[i].is_rt)
+				rt_bw += btsdev->bts_bw[i].rt;
 
-		total_read += btsdev->bts_bw[i].read;
-		total_write += btsdev->bts_bw[i].write;
-	}
-	spin_unlock(&dev->lock);
+			total_read += btsdev->bts_bw[i].read;
+			total_write += btsdev->bts_bw[i].write;
+		}
+		
+		if (!read_seqcount_retry(&dev->bw_seqcount, seq))
+			break;
+	} while (1);
 	dev->total_bw = total_read + total_write;
 	if (dev->peak_bw < (total_read / NUM_CHANNEL))
 		dev->peak_bw = (total_read / NUM_CHANNEL);
@@ -206,17 +216,29 @@ static void bts_aggregate_work(struct work_struct *work)
 	mif_freq = max(mif_freq, (rt_bw / BUS_WIDTH) * 100 / RT_UTIL);
 
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
+	/* NOCL list iteration also uses seqcount for torn-read protection */
 	for (i = 0; i < dev->num_nocl ; i++) {
-		nocl_total_rd_bw = 0;
-		nocl_total_wr_bw = 0;
-		dev->nocl_infos[i].peak_freq = 0;
-		list_for_each_entry(bw, &dev->nocl_infos[i].list, node) {
-			nocl_total_rd_bw += bw->read;
-			nocl_total_wr_bw += bw->write;
-			nocl_peak_freq = (bw->peak / bw->bus_width) * 100 / INT_UTIL;
-			if (dev->nocl_infos[i].peak_freq < nocl_peak_freq)
-				dev->nocl_infos[i].peak_freq = nocl_peak_freq;
-		}
+		unsigned int seq;
+		
+		do {
+			seq = read_seqcount_begin(&dev->bw_seqcount);
+			
+			nocl_total_rd_bw = 0;
+			nocl_total_wr_bw = 0;
+			dev->nocl_infos[i].peak_freq = 0;
+			
+			list_for_each_entry(bw, &dev->nocl_infos[i].list, node) {
+				nocl_total_rd_bw += bw->read;
+				nocl_total_wr_bw += bw->write;
+				nocl_peak_freq = (bw->peak / bw->bus_width) * 100 / INT_UTIL;
+				if (dev->nocl_infos[i].peak_freq < nocl_peak_freq)
+					dev->nocl_infos[i].peak_freq = nocl_peak_freq;
+			}
+			
+			if (!read_seqcount_retry(&dev->bw_seqcount, seq))
+				break;
+		} while (1);
+		
 		if (!strcmp(dev->nocl_infos[i].nocl_name, "nocl2aa") ||
 		    !strcmp(dev->nocl_infos[i].nocl_name, "nocl2ab")) {
 			/* In Zuma, the equivalent of bus1 is NOCL2AA & NOCL2AB
@@ -566,11 +588,15 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 	}
 
 	rt_mutex_lock(&btsdev->mutex_lock);
+	
+	/* Write-side: use seqcount to protect bandwidth updates */
+	write_seqcount_begin(&btsdev->bw_seqcount);
 	bts_bw[index].peak = bw.peak;
 	bts_bw[index].read = bw.read;
 	bts_bw[index].write = bw.write;
 	if (bts_bw[index].is_rt)
 		bts_bw[index].rt = bw.rt;
+	write_seqcount_end(&btsdev->bw_seqcount);
 
 	if(trace_clock_set_rate_enabled()) {
 		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rd_bw", bts_bw[index].name);
@@ -2102,6 +2128,7 @@ static int bts_probe(struct platform_device *pdev)
 		return ret;
 	}
 	spin_lock_init(&btsdev->lock);
+	seqcount_spinlock_init(&btsdev->bw_seqcount, &btsdev->lock);
 	rt_mutex_init(&btsdev->mutex_lock);
 	INIT_DELAYED_WORK(&btsdev->bw_work, bts_aggregate_work);
 	btsdev->aggregation_pending = false;
