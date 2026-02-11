@@ -637,6 +637,8 @@ int bts_add_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
 	unsigned int i;
+	unsigned int new_top_scen;
+	bool need_hw_update = false;
 
 	spin_lock(&btsdev->lock);
 
@@ -654,14 +656,20 @@ int bts_add_scenario(unsigned int index)
 
 		if (index >= btsdev->top_scen) {
 			btsdev->top_scen = index;
-			for (i = 0; i < btsdev->num_bts; i++)
-				bts_set(btsdev->top_scen, i);
-			trace_clock_set_rate("BTS_scenario", btsdev->top_scen,
-					     raw_smp_processor_id());
+			new_top_scen = index;
+			need_hw_update = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
+
+	/* Perform hardware register writes outside spinlock */
+	if (need_hw_update) {
+		for (i = 0; i < btsdev->num_bts; i++)
+			bts_set(new_top_scen, i);
+		trace_clock_set_rate("BTS_scenario", new_top_scen,
+				     raw_smp_processor_id());
+	}
 
 	return 0;
 }
@@ -671,6 +679,8 @@ int bts_del_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
 	unsigned int i;
+	unsigned int new_top_scen;
+	bool need_hw_update = false;
 
 	spin_lock(&btsdev->lock);
 	if (index >= btsdev->num_scen) {
@@ -705,14 +715,20 @@ int bts_del_scenario(unsigned int index)
 				if (scen->index >= btsdev->top_scen)
 					btsdev->top_scen = scen->index;
 			}
-			for (i = 0; i < btsdev->num_bts; i++)
-				bts_set(btsdev->top_scen, i);
-			trace_clock_set_rate("BTS_scenario", btsdev->top_scen,
-					     raw_smp_processor_id());
+			new_top_scen = btsdev->top_scen;
+			need_hw_update = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
+
+	/* Perform hardware register writes outside spinlock */
+	if (need_hw_update) {
+		for (i = 0; i < btsdev->num_bts; i++)
+			bts_set(new_top_scen, i);
+		trace_clock_set_rate("BTS_scenario", new_top_scen,
+				     raw_smp_processor_id());
+	}
 
 	return 0;
 }
