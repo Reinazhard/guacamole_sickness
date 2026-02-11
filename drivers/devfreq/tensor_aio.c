@@ -33,6 +33,7 @@
 
 /* Poll memperfd about every 10 ms */
 #define MEMPERFD_POLL_HZ (HZ / 100)
+#define MEMPERFD_POLL_HZ_ADAPTIVE (HZ / 200)
 
 /*
  * The percentage of the previous MIF frequency that MIF should be set to when
@@ -40,6 +41,13 @@
  * frequency is dropped after a memory-intensive workload.
  */
 #define MEMPERFD_DOWN_PCT 65
+
+/*
+ * Hysteresis configuration: require this many consecutive low-stall samples
+ * before allowing MIF frequency to drop, preventing sawtooth behavior during
+ * bursty display workloads.
+ */
+#define MEMPERFD_DOWN_HYSTERESIS 3
 
 /*
  * The minimum sample time required to measure the performance counters. This
@@ -208,6 +216,13 @@ struct {
 	u32 int_freq;
 } __packed static *mif_int_map;
 static int mif_int_cnt __read_mostly;
+
+/* Adaptive sampling state for display activity detection */
+static atomic_t display_active = ATOMIC_INIT(0);
+static unsigned long adaptive_poll_hz = MEMPERFD_POLL_HZ;
+
+/* Hysteresis state for MIF downscaling */
+static atomic_t low_stall_count = ATOMIC_INIT(0);
 
 /* PPC register addresses from gs-ppc.c */
 #define PPC_PMNC	0x0004
@@ -750,6 +765,7 @@ static __always_inline void pmu_update_stats(int cpu, struct cpu_pmu *pmu,
 static void kick_memperfd(void)
 {
 	unsigned long prev, now = jiffies;
+	unsigned long poll_interval;
 
 	/* Do not kick memperfd when it's quiescent */
 	if (memperfd_quiescent)
@@ -759,8 +775,14 @@ static void kick_memperfd(void)
 	if (is_idle_task(current))
 		return;
 
+	/*
+	 * Use adaptive polling interval: shorter interval during display
+	 * activity to improve responsiveness for per-frame bandwidth bursts.
+	 */
+	poll_interval = READ_ONCE(adaptive_poll_hz);
+
 	prev = atomic_long_read(&last_run_jiffies);
-	if (time_before(now, prev + MEMPERFD_POLL_HZ))
+	if (time_before(now, prev + poll_interval))
 		return;
 
 	if (atomic_long_cmpxchg_relaxed(&last_run_jiffies, prev, now) != prev)
@@ -771,6 +793,19 @@ static void kick_memperfd(void)
 	if (swait_active(&memperfd_waitq))
 		swake_up_one(&memperfd_waitq);
 }
+
+/**
+ * tensor_aio_notify_display_active - Signal display commit activity
+ *
+ * Called by display driver on frame commits to enable adaptive sampling.
+ * Enables faster memperfd polling (5ms) during active scrolling/animation
+ * to improve responsiveness to per-frame bandwidth bursts.
+ */
+void tensor_aio_notify_display_active(void)
+{
+	atomic_set(&display_active, 1);
+}
+EXPORT_SYMBOL_GPL(tensor_aio_notify_display_active);
 
 static u32 find_cpu_freq(struct cpufreq_policy *pol, u64 khz, u32 relation)
 {
@@ -1715,11 +1750,14 @@ static u32 mif_ppc_vote(u32 cur_mif_khz, u32 *bus2_mif)
 static void memperfd_work(void)
 {
 	u32 vote = mif->nr_freqs - 1, cur, dsu_vote = 0, bus2_mif;
+	u32 prev_mif_freq, new_mif_freq;
 	unsigned long cpus;
 	int cpu;
+	bool high_stall = false;
 
 	/* Get the current MIF freq, since something else could've raised it */
 	cur = exynos_find_index_l(mif, READ_ONCE(mif->cur_freq));
+	prev_mif_freq = mif->tbl[cur];
 
 	/* Gather fresh memory stall statistics for all updated CPUs */
 	cpus = (unsigned int)atomic_read_acquire(&stats_avail_cpus);
@@ -1745,13 +1783,50 @@ static void memperfd_work(void)
 		if (!stat.cpu_cyc || !stat.mem_cyc || !stat.cntpct)
 			continue;
 
+		/*
+		 * Detect high memory stall activity: if mem_cyc is significant
+		 * relative to cpu_cyc, mark as high stall for adaptive sampling.
+		 */
+		if (stat.mem_cyc > (stat.cpu_cyc >> 3))
+			high_stall = true;
+
 		/* Find the highest MIF freq step required among all the CPUs */
 		vote = min(vote, mif_cpu_vote(&stat, cpu, cur, &dsu_vote));
 	}
 
 	/* Find the highest PPC MIF vote and set the higher of the MIF votes */
-	vote = max((u32)mif->tbl[vote], mif_ppc_vote(mif->tbl[cur], &bus2_mif));
-	update_qos_req(&mif->min_req, vote);
+	new_mif_freq = max((u32)mif->tbl[vote], mif_ppc_vote(mif->tbl[cur], &bus2_mif));
+
+	/*
+	 * Hysteresis for downscaling: only drop MIF frequency if we've seen
+	 * N consecutive low-stall samples. This prevents frequency sawtooth
+	 * during bursty scrolling workloads.
+	 */
+	if (new_mif_freq < prev_mif_freq) {
+		int count = atomic_inc_return(&low_stall_count);
+		if (count < MEMPERFD_DOWN_HYSTERESIS) {
+			/* Not enough consecutive low samples; keep current freq */
+			new_mif_freq = prev_mif_freq;
+		}
+	} else {
+		/* Reset hysteresis counter on frequency increase */
+		atomic_set(&low_stall_count, 0);
+	}
+
+	/*
+	 * Adaptive sampling: if we detected high memory stalls or display
+	 * activity, use faster polling to react to per-frame bursts.
+	 * Otherwise, use the default slower polling interval.
+	 */
+	if (high_stall || atomic_read(&display_active)) {
+		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ_ADAPTIVE);
+	} else {
+		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ);
+		/* Clear display activity flag after returning to baseline */
+		atomic_set(&display_active, 0);
+	}
+
+	update_qos_req(&mif->min_req, new_mif_freq);
 
 	/* Set the new INT vote using BUS2's MIF requirement */
 	for (vote = mif_int_cnt - 1; vote > 0; vote--) {
