@@ -467,6 +467,13 @@ int bts_get_bwindex(const char *name)
 	}
 	ret = index;
 	bw[index].is_rt = false;
+	bw[index].is_display = false;
+
+	/* Mark display clients for immediate aggregation */
+	if (strstr(name, "dpu") || strstr(name, "disp") ||
+	    strstr(name, "decon") || strstr(name, "dsim"))
+		bw[index].is_display = true;
+
 	for (i = 0; i < btsdev->num_rts; i++) {
 		if (!strcmp(bw[index].name, btsdev->rt_names[i]))
 			bw[index].is_rt = true;
@@ -577,6 +584,7 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 	struct bts_bw *bts_bw = btsdev->bts_bw;
 	unsigned int total_bw;
 	char trace_name[32];
+	bool is_display;
 
 	if (index >= btsdev->num_bts) {
 		dev_err(btsdev->dev,
@@ -602,6 +610,7 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 	bts_bw[index].write = bw.write;
 	if (bts_bw[index].is_rt)
 		bts_bw[index].rt = bw.rt;
+	is_display = bts_bw[index].is_display;
 	write_seqcount_end(&btsdev->bw_seqcount);
 
 	if(trace_clock_set_rate_enabled()) {
@@ -623,8 +632,20 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 	bts_update_stats(index);
 	rt_mutex_unlock(&btsdev->mutex_lock);
 
-	/* Schedule deferred aggregation (2ms delay for batching) */
-	mod_delayed_work(system_highpri_wq, &btsdev->bw_work, msecs_to_jiffies(2));
+	/*
+	 * Display-critical votes use immediate aggregation to minimize
+	 * first-frame latency. Non-display votes use deferred aggregation
+	 * (2ms delay) for batching efficiency.
+	 */
+	if (is_display) {
+		/* Immediate aggregation: flush any pending work and run now */
+		mod_delayed_work(system_highpri_wq, &btsdev->bw_work, 0);
+		flush_delayed_work(&btsdev->bw_work);
+	} else {
+		/* Deferred aggregation for batching */
+		mod_delayed_work(system_highpri_wq, &btsdev->bw_work,
+				 msecs_to_jiffies(2));
+	}
 
 	return 0;
 

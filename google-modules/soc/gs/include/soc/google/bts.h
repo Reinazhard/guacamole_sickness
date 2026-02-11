@@ -70,6 +70,7 @@ struct bts_bw {
 #endif
 	char *name;
 	bool is_rt;
+	bool is_display;
 	unsigned int peak;
 	unsigned int read;
 	unsigned int write;
@@ -130,5 +131,12 @@ static inline void bts_pd_sync(unsigned int cal_id, int on) { }
 
 #define bts_update_scen(a, b) do {} while (0)
 #define exynos_bts_scitoken_setting(a) do {} while (0)
+
+/* Tensor AIO devfreq governor display notification API */
+#if IS_ENABLED(CONFIG_ARM_TENSOR_AIO)
+void tensor_aio_notify_display_active(void);
+#else
+static inline void tensor_aio_notify_display_active(void) { }
+#endif
 
 #endif /* __EXYNOS_BTS_H_ */
