@@ -151,8 +151,10 @@ static void bts_update_urgent_lat_req(unsigned int bus1_freq)
 }
 #endif
 
-static void bts_calc_bw(void)
+static void bts_aggregate_work(struct work_struct *work)
 {
+	struct bts_device *dev = container_of(to_delayed_work(work),
+					      struct bts_device, bw_work);
 	unsigned int i;
 	unsigned int total_read = 0;
 	unsigned int total_write = 0;
@@ -167,10 +169,19 @@ static void bts_calc_bw(void)
 	ssize_t ret = 0;
 #endif
 
-	btsdev->peak_bw = 0;
-	btsdev->total_bw = 0;
+	rt_mutex_lock(&dev->mutex_lock);
 
-	spin_lock(&btsdev->lock);
+	/* Check if aggregation is still needed */
+	if (!dev->aggregation_pending) {
+		rt_mutex_unlock(&dev->mutex_lock);
+		return;
+	}
+
+	dev->aggregation_pending = false;
+	dev->peak_bw = 0;
+	dev->total_bw = 0;
+
+	spin_lock(&dev->lock);
 	for (i = 0; i < btsdev->num_bts; i++) {
 #if !IS_ENABLED(CONFIG_SOC_ZUMA)
 		if (btsdev->peak_bw < btsdev->bts_bw[i].peak)
@@ -183,79 +194,79 @@ static void bts_calc_bw(void)
 		total_read += btsdev->bts_bw[i].read;
 		total_write += btsdev->bts_bw[i].write;
 	}
-	spin_unlock(&btsdev->lock);
-	btsdev->total_bw = total_read + total_write;
-	if (btsdev->peak_bw < (total_read / NUM_CHANNEL))
-		btsdev->peak_bw = (total_read / NUM_CHANNEL);
-	if (btsdev->peak_bw < (total_write / NUM_CHANNEL))
-		btsdev->peak_bw = (total_write / NUM_CHANNEL);
+	spin_unlock(&dev->lock);
+	dev->total_bw = total_read + total_write;
+	if (dev->peak_bw < (total_read / NUM_CHANNEL))
+		dev->peak_bw = (total_read / NUM_CHANNEL);
+	if (dev->peak_bw < (total_write / NUM_CHANNEL))
+		dev->peak_bw = (total_write / NUM_CHANNEL);
 
-	mif_freq = (btsdev->total_bw / BUS_WIDTH) * 100 / MIF_UTIL;
+	mif_freq = (dev->total_bw / BUS_WIDTH) * 100 / MIF_UTIL;
 	/* Additional MIF constriant to guarantee RT BW < 40% */
 	mif_freq = max(mif_freq, (rt_bw / BUS_WIDTH) * 100 / RT_UTIL);
 
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
-	for (i = 0; i < btsdev->num_nocl ; i++) {
+	for (i = 0; i < dev->num_nocl ; i++) {
 		nocl_total_rd_bw = 0;
 		nocl_total_wr_bw = 0;
-		btsdev->nocl_infos[i].peak_freq = 0;
-		list_for_each_entry(bw, &btsdev->nocl_infos[i].list, node) {
+		dev->nocl_infos[i].peak_freq = 0;
+		list_for_each_entry(bw, &dev->nocl_infos[i].list, node) {
 			nocl_total_rd_bw += bw->read;
 			nocl_total_wr_bw += bw->write;
 			nocl_peak_freq = (bw->peak / bw->bus_width) * 100 / INT_UTIL;
-			if (btsdev->nocl_infos[i].peak_freq < nocl_peak_freq)
-				btsdev->nocl_infos[i].peak_freq = nocl_peak_freq;
+			if (dev->nocl_infos[i].peak_freq < nocl_peak_freq)
+				dev->nocl_infos[i].peak_freq = nocl_peak_freq;
 		}
-		if (!strcmp(btsdev->nocl_infos[i].nocl_name, "nocl2aa") ||
-		    !strcmp(btsdev->nocl_infos[i].nocl_name, "nocl2ab")) {
+		if (!strcmp(dev->nocl_infos[i].nocl_name, "nocl2aa") ||
+		    !strcmp(dev->nocl_infos[i].nocl_name, "nocl2ab")) {
 			/* In Zuma, the equivalent of bus1 is NOCL2AA & NOCL2AB
 			 * so first calculate the required frequency for these
 			 * two nocls to get the bus1_freq.
 			 */
 			nocl_peak_freq = (nocl_total_rd_bw / INT_BUS_WIDTH) /
 				NOCL2A_NUM_CHANNEL * 100 / INT_UTIL;
-			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
-				btsdev->nocl_infos[i].peak_freq);
+			dev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				dev->nocl_infos[i].peak_freq);
 			nocl_peak_freq = (nocl_total_wr_bw / INT_BUS_WIDTH) /
 				NOCL2A_NUM_CHANNEL * 100 / INT_UTIL;
-			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
-				btsdev->nocl_infos[i].peak_freq);
-			bus1_freq = max(bus1_freq, btsdev->nocl_infos[i].peak_freq);
+			dev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				dev->nocl_infos[i].peak_freq);
+			bus1_freq = max(bus1_freq, dev->nocl_infos[i].peak_freq);
 		} else {
 			/* This block is to calculate the required frequency
 			 * of NOCL1A.
 			 */
 			nocl_peak_freq = (total_read / INT_BUS_WIDTH) /
 				NUM_CHANNEL * 100 / INT_UTIL;
-			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
-				btsdev->nocl_infos[i].peak_freq);
+			dev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				dev->nocl_infos[i].peak_freq);
 			nocl_peak_freq = (total_write / INT_BUS_WIDTH) /
 				NUM_CHANNEL * 100 / INT_UTIL;
-			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
-				btsdev->nocl_infos[i].peak_freq);
-			int_freq = btsdev->nocl_infos[i].peak_freq;
+			dev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				dev->nocl_infos[i].peak_freq);
+			int_freq = dev->nocl_infos[i].peak_freq;
 		}
 		ret += scnprintf(buf + ret, sizeof(buf) - ret, "%s:%.8u ",
-				 btsdev->nocl_infos[i].nocl_name,
-				 btsdev->nocl_infos[i].peak_freq);
+				 dev->nocl_infos[i].nocl_name,
+				 dev->nocl_infos[i].peak_freq);
 	}
-	BTSDBG_LOG(btsdev->dev, "Freq: %s\n", buf);
+	BTSDBG_LOG(dev->dev, "Freq: %s\n", buf);
 
 	/* Calculate the final INT frequency based on NOCL2AA, NOCL2AB & NOCL1A */
 	int_freq = max(int_freq, bus1_to_int_freq(bus1_freq));
 	bts_update_urgent_lat_req(bus1_freq);
 
-	BTSDBG_LOG(btsdev->dev,
+	BTSDBG_LOG(dev->dev,
 		   "BW: T:%.8u R:%.8u W:%.8u P:%.8u RT:%.8u MIF:%.8u NOCL2A:%.8u INT:%.8u\n",
-		   btsdev->total_bw, total_read, total_write, btsdev->peak_bw, rt_bw,
+		   dev->total_bw, total_read, total_write, dev->peak_bw, rt_bw,
 		   mif_freq, bus1_freq, int_freq);
 #else
-	bus1_freq = (btsdev->peak_bw / BUS_WIDTH) * 100 / INT_UTIL;
+	bus1_freq = (dev->peak_bw / BUS_WIDTH) * 100 / INT_UTIL;
 	int_freq = bus1_to_int_freq(bus1_freq);
 
-	BTSDBG_LOG(btsdev->dev,
+	BTSDBG_LOG(dev->dev,
 		   "BW: T:%.8u R:%.8u W:%.8u P:%.8u RT:%.8u MIF:%.8u BUS1:%.8u INT:%.8u\n",
-		   btsdev->total_bw, total_read, total_write, btsdev->peak_bw, rt_bw,
+		   dev->total_bw, total_read, total_write, dev->peak_bw, rt_bw,
 		   mif_freq, bus1_freq, int_freq);
 #endif
 	trace_clock_set_rate("BTS_mif_freq", mif_freq, raw_smp_processor_id());
@@ -268,7 +279,11 @@ static void bts_calc_bw(void)
 	pm_qos_update_request(&exynos_mif_qos, mif_freq);
 	pm_qos_update_request(&exynos_int_qos, int_freq);
 #endif
+
+	rt_mutex_unlock(&dev->mutex_lock);
 }
+
+
 
 static void bts_update_stats(unsigned int index)
 {
@@ -572,9 +587,12 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 		   "%s R: %.8u W: %.8u P: %.8u RT: %.8u\n",
 		   bts_bw[index].name, bw.read, bw.write, bw.peak, bts_bw[index].rt);
 
-	bts_calc_bw();
+	btsdev->aggregation_pending = true;
 	bts_update_stats(index);
 	rt_mutex_unlock(&btsdev->mutex_lock);
+
+	/* Schedule deferred aggregation (2ms delay for batching) */
+	mod_delayed_work(system_highpri_wq, &btsdev->bw_work, msecs_to_jiffies(2));
 
 	return 0;
 
@@ -2085,6 +2103,8 @@ static int bts_probe(struct platform_device *pdev)
 	}
 	spin_lock_init(&btsdev->lock);
 	rt_mutex_init(&btsdev->mutex_lock);
+	INIT_DELAYED_WORK(&btsdev->bw_work, bts_aggregate_work);
+	btsdev->aggregation_pending = false;
 	INIT_LIST_HEAD(&btsdev->scen_node);
 
 	ret = bts_initialize(btsdev);

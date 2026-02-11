@@ -109,6 +109,10 @@ struct bts_device {
 	struct bus1_int_map *bus1_int_tbl;
 	unsigned int map_row_cnt;
 
+	/* Deferred aggregation support */
+	struct delayed_work bw_work;
+	bool aggregation_pending;
+
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
 	unsigned int num_nocl;
 	struct nocl_info *nocl_infos;
