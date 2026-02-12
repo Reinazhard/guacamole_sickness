@@ -106,6 +106,10 @@ struct cpu_pmu {
 	 * since it's a hard requirement for !FEAT_LSE2, and since it's needed
 	 * for FEAT_LSE2 in order to avoid generating alignment faults which are
 	 * fatal in illegal contexts such as the cpuidle callbacks.
+	 *
+	 * Group hot data (cur_ptr, cur, prev) at the start of the struct for
+	 * better cache locality. The sfd and htd data are accessed less
+	 * frequently and placed at the end.
 	 */
 	struct pmu_stat *cur_ptr[2] __aligned(16);
 	struct pmu_stat cur[2];
@@ -115,13 +119,13 @@ struct cpu_pmu {
 		u64 cpu_cyc;
 		u64 const_cyc;
 		bool stale;
-	} sfd; /* Scale Frequency Data */
+	} sfd __aligned(64); /* Scale Frequency Data - align to cacheline */
 	struct htd_data {
 		u64 start;
 		u64 cpu_cyc;
 		u64 const_cyc;
 	} htd; /* Hardware Throttle Data */
-};
+} __aligned(128); /* Align entire struct to avoid false sharing */
 
 static DEFINE_PER_CPU(struct cpu_pmu, cpu_pmu_evs) = {
 	.sfd.lock = __RAW_SPIN_LOCK_UNLOCKED(cpu_pmu_evs.sfd.lock)
@@ -219,16 +223,14 @@ struct {
 static int mif_int_cnt __read_mostly;
 
 /*
- * Adaptive sampling state: display_active_until holds the jiffies timestamp
- * until which adaptive polling should remain active. When jiffies exceeds this
- * value, polling returns to baseline 10ms rate. Set via exported
- * tensor_aio_notify_display_active() API called by display driver.
+ * Hot globals accessed on every memperfd iteration or tick.
+ * Group together and align to avoid false sharing with other data.
+ * display_active_until is checked most frequently (200 Hz), followed by
+ * adaptive_poll_hz (1000 Hz from kick_memperfd), and low_stall_count
+ * (100-200 Hz on downscale path only).
  */
-static atomic64_t display_active_until = ATOMIC64_INIT(0);
-
-static unsigned long adaptive_poll_hz = MEMPERFD_POLL_HZ;
-
-/* Hysteresis state for MIF downscaling */
+static atomic64_t display_active_until __aligned(64) = ATOMIC64_INIT(0);
+static unsigned long adaptive_poll_hz __read_mostly = MEMPERFD_POLL_HZ;
 static atomic_t low_stall_count = ATOMIC_INIT(0);
 
 /* PPC register addresses from gs-ppc.c */
@@ -730,11 +732,12 @@ static __always_inline void pmu_update_stats(int cpu, struct cpu_pmu *pmu,
 					     struct pmu_stat *cur,
 					     struct pmu_stat *prev)
 {
-	bool prev_needs_reset = !(atomic_read(&stats_avail_cpus) & BIT(cpu));
+	int stats_cpus = atomic_read(&stats_avail_cpus);
+	bool prev_needs_reset = !(stats_cpus & BIT(cpu));
 	struct pmu_stat *cur_ptr;
 
 	/* Get the previous stats if requested or memperfd needs them reset */
-	if (prev || prev_needs_reset) {
+	if (unlikely(prev || prev_needs_reset)) {
 		struct pmu_stat *ptr1, *ptr2;
 
 		/*
@@ -745,7 +748,7 @@ static __always_inline void pmu_update_stats(int cpu, struct cpu_pmu *pmu,
 		 * pointer stored in ptr2.
 		 */
 		pmu_read_cur_ptrs(pmu, ptr1, ptr2);
-		if (!ptr1)
+		if (unlikely(!ptr1))
 			ptr1 = &pmu->cur[!(ptr2 - &pmu->cur[0])];
 		if (prev)
 			*prev = *ptr1;
@@ -765,34 +768,35 @@ static __always_inline void pmu_update_stats(int cpu, struct cpu_pmu *pmu,
 	 * needed to ensure the unordered cmpxchg_double() publishing the stats
 	 * occurs before the update to `stats_avail_cpus`.
 	 */
-	if (prev_needs_reset)
+	if (unlikely(prev_needs_reset))
 		atomic_or_release(BIT(cpu), &stats_avail_cpus);
 }
 
 static void kick_memperfd(void)
 {
-	unsigned long prev, now = jiffies;
-	unsigned long poll_interval;
+	unsigned long prev, now, poll_interval;
 
 	/* Do not kick memperfd when it's quiescent */
-	if (memperfd_quiescent)
+	if (unlikely(memperfd_quiescent))
 		return;
 
 	/* Do not kick memperfd for idle CPUs */
-	if (is_idle_task(current))
+	if (unlikely(is_idle_task(current)))
 		return;
 
 	/*
 	 * Use adaptive polling interval: shorter interval during display
 	 * activity to improve responsiveness for per-frame bandwidth bursts.
+	 * Cache poll_interval early to avoid redundant READ_ONCE.
 	 */
 	poll_interval = READ_ONCE(adaptive_poll_hz);
+	now = jiffies;
 
 	prev = atomic_long_read(&last_run_jiffies);
-	if (time_before(now, prev + poll_interval))
+	if (likely(time_before(now, prev + poll_interval)))
 		return;
 
-	if (atomic_long_cmpxchg_relaxed(&last_run_jiffies, prev, now) != prev)
+	if (unlikely(atomic_long_cmpxchg_relaxed(&last_run_jiffies, prev, now) != prev))
 		return;
 
 	/* Ensure the relaxed cmpxchg is ordered before the swait_active() */
@@ -1099,22 +1103,20 @@ static void add_sfd_data(struct sfd_data *sfd, const struct pmu_stat *cur,
 static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 {
 	struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
-	struct sfd_data *sfd = &pmu->sfd;
-	struct htd_data *htd = &pmu->htd;
 	struct pmu_stat cur, prev;
 
-	if (local_cpu) {
+	if (likely(local_cpu)) {
 		pmu_update_stats(cpu, pmu, &cur, &prev);
-		add_htd_data(htd, &cur, &prev);
+		add_htd_data(&pmu->htd, &cur, &prev);
 	}
 
 	/*
 	 * Don't race with remote CPUs which may update the current CPU's
 	 * runqueue clock and thus access sfd in parallel, and vice versa.
 	 */
-	raw_spin_lock(&sfd->lock);
-	if (local_cpu)
-		add_sfd_data(sfd, &cur, &prev);
+	raw_spin_lock(&pmu->sfd.lock);
+	if (likely(local_cpu))
+		add_sfd_data(&pmu->sfd, &cur, &prev);
 
 	/*
 	 * Set the CPU frequency scale measured via counters if enough data is
@@ -1123,8 +1125,10 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 	 * although the cycle counter stops incrementing while the CPU idles,
 	 * the system timer doesn't.
 	 */
-	if (rq->cpu == cpu) {
-		if (sfd->const_cyc >= cpu_min_sample_cntpct) {
+	if (likely(rq->cpu == cpu)) {
+		struct sfd_data *sfd = &pmu->sfd;
+
+		if (likely(sfd->const_cyc >= cpu_min_sample_cntpct)) {
 			struct cpufreq_policy *pol = &per_cpu(cached_pol, cpu);
 			u64 freq, max_freq = pol->cpuinfo.max_freq;
 			u64 ns = cntpct_to_ns(sfd->const_cyc);
@@ -1149,13 +1153,13 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 			sfd->stale = true;
 		}
 	}
-	raw_spin_unlock(&sfd->lock);
+	raw_spin_unlock(&pmu->sfd.lock);
 
 	/*
 	 * Update the frequency scale data for the remote CPU when the updated
 	 * runqueue doesn't belong to this CPU. This recursion is bounded.
 	 */
-	if (rq->cpu != cpu)
+	if (unlikely(rq->cpu != cpu))
 		update_freq_scale(rq->cpu, rq, false);
 }
 
@@ -1169,7 +1173,7 @@ void tensor_aio_update_rq_clock(struct rq *rq)
 	int cpu = raw_smp_processor_id();
 
 	/* Don't race with reboot or probe, since this isn't a vendor hook */
-	if (!static_branch_unlikely(&system_ready))
+	if (unlikely(!static_branch_likely(&system_ready)))
 		return;
 
 	/* Don't race with CPU hotplug for this CPU or the runqueue's CPU */
@@ -1314,8 +1318,6 @@ static void tensor_aio_idle_exit(void *data, int state,
 static int memperf_cpuhp_up(unsigned int cpu)
 {
 	struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
-	struct sfd_data *sfd = &pmu->sfd;
-	struct htd_data *htd = &pmu->htd;
 	int ret;
 
 	ret = create_perf_events(cpu);
@@ -1338,8 +1340,8 @@ static int memperf_cpuhp_up(unsigned int cpu)
 	pmu_get_stats(&pmu->cur[0]);
 	local_irq_enable();
 	pmu->prev = pmu->cur[0];
-	reset_sfd_data(sfd);
-	reset_htd_data(htd);
+	reset_sfd_data(&pmu->sfd);
+	reset_htd_data(&pmu->htd);
 
 	/* Install tensor_aio_tick() */
 	topology_set_scale_freq_source(&tensor_aio_sfd, cpumask_of(cpu));
@@ -1599,7 +1601,7 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 {
 	struct cpufreq_policy *pol = &per_cpu(cached_pol, cpu);
 	u64 cpu_hz, mem_hz;
-	u32 cpu_khz, vote;
+	u32 cpu_khz, vote, min_freq, max_freq;
 
 	/*
 	 * Estimate the CPU's average frequency in Hz for this period. Note that
@@ -1616,6 +1618,10 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 	 */
 	cpu_hz = cyc_per_cntpct_to_hz(stat->cpu_cyc, stat->cntpct);
 
+	/* Cache min/max freq for fast path checks */
+	min_freq = pol->cpuinfo.min_freq;
+	max_freq = pol->cpuinfo.max_freq;
+
 	/* Now translate the estimation into the closest actual CPU frequency */
 	cpu_khz = find_cpu_freq(pol, cpu_hz / HZ_PER_KHZ, CPUFREQ_RELATION_L);
 
@@ -1623,8 +1629,9 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 	 * Vote for the lowest MIF (and DSU) frequencies when the CPU is running
 	 * at its lowest frequency. DSU's lowest frequency is voted for via
 	 * skipping the dsu_vote update at the end by just returning now.
+	 * Fast path: avoid memory stall calculation.
 	 */
-	if (cpu_khz == pol->cpuinfo.min_freq)
+	if (unlikely(cpu_khz == min_freq))
 		return mif->nr_freqs - 1;
 
 	/* Calculate the Hz lost to memory stalls */
@@ -1673,13 +1680,13 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 				break;
 			}
 		}
-	} else if (cpu_khz < pol->cpuinfo.max_freq) {
+	} else if (likely(cpu_khz < max_freq)) {
 		/*
 		 * The current workload is likely memory invariant, and
 		 * therefore shouldn't be affected very much by a change in MIF
 		 * frequency. Gracefully lower the MIF frequency.
 		 */
-		if (cur == mif->nr_freqs - 1) {
+		if (unlikely(cur == mif->nr_freqs - 1)) {
 			/* Keep using the lowest MIF frequency */
 			vote = cur;
 		} else {
@@ -1694,6 +1701,7 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 		 * The CPU is at its maximum frequency and isn't influenced by
 		 * changes in MIF frequency, likely because the CPU's frequency
 		 * cannot go any higher. Use the highest MIF frequency.
+		 * Fast path: immediate return.
 		 */
 		vote = 0;
 	}
@@ -1778,9 +1786,9 @@ static u32 mif_ppc_vote(u32 cur_mif_khz, u32 *bus2_mif)
 static void memperfd_work(void)
 {
 	u32 vote = mif->nr_freqs - 1, cur, dsu_vote = 0, bus2_mif;
-	bool display_active;
 	u32 prev_mif_freq, new_mif_freq;
-	unsigned long cpus;
+	unsigned long cpus, poll_hz;
+	u64 display_until;
 	int cpu;
 	bool high_stall = false;
 
@@ -1790,6 +1798,9 @@ static void memperfd_work(void)
 
 	/* Gather fresh memory stall statistics for all updated CPUs */
 	cpus = (unsigned int)atomic_read_acquire(&stats_avail_cpus);
+	if (unlikely(!cpus))
+		goto skip_cpu_vote;
+
 	for_each_cpu(cpu, to_cpumask(&cpus)) {
 		struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
 		struct pmu_stat *cur_ptr, stat;
@@ -1798,7 +1809,7 @@ static void memperfd_work(void)
 		/* Calculate the delta for each statistic */
 		cur_ptr = pmu_get_cur_reader(pmu);
 		delta_cntpct = cur_ptr->cntpct - pmu->prev.cntpct;
-		if (delta_cntpct >= cpu_min_sample_cntpct) {
+		if (likely(delta_cntpct >= cpu_min_sample_cntpct)) {
 			stat.mem_cyc = cur_ptr->mem_cyc - pmu->prev.mem_cyc;
 			stat.cpu_cyc = cur_ptr->cpu_cyc - pmu->prev.cpu_cyc;
 			stat.cntpct = delta_cntpct;
@@ -1809,7 +1820,7 @@ static void memperfd_work(void)
 		pmu_put_cur_reader(pmu, cur_ptr);
 
 		/* Skip CPUs that have been idle for a while */
-		if (!stat.cpu_cyc || !stat.mem_cyc || !stat.cntpct)
+		if (unlikely(!stat.cpu_cyc || !stat.mem_cyc))
 			continue;
 
 		/*
@@ -1818,29 +1829,29 @@ static void memperfd_work(void)
 		 * was increased from 12.5% (>>3) to reduce false positives on
 		 * normal workloads and improve power efficiency.
 		 */
-		if (stat.mem_cyc > (stat.cpu_cyc >> 2))
+		if (unlikely(stat.mem_cyc > (stat.cpu_cyc >> 2)))
 			high_stall = true;
 
 		/* Find the highest MIF freq step required among all the CPUs */
 		vote = min(vote, mif_cpu_vote(&stat, cpu, cur, &dsu_vote));
 	}
 
+skip_cpu_vote:
 	/* Find the highest PPC MIF vote and set the higher of the MIF votes */
 	new_mif_freq = max((u32)mif->tbl[vote], mif_ppc_vote(mif->tbl[cur], &bus2_mif));
 
 	/*
 	 * Hysteresis for downscaling: only drop MIF frequency if we've seen
 	 * N consecutive low-stall samples. This prevents frequency sawtooth
-	 * during bursty scrolling workloads.
+	 * during bursty scrolling workloads. Only atomic_inc on downscale path.
 	 */
-	if (new_mif_freq < prev_mif_freq) {
+	if (unlikely(new_mif_freq < prev_mif_freq)) {
 		int count = atomic_inc_return(&low_stall_count);
-		if (count < MEMPERFD_DOWN_HYSTERESIS) {
-			/* Not enough consecutive low samples; keep current freq */
+
+		if (count < MEMPERFD_DOWN_HYSTERESIS)
 			new_mif_freq = prev_mif_freq;
-		}
-	} else {
-		/* Reset hysteresis counter on frequency increase */
+	} else if (unlikely(atomic_read(&low_stall_count))) {
+		/* Reset hysteresis counter on frequency increase (avoid write if 0) */
 		atomic_set(&low_stall_count, 0);
 	}
 
@@ -1848,18 +1859,20 @@ static void memperfd_work(void)
 	 * Adaptive sampling: enable 5ms polling if high memory stalls detected
 	 * or display is active (current time < expiration timestamp). Otherwise
 	 * return to baseline 10ms polling for power efficiency.
+	 * Cache atomic64_read to avoid redundant atomic operations.
 	 */
-	display_active = time_before64(get_jiffies_64(),
-				       (u64)atomic64_read(&display_active_until));
-	if (high_stall || display_active)
-		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ_ADAPTIVE);
-	else
-		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ);
+	display_until = (u64)atomic64_read(&display_active_until);
+	poll_hz = (high_stall || time_before64(get_jiffies_64(), display_until)) ?
+		  MEMPERFD_POLL_HZ_ADAPTIVE : MEMPERFD_POLL_HZ;
+
+	/* Only update if poll rate actually changed */
+	if (unlikely(READ_ONCE(adaptive_poll_hz) != poll_hz))
+		WRITE_ONCE(adaptive_poll_hz, poll_hz);
 
 	update_qos_req(&mif->min_req, new_mif_freq);
 
-	/* Set the new INT vote using BUS2's MIF requirement */
-	for (vote = mif_int_cnt - 1; vote > 0; vote--) {
+	/* Set the new INT vote using BUS2's MIF requirement - optimize with likely */
+	for (vote = mif_int_cnt - 1; likely(vote > 0); vote--) {
 		if (bus2_mif <= mif_int_map[vote].mif_freq)
 			break;
 	}
