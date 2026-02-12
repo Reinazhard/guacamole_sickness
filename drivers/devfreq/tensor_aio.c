@@ -43,11 +43,12 @@
 #define MEMPERFD_DOWN_PCT 65
 
 /*
- * Hysteresis configuration: require this many consecutive low-stall samples
- * before allowing MIF frequency to drop, preventing sawtooth behavior during
- * bursty display workloads.
+ * Hysteresis: require N consecutive low-stall samples before dropping MIF
+ * frequency. Prevents sawtooth during bursty workloads. Value of 2 provides
+ * 10ms hold time at 5ms adaptive polling, balancing responsiveness with power.
  */
-#define MEMPERFD_DOWN_HYSTERESIS 3
+#define MEMPERFD_DOWN_HYSTERESIS 2
+#define MEMPERFD_DISPLAY_ACTIVE_MS 100
 
 /*
  * The minimum sample time required to measure the performance counters. This
@@ -217,8 +218,14 @@ struct {
 } __packed static *mif_int_map;
 static int mif_int_cnt __read_mostly;
 
-/* Adaptive sampling state for display activity detection */
-static atomic_t display_active = ATOMIC_INIT(0);
+/*
+ * Adaptive sampling state: display_active_until holds the jiffies timestamp
+ * until which adaptive polling should remain active. When jiffies exceeds this
+ * value, polling returns to baseline 10ms rate. Set via exported
+ * tensor_aio_notify_display_active() API called by display driver.
+ */
+static atomic64_t display_active_until = ATOMIC64_INIT(0);
+
 static unsigned long adaptive_poll_hz = MEMPERFD_POLL_HZ;
 
 /* Hysteresis state for MIF downscaling */
@@ -795,15 +802,36 @@ static void kick_memperfd(void)
 }
 
 /**
- * tensor_aio_notify_display_active - Signal display commit activity
+ * tensor_aio_notify_display_active - Signal active display frame commits
  *
- * Called by display driver on frame commits to enable adaptive sampling.
- * Enables faster memperfd polling (5ms) during active scrolling/animation
- * to improve responsiveness to per-frame bandwidth bursts.
+ * This function should be called by the display driver on each frame commit
+ * to signal ongoing display activity. It enables adaptive polling mode with
+ * faster memperfd sampling (5ms instead of 10ms) to improve responsiveness
+ * to per-frame memory bandwidth bursts during scrolling and animations.
+ *
+ * The adaptive mode automatically expires 100ms after the last call, allowing
+ * the governor to return to baseline 10ms polling during idle periods. This
+ * timeout-based approach prevents the power regression from stuck adaptive
+ * mode while maintaining low-latency response to display workloads.
+ *
+ * Integration: Display drivers should call this function in the atomic commit
+ * path after queuing frames to hardware. For DRM drivers, this typically
+ * happens in the CRTC commit tail or atomic flush callback.
+ *
+ * Context: Can be called from any context (uses atomic64 operations)
+ * Locking: None required (lock-free atomic operation)
  */
 void tensor_aio_notify_display_active(void)
 {
-	atomic_set(&display_active, 1);
+	u64 timeout;
+
+	/*
+	 * Set adaptive mode expiration to 100ms from now. Use jiffies_64 to
+	 * avoid 32-bit jiffies wraparound issues on 32-bit kernels (though
+	 * this driver only runs on 64-bit ARM).
+	 */
+	timeout = get_jiffies_64() + msecs_to_jiffies(MEMPERFD_DISPLAY_ACTIVE_MS);
+	atomic64_set(&display_active_until, timeout);
 }
 EXPORT_SYMBOL_GPL(tensor_aio_notify_display_active);
 
@@ -1750,6 +1778,7 @@ static u32 mif_ppc_vote(u32 cur_mif_khz, u32 *bus2_mif)
 static void memperfd_work(void)
 {
 	u32 vote = mif->nr_freqs - 1, cur, dsu_vote = 0, bus2_mif;
+	bool display_active;
 	u32 prev_mif_freq, new_mif_freq;
 	unsigned long cpus;
 	int cpu;
@@ -1784,10 +1813,12 @@ static void memperfd_work(void)
 			continue;
 
 		/*
-		 * Detect high memory stall activity: if mem_cyc is significant
-		 * relative to cpu_cyc, mark as high stall for adaptive sampling.
+		 * Detect high memory stall: if memory cycles exceed 25% of CPU
+		 * cycles, workload is memory-bound. This threshold (cpu_cyc>>2)
+		 * was increased from 12.5% (>>3) to reduce false positives on
+		 * normal workloads and improve power efficiency.
 		 */
-		if (stat.mem_cyc > (stat.cpu_cyc >> 3))
+		if (stat.mem_cyc > (stat.cpu_cyc >> 2))
 			high_stall = true;
 
 		/* Find the highest MIF freq step required among all the CPUs */
@@ -1814,17 +1845,16 @@ static void memperfd_work(void)
 	}
 
 	/*
-	 * Adaptive sampling: if we detected high memory stalls or display
-	 * activity, use faster polling to react to per-frame bursts.
-	 * Otherwise, use the default slower polling interval.
+	 * Adaptive sampling: enable 5ms polling if high memory stalls detected
+	 * or display is active (current time < expiration timestamp). Otherwise
+	 * return to baseline 10ms polling for power efficiency.
 	 */
-	if (high_stall || atomic_read(&display_active)) {
+	display_active = time_before64(get_jiffies_64(),
+				       (u64)atomic64_read(&display_active_until));
+	if (high_stall || display_active)
 		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ_ADAPTIVE);
-	} else {
+	else
 		WRITE_ONCE(adaptive_poll_hz, MEMPERFD_POLL_HZ);
-		/* Clear display activity flag after returning to baseline */
-		atomic_set(&display_active, 0);
-	}
 
 	update_qos_req(&mif->min_req, new_mif_freq);
 
