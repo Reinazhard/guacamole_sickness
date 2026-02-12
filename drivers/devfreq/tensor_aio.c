@@ -31,9 +31,25 @@
 #include <dt-bindings/clock/zuma.h>
 #endif
 
-/* Poll memperfd about every 10 ms */
-#define MEMPERFD_POLL_HZ (HZ / 100)
-#define MEMPERFD_POLL_HZ_ADAPTIVE (HZ / 200)
+/*
+ * Poll memperfd at fixed intervals, accounting for CONFIG_HZ granularity.
+ * 
+ * Target intervals:
+ * - Baseline: 10ms (100 Hz effective rate)
+ * - Adaptive: 5ms (200 Hz effective rate)
+ * 
+ * With CONFIG_250HZ: HZ=250, jiffy=4ms
+ * - Baseline: (250 + 50) / 100 = 3 jiffies = 12ms
+ * - Adaptive: (250 + 100) / 200 = 1 jiffy = 4ms
+ * 
+ * With CONFIG_1000HZ: HZ=1000, jiffy=1ms
+ * - Baseline: (1000 + 50) / 100 = 10 jiffies = 10ms (exact)
+ * - Adaptive: (1000 + 100) / 200 = 5 jiffies = 5ms (exact)
+ * 
+ * Rounding ensures we get the closest jiffy-aligned interval.
+ */
+#define MEMPERFD_POLL_HZ ((HZ + 50) / 100)
+#define MEMPERFD_POLL_HZ_ADAPTIVE ((HZ + 100) / 200)
 
 /*
  * The percentage of the previous MIF frequency that MIF should be set to when
@@ -48,8 +64,11 @@
 
 /*
  * Hysteresis: require N consecutive low-stall samples before dropping MIF
- * frequency. Prevents sawtooth during bursty workloads. Value of 2 provides
- * 10ms hold time at 5ms adaptive polling, balancing responsiveness with power.
+ * frequency. Prevents sawtooth during bursty workloads.
+ *
+ * Timing (sample count × adaptive polling interval):
+ * - CONFIG_250HZ: 2 samples × 4ms = 8ms hold, 5 samples × 4ms = 20ms
+ * - CONFIG_1000HZ: 2 samples × 5ms = 10ms hold, 5 samples × 5ms = 25ms
  *
  * Extended hysteresis for stability: Track longer-term behavior to distinguish
  * between truly idle periods and temporary lulls in bursty workloads.
