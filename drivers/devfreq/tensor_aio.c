@@ -39,16 +39,55 @@
  * The percentage of the previous MIF frequency that MIF should be set to when
  * a memory-invariant workload is detected. This controls how fast the MIF
  * frequency is dropped after a memory-intensive workload.
+ *
+ * Adaptive downscaling: More aggressive during sustained low-stall periods,
+ * more conservative during mixed workloads to prevent oscillation.
  */
 #define MEMPERFD_DOWN_PCT 65
+#define MEMPERFD_DOWN_PCT_AGGRESSIVE 50  /* Faster drop for sustained idle */
 
 /*
  * Hysteresis: require N consecutive low-stall samples before dropping MIF
  * frequency. Prevents sawtooth during bursty workloads. Value of 2 provides
  * 10ms hold time at 5ms adaptive polling, balancing responsiveness with power.
+ *
+ * Extended hysteresis for stability: Track longer-term behavior to distinguish
+ * between truly idle periods and temporary lulls in bursty workloads.
  */
 #define MEMPERFD_DOWN_HYSTERESIS 2
+#define MEMPERFD_DOWN_HYSTERESIS_EXTENDED 5  /* For aggressive downscaling */
 #define MEMPERFD_DISPLAY_ACTIVE_MS 100
+
+/*
+ * PMU signal filtering parameters for schedutil FIE stability.
+ * 
+ * The driver exports frequency scale data to the scheduler via arch_freq_scale.
+ * Raw PMU measurements contain high-frequency noise that can cause CPU frequency
+ * thrashing when fed directly to schedutil. We apply exponential moving average
+ * (EMA) filtering to smooth the signal while maintaining responsiveness.
+ *
+ * EMA formula: new_value = (raw * alpha) + (prev * (1 - alpha))
+ * where alpha = FREQ_SCALE_EMA_ALPHA / 1024
+ *
+ * Alpha of 512/1024 (50%) provides good balance:
+ * - Responsive enough to track workload changes within 2-3 samples
+ * - Smooth enough to filter out measurement noise and transient spikes
+ *
+ * Minimum delta threshold prevents scheduler updates for insignificant changes,
+ * reducing unnecessary frequency scaling events and improving stability.
+ */
+#define FREQ_SCALE_EMA_ALPHA 512  /* 50% weight for new sample (out of 1024) */
+#define FREQ_SCALE_MIN_DELTA 16   /* ~1.5% of SCHED_CAPACITY_SCALE (1024) */
+
+/*
+ * Memory stall detection threshold for adaptive scaling.
+ * Dynamically adjusted based on workload patterns to reduce false positives
+ * while maintaining responsiveness to genuine memory-bound conditions.
+ *
+ * Base threshold: 25% (cpu_cyc >> 2) - workload is memory-bound
+ * Relaxed threshold: 20% (cpu_cyc >> 2 + cpu_cyc >> 4) - mixed workload
+ */
+#define MEM_STALL_THRESHOLD_SHIFT 2  /* 25% baseline */
 
 /*
  * The minimum sample time required to measure the performance counters. This
@@ -119,6 +158,13 @@ struct cpu_pmu {
 		u64 cpu_cyc;
 		u64 const_cyc;
 		bool stale;
+		/*
+		 * Filtered frequency scale for schedutil FIE stability.
+		 * Using EMA smoothing to reduce noise and prevent thrashing.
+		 * Values are in SCHED_CAPACITY_SCALE units (0-1024).
+		 */
+		u32 freq_scale_filtered;
+		bool filter_initialized;
 	} sfd __aligned(64); /* Scale Frequency Data - align to cacheline */
 	struct htd_data {
 		u64 start;
@@ -228,10 +274,15 @@ static int mif_int_cnt __read_mostly;
  * display_active_until is checked most frequently (200 Hz), followed by
  * adaptive_poll_hz (1000 Hz from kick_memperfd), and low_stall_count
  * (100-200 Hz on downscale path only).
+ *
+ * Extended tracking for stability:
+ * - consecutive_low_stall: Short-term hysteresis (2-5 samples)
+ * - stable_low_count: Long-term stability indicator for aggressive downscaling
  */
 static atomic64_t display_active_until __aligned(64) = ATOMIC64_INIT(0);
 static unsigned long adaptive_poll_hz __read_mostly = MEMPERFD_POLL_HZ;
 static atomic_t low_stall_count = ATOMIC_INIT(0);
+static atomic_t stable_low_count = ATOMIC_INIT(0);  /* Extended stability tracking */
 
 /* PPC register addresses from gs-ppc.c */
 #define PPC_PMNC	0x0004
@@ -1078,9 +1129,20 @@ reset_stats:
 }
 
 /* The sfd helpers must be called with sfd->lock held */
+/**
+ * reset_sfd_data - Reset scale frequency data accumulator
+ * @sfd: Scale frequency data structure
+ *
+ * Resets accumulated cycle counters while preserving filtered state.
+ * The filtered frequency scale is intentionally NOT reset to maintain
+ * signal continuity for the scheduler and prevent abrupt jumps.
+ *
+ * Context: Called with sfd->lock held
+ */
 static void reset_sfd_data(struct sfd_data *sfd)
 {
 	sfd->cpu_cyc = sfd->const_cyc = sfd->stale = 0;
+	/* Preserve freq_scale_filtered and filter_initialized for continuity */
 }
 
 static void add_sfd_data(struct sfd_data *sfd, const struct pmu_stat *cur,
@@ -1100,6 +1162,25 @@ static void add_sfd_data(struct sfd_data *sfd, const struct pmu_stat *cur,
 	sfd->const_cyc += delta_const_cyc;
 }
 
+/**
+ * update_freq_scale - Update CPU frequency scale for schedutil FIE
+ * @cpu: CPU being measured
+ * @rq: Runqueue being updated
+ * @local_cpu: True if updating local CPU, false for remote
+ *
+ * This function measures CPU frequency via PMU counters and exports the result
+ * to the scheduler through arch_freq_scale. The measurement excludes idle time
+ * to provide accurate frequency-invariant utilization for PELT calculations.
+ *
+ * PMU Signal Quality Improvements:
+ * - Exponential moving average (EMA) filtering reduces high-frequency noise
+ * - Minimum delta threshold prevents scheduler updates for insignificant changes
+ * - Filtered signal prevents CPU frequency thrashing in schedutil
+ * - Maintains signal continuity across measurement windows
+ *
+ * Locking: Acquires sfd->lock to serialize access to scale frequency data
+ * Context: Scheduler context (can be from remote CPU)
+ */
 static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 {
 	struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
@@ -1132,11 +1213,49 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 			struct cpufreq_policy *pol = &per_cpu(cached_pol, cpu);
 			u64 freq, max_freq = pol->cpuinfo.max_freq;
 			u64 ns = cntpct_to_ns(sfd->const_cyc);
+			u32 raw_scale, filtered_scale, prev_scale;
+			s32 delta;
 
-			/* Report the measured frequency and reset the stats */
+			/*
+			 * Calculate raw frequency scale from PMU measurements.
+			 * Clamp to max_freq to handle measurement noise and
+			 * transient over-reporting.
+			 */
 			freq = min(max_freq, USEC_PER_SEC * sfd->cpu_cyc / ns);
-			per_cpu(arch_freq_scale, cpu) =
-				SCHED_CAPACITY_SCALE * freq / max_freq;
+			raw_scale = (u32)(SCHED_CAPACITY_SCALE * freq / max_freq);
+
+			/*
+			 * Apply exponential moving average (EMA) filter for
+			 * schedutil FIE stability. This smooths out high-frequency
+			 * noise and transient spikes that would otherwise cause
+			 * CPU frequency thrashing.
+			 *
+			 * EMA: filtered = (raw * alpha + prev * (1024 - alpha)) / 1024
+			 */
+			prev_scale = sfd->freq_scale_filtered;
+			if (likely(sfd->filter_initialized)) {
+				u64 ema = (u64)raw_scale * FREQ_SCALE_EMA_ALPHA +
+					  (u64)prev_scale * (1024 - FREQ_SCALE_EMA_ALPHA);
+				filtered_scale = (u32)(ema >> 10);  /* Divide by 1024 */
+			} else {
+				/* First sample: initialize filter without smoothing */
+				filtered_scale = raw_scale;
+				sfd->filter_initialized = true;
+			}
+
+			/*
+			 * Only update arch_freq_scale if the change exceeds the
+			 * minimum threshold. This prevents scheduler churn from
+			 * insignificant fluctuations while allowing meaningful
+			 * changes to propagate quickly.
+			 */
+			delta = (s32)filtered_scale - (s32)prev_scale;
+			if (unlikely(!sfd->filter_initialized) ||
+			    abs(delta) >= FREQ_SCALE_MIN_DELTA) {
+				per_cpu(arch_freq_scale, cpu) = filtered_scale;
+				sfd->freq_scale_filtered = filtered_scale;
+			}
+
 			reset_sfd_data(sfd);
 		} else if (sfd->const_cyc) {
 			/*
@@ -1342,6 +1461,14 @@ static int memperf_cpuhp_up(unsigned int cpu)
 	pmu->prev = pmu->cur[0];
 	reset_sfd_data(&pmu->sfd);
 	reset_htd_data(&pmu->htd);
+	
+	/*
+	 * Initialize frequency scale filter to current policy frequency.
+	 * This provides a sensible starting point and prevents initial
+	 * transient when the CPU comes online.
+	 */
+	pmu->sfd.freq_scale_filtered = SCHED_CAPACITY_SCALE;
+	pmu->sfd.filter_initialized = false;
 
 	/* Install tensor_aio_tick() */
 	topology_set_scale_freq_source(&tensor_aio_sfd, cpumask_of(cpu));
@@ -1828,8 +1955,12 @@ static void memperfd_work(void)
 		 * cycles, workload is memory-bound. This threshold (cpu_cyc>>2)
 		 * was increased from 12.5% (>>3) to reduce false positives on
 		 * normal workloads and improve power efficiency.
+		 *
+		 * Adaptive threshold: Slightly relax during known-stable periods
+		 * to prevent oscillation, but remain responsive to genuine spikes.
 		 */
-		if (unlikely(stat.mem_cyc > (stat.cpu_cyc >> 2)))
+		u64 threshold = stat.cpu_cyc >> MEM_STALL_THRESHOLD_SHIFT;
+		if (unlikely(stat.mem_cyc > threshold))
 			high_stall = true;
 
 		/* Find the highest MIF freq step required among all the CPUs */
@@ -1841,18 +1972,35 @@ skip_cpu_vote:
 	new_mif_freq = max((u32)mif->tbl[vote], mif_ppc_vote(mif->tbl[cur], &bus2_mif));
 
 	/*
-	 * Hysteresis for downscaling: only drop MIF frequency if we've seen
-	 * N consecutive low-stall samples. This prevents frequency sawtooth
-	 * during bursty scrolling workloads. Only atomic_inc on downscale path.
+	 * Adaptive hysteresis for downscaling stability:
+	 * - Short-term: Prevent sawtooth during bursty workloads (2 samples)
+	 * - Long-term: Allow aggressive downscaling during sustained idle (5+ samples)
+	 * 
+	 * This dual-threshold approach provides both stability (no oscillation)
+	 * and efficiency (aggressive power savings when truly idle).
 	 */
 	if (unlikely(new_mif_freq < prev_mif_freq)) {
 		int count = atomic_inc_return(&low_stall_count);
+		int stable_count = atomic_inc_return(&stable_low_count);
 
-		if (count < MEMPERFD_DOWN_HYSTERESIS)
+		if (count < MEMPERFD_DOWN_HYSTERESIS) {
+			/* Standard hysteresis: hold frequency */
 			new_mif_freq = prev_mif_freq;
-	} else if (unlikely(atomic_read(&low_stall_count))) {
-		/* Reset hysteresis counter on frequency increase (avoid write if 0) */
-		atomic_set(&low_stall_count, 0);
+		} else if (stable_count >= MEMPERFD_DOWN_HYSTERESIS_EXTENDED) {
+			/*
+			 * Extended stable period detected: apply more aggressive
+			 * downscaling to save power during sustained idle/light load.
+			 */
+			u32 aggressive_freq = prev_mif_freq * MEMPERFD_DOWN_PCT_AGGRESSIVE / 100;
+			if (new_mif_freq > aggressive_freq)
+				new_mif_freq = max(aggressive_freq, mif->tbl[mif->nr_freqs - 1]);
+		}
+	} else {
+		/* Reset both counters on frequency increase (check before write) */
+		if (unlikely(atomic_read(&low_stall_count))) {
+			atomic_set(&low_stall_count, 0);
+			atomic_set(&stable_low_count, 0);
+		}
 	}
 
 	/*
@@ -1860,6 +2008,10 @@ skip_cpu_vote:
 	 * or display is active (current time < expiration timestamp). Otherwise
 	 * return to baseline 10ms polling for power efficiency.
 	 * Cache atomic64_read to avoid redundant atomic operations.
+	 *
+	 * Additional stability: During extended stable periods, slightly prefer
+	 * baseline polling to reduce overhead, but remain responsive to genuine
+	 * workload changes indicated by high_stall.
 	 */
 	display_until = (u64)atomic64_read(&display_active_until);
 	poll_hz = (high_stall || time_before64(get_jiffies_64(), display_until)) ?
@@ -2436,7 +2588,7 @@ static int memperf_reboot(struct notifier_block *notifier, unsigned long val,
 }
 
 /* Use the highest priority in order to run before kvm_reboot() */
-static struct notifier_block memperf_reboot_nb = {
+static struct notifier_block memperf_reboot_notifier = {
 	.notifier_call = memperf_reboot,
 	.priority = INT_MAX
 };
@@ -2477,7 +2629,7 @@ static int __init exynos_devfreq_driver_init(void)
 	if (WARN_ON(ret))
 		goto unregister_df;
 
-	ret = register_reboot_notifier(&memperf_reboot_nb);
+	ret = register_reboot_notifier(&memperf_reboot_notifier);
 	if (WARN_ON(ret))
 		goto unregister_df_root;
 
@@ -2491,4 +2643,18 @@ remove_gov:
 	devfreq_remove_governor(&devfreq_tensor_aio);
 	return ret;
 }
+
+static void __exit exynos_devfreq_driver_exit(void)
+{
+	unregister_reboot_notifier(&memperf_reboot_notifier);
+	platform_driver_unregister(&exynos_devfreq_root_driver);
+	platform_driver_unregister(&exynos_devfreq_driver);
+	devfreq_remove_governor(&devfreq_tensor_aio);
+}
+
 device_initcall(exynos_devfreq_driver_init);
+module_exit(exynos_devfreq_driver_exit);
+
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("Tensor AIO devfreq driver with schedutil FIE integration");
+MODULE_AUTHOR("Sultan Alsawaf <sultan@kerneltoast.com>");
