@@ -20,8 +20,24 @@
 		#define CPU_CL2 "6-7"
 		#define CPU_ALL "0-7"
 
+		/*
+		 * cpu-map defines three homogeneous clusters matching
+		 * microarchitectural boundaries for proper scheduler
+		 * domain construction:
+		 *
+		 *   cluster0 (A55): CPUs 0-3, capacity=410
+		 *   cluster1 (A76): CPUs 4-5, capacity=855
+		 *   cluster2 (X1):  CPUs 6-7, capacity=1024
+		 *
+		 * This ensures:
+		 *   - Each cluster forms its own sched_domain
+		 *   - Energy Model perf domains align with sched domains
+		 *   - X1 cores are isolated from A76/A55 load balancing
+		 *   - PELT signals are comparable within clusters
+		 */
 		cpu-map {
 			cluster0 {
+				/* A55 little cores */
 				core0 {
 					cpu = <&cpu0>;
 				};
@@ -34,16 +50,22 @@
 				core3 {
 					cpu = <&cpu3>;
 				};
-				core4 {
+			};
+			cluster1 {
+				/* A76 medium cores */
+				core0 {
 					cpu = <&cpu4>;
 				};
-				core5 {
+				core1 {
 					cpu = <&cpu5>;
 				};
-				core6 {
+			};
+			cluster2 {
+				/* X1 big cores (thermally/fabrication limited) */
+				core0 {
 					cpu = <&cpu6>;
 				};
-				core7 {
+				core1 {
 					cpu = <&cpu7>;
 				};
 			};
