@@ -221,7 +221,7 @@ ifeq ($(MALI_KCONFIG_EXT_PREFIX),)
 endif
 
 THIS_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
--include $(THIS_DIR)/../arbitration/Makefile
+#-include $(THIS_DIR)/../arbitration/Makefile
 
 # MAKE_ARGS to pass the custom CONFIGs on out-of-tree build
 #
