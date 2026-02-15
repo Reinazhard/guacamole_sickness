@@ -9,6 +9,7 @@
 #define _EH_INTERNAL_H
 
 #include <linux/eh.h>
+#include <linux/types.h>
 #include "eh_regs.h"
 #include <linux/pm_qos.h>
 #include <linux/spinlock_types.h>
@@ -49,11 +50,10 @@ struct eh_device {
 
 	__iomem unsigned char *regs;
 
-	/* in-memory allocated location (not aligned) for cacheable fifo */
-	void *fifo_alloc;
-
-	/* 64B aligned compression command fifo of either type 0 or type 1 */
+	/* DMA-coherent compression descriptor FIFO */
 	void *fifo;
+	dma_addr_t fifo_dma_addr;
+	size_t fifo_alloc_size;
 
 	spinlock_t fifo_prod_lock;
 
