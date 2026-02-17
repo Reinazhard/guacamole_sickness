@@ -485,7 +485,7 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 				    unsigned long pressure, void *data)
 {
-	if (pressure == 100) {
+	if (pressure >= 95) {
 		atomic_set_release(&needs_reclaim, 1);
 		wake_up(&oom_waitq);
 	}
