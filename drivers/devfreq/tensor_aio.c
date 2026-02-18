@@ -5,6 +5,7 @@
  */
 
 #include <linux/cpufreq.h>
+#include <linux/energy_model.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/of_platform.h>
@@ -441,6 +442,14 @@ struct throt_data {
 	unsigned int nr_domain_cpus;
 	u64 last_htd_cntpct;
 	int cpu;
+
+	/*
+	 * Cached EM performance limit frequencies (kHz) used to debounce
+	 * calls to em_update_performance_limits(). Only updated from the
+	 * memperfd kthread so no additional locking is required.
+	 */
+	unsigned long em_freq_min_khz;
+	unsigned long em_freq_max_khz;
 };
 
 /*
@@ -1743,6 +1752,8 @@ static void ppc_write_regs(const struct ppc_reg *reg, size_t cnt)
 	__iomb();
 }
 
+static void tensor_aio_update_em_limits(void);
+
 static void memperfd_init(void)
 {
 	/*
@@ -1796,6 +1807,9 @@ static void memperfd_init(void)
 	 * runs with all CPUs guaranteed to not be running inside the idle task.
 	 */
 	BUG_ON(stop_machine(tensor_aio_idle_init, NULL, NULL));
+
+	/* Sync EM performance state limits with initial hardware state */
+	tensor_aio_update_em_limits();
 }
 
 static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
@@ -1984,6 +1998,102 @@ static u32 mif_ppc_vote(u32 cur_mif_khz, u32 *bus2_mif)
 	return h_vote;
 }
 
+/**
+ * tensor_aio_update_em_limits - Update EM perf state limits for all CPU clusters
+ *
+ * Iterates over all CPU frequency domains and updates the Energy Model's
+ * min/max performance state limits based on the current effective frequency
+ * constraints (cpufreq policy bounds + thermal/HW throttling caps).
+ *
+ * The previous limits are cached per-cluster in struct throt_data so that the
+ * mutex-protected em_update_performance_limits() is only called when the
+ * effective min or max has actually changed.
+ *
+ * Context: Must be called from process context (the EM update path takes
+ *          em_pd_mutex internally). Safe to call from the memperfd kthread.
+ */
+static void tensor_aio_update_em_limits(void)
+{
+	struct throt_data *t;
+
+	list_for_each_entry(t, &domain_throt_list, node) {
+		struct cpufreq_policy *pol = &per_cpu(cached_pol, t->cpu);
+		struct em_perf_domain *pd;
+		unsigned long freq_min_khz, freq_max_khz;
+		unsigned int capped_freq = UINT_MAX;
+		int i;
+
+		pd = em_cpu_get(t->cpu);
+		if (!pd)
+			continue;
+
+		freq_min_khz = pol->cpuinfo.min_freq;
+
+		/*
+		 * Aggregate the effective max frequency across all throttle
+		 * sources. The cap[] reads race with throt_lock writers but
+		 * are benign: AArch64 guarantees atomic word-sized loads, and
+		 * a transiently stale value only delays the EM update by one
+		 * memperfd iteration (~10-20 ms).
+		 */
+		for (i = 0; i < MAX_CPU_THROTTLE_SRCS; i++) {
+			unsigned int cap = READ_ONCE(t->cap[i]);
+
+			if (cap < capped_freq)
+				capped_freq = cap;
+		}
+
+		if (capped_freq < UINT_MAX)
+			freq_max_khz = find_cpu_freq(pol, capped_freq,
+						     CPUFREQ_RELATION_H);
+		else
+			freq_max_khz = pol->cpuinfo.max_freq;
+
+		/* Debounce: skip if nothing changed since last update */
+		if (t->em_freq_min_khz == freq_min_khz &&
+		    t->em_freq_max_khz == freq_max_khz)
+			continue;
+
+		/*
+		 * Update EM limits. On success, cache the new values.
+		 * Failure (e.g. freq not in EM table) is non-fatal; the
+		 * cache is left stale so we retry on the next iteration.
+		 */
+		if (!em_update_performance_limits(pd, freq_min_khz,
+						  freq_max_khz)) {
+			t->em_freq_min_khz = freq_min_khz;
+			t->em_freq_max_khz = freq_max_khz;
+		}
+	}
+}
+
+/**
+ * tensor_aio_reset_em_limits - Reset EM perf state limits to full OPP range
+ *
+ * Restores the default min/max performance state bounds for all CPU clusters
+ * so that EAS is not left with stale limits after the driver shuts down.
+ *
+ * Context: Must be called from process context.
+ */
+static void tensor_aio_reset_em_limits(void)
+{
+	struct throt_data *t;
+
+	list_for_each_entry(t, &domain_throt_list, node) {
+		struct cpufreq_policy *pol = &per_cpu(cached_pol, t->cpu);
+		struct em_perf_domain *pd;
+
+		pd = em_cpu_get(t->cpu);
+		if (!pd)
+			continue;
+
+		em_update_performance_limits(pd, pol->cpuinfo.min_freq,
+					     pol->cpuinfo.max_freq);
+		t->em_freq_min_khz = 0;
+		t->em_freq_max_khz = 0;
+	}
+}
+
 static void memperfd_work(void)
 {
 	u32 vote = mif->nr_freqs - 1, cur, dsu_vote = 0, bus2_mif;
@@ -2118,6 +2228,14 @@ skip_cpu_vote:
 	 * read in the loop above and now.
 	 */
 	atomic_set_release(&stats_avail_cpus, 0);
+
+	/*
+	 * Sync EM performance state limits with the current thermal and HW
+	 * throttle constraints. This lets EAS skip perf states that are
+	 * outside the effective CPU operating range, improving energy
+	 * estimates for task placement decisions.
+	 */
+	tensor_aio_update_em_limits();
 }
 
 static void memperfd_wait_for_kick(void)
@@ -2639,6 +2757,13 @@ static struct platform_driver exynos_devfreq_root_driver = {
 static int memperf_reboot(struct notifier_block *notifier, unsigned long val,
 			  void *cmd)
 {
+	/*
+	 * Restore EM limits to the full OPP range before shutting down so
+	 * that EAS is not left with stale constraints during the reboot
+	 * sequence. This must happen before system_ready is disabled.
+	 */
+	tensor_aio_reset_em_limits();
+
 	/*
 	 * Kill tensor_aio_tick() on all CPUs to stop kicking memperfd, and
 	 * disable `system_ready` to prevent further PMU register access
