@@ -336,6 +336,46 @@ struct em_perf_state *em_perf_state_from_pd(struct em_perf_domain *pd)
 	return rcu_dereference(pd->em_table)->state;
 }
 
+/**
+ * em_pd_get_min_freq() - Get the minimum allowed frequency of a perf. domain
+ * @pd		: performance domain for which this must be done
+ *
+ * Returns the frequency in kHz of the lowest allowed performance state, as
+ * constrained by a prior call to em_update_performance_limits(). Defaults to
+ * the lowest OPP when no external constraint has been applied.
+ *
+ * Must be called under rcu_read_lock().
+ *
+ * Return: minimum allowed frequency in kHz
+ */
+static inline
+unsigned long em_pd_get_min_freq(struct em_perf_domain *pd)
+{
+	struct em_perf_state *table = em_perf_state_from_pd(pd);
+
+	return table[pd->min_perf_state].frequency;
+}
+
+/**
+ * em_pd_get_max_freq() - Get the maximum allowed frequency of a perf. domain
+ * @pd		: performance domain for which this must be done
+ *
+ * Returns the frequency in kHz of the highest allowed performance state, as
+ * constrained by a prior call to em_update_performance_limits(). Defaults to
+ * the highest OPP when no external constraint has been applied.
+ *
+ * Must be called under rcu_read_lock().
+ *
+ * Return: maximum allowed frequency in kHz
+ */
+static inline
+unsigned long em_pd_get_max_freq(struct em_perf_domain *pd)
+{
+	struct em_perf_state *table = em_perf_state_from_pd(pd);
+
+	return table[pd->max_perf_state].frequency;
+}
+
 #else
 struct em_data_callback {};
 #define EM_ADV_DATA_CB(_active_power_cb, _cost_cb) { }
@@ -386,6 +426,16 @@ static inline
 struct em_perf_state *em_perf_state_from_pd(struct em_perf_domain *pd)
 {
 	return NULL;
+}
+static inline
+unsigned long em_pd_get_min_freq(struct em_perf_domain *pd)
+{
+	return 0;
+}
+static inline
+unsigned long em_pd_get_max_freq(struct em_perf_domain *pd)
+{
+	return 0;
 }
 static inline
 int em_dev_compute_costs(struct device *dev, struct em_perf_state *table,
