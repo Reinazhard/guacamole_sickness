@@ -209,14 +209,40 @@ static struct eh_compress_desc *eh_descriptor(struct eh_device *eh_dev,
 	return eh_dev->fifo + index * EH_COMPRESS_DESC_SIZE;
 }
 
-/* Invalidate CPU cache for compression output buffer before reading */
-static void eh_invalidate_compr_buffer(struct eh_device *eh_dev,
-				       unsigned int fifo_index)
+/**
+ * eh_invalidate_descriptor_range - Invalidate CPU cache for descriptor range
+ * @eh_dev: EH device
+ * @start: Starting index in the ring buffer
+ * @end: Ending index in the ring buffer (exclusive)
+ *
+ * Invalidates CPU cache for a range of descriptors that hardware has updated
+ * via DMA. Handles ring buffer wrap-around by performing two invalidations
+ * if necessary.
+ */
+static void eh_invalidate_descriptor_range(struct eh_device *eh_dev,
+					   unsigned int start,
+					   unsigned int end)
 {
-	unsigned long start_addr = (unsigned long)eh_dev->compr_buffers[fifo_index];
-	unsigned long end_addr = start_addr + PAGE_SIZE;
+	unsigned int start_index = start & eh_dev->fifo_index_mask;
+	unsigned int end_index = end & eh_dev->fifo_index_mask;
+	unsigned long start_addr, end_addr;
 
-	dcache_inval_poc(start_addr, end_addr);
+	if (end_index > start_index) {
+		/* No wrap-around: single contiguous invalidation */
+		start_addr = (unsigned long)eh_descriptor(eh_dev, start_index);
+		end_addr = (unsigned long)eh_descriptor(eh_dev, end_index);
+		dcache_inval_poc(start_addr, end_addr);
+	} else {
+		/* Wrap-around: invalidate from start to FIFO end */
+		start_addr = (unsigned long)eh_descriptor(eh_dev, start_index);
+		end_addr = (unsigned long)eh_descriptor(eh_dev, eh_dev->fifo_size);
+		dcache_inval_poc(start_addr, end_addr);
+
+		/* Then invalidate from FIFO start to end */
+		start_addr = (unsigned long)eh_descriptor(eh_dev, 0);
+		end_addr = (unsigned long)eh_descriptor(eh_dev, end_index);
+		dcache_inval_poc(start_addr, end_addr);
+	}
 }
 
 static inline unsigned long eh_read_dcmd_status(struct eh_device *eh_dev,
@@ -294,7 +320,7 @@ static void eh_compr_fifo_init(struct eh_device *eh_dev)
 	eh_dev->complete_index = 0;
 
 	/* program FIFO memory location and size */
-	data = (unsigned long)eh_dev->fifo_dma_addr | __ffs(eh_dev->fifo_size);
+	data = (unsigned long)virt_to_phys(eh_dev->fifo) | __ffs(eh_dev->fifo_size);
 	eh_write_register(eh_dev, EH_REG_CDESC_LOC, data);
 
 	data = 0;
@@ -508,14 +534,12 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	switch (compr_status) {
 	/* normal case, page copied */
 	case EH_CDESC_COPIED:
-		eh_invalidate_compr_buffer(eh_dev, fifo_index);
 		compr_data = eh_dev->compr_buffers[fifo_index] + offset;
 		compr_size = PAGE_SIZE;
 		break;
 
 	/* normal case, compression completed successfully */
 	case EH_CDESC_COMPRESSED:
-		eh_invalidate_compr_buffer(eh_dev, fifo_index);
 		compr_data = eh_dev->compr_buffers[fifo_index] + offset;
 		break;
 
@@ -683,6 +707,7 @@ static unsigned int eh_wait_next_index(struct eh_device *eh_dev, unsigned int i)
 static int eh_process_compress(struct eh_device *eh_dev)
 {
 	unsigned int i = eh_dev->complete_index, end, index;
+	unsigned int num_completed;
 	int ret;
 
 	/* Flush sw_fifo in case hw_fifo is empty */
@@ -692,6 +717,16 @@ static int eh_process_compress(struct eh_device *eh_dev)
 	do {
 		/* Wait for the next completed index */
 		end = eh_wait_next_index(eh_dev, i);
+
+		/*
+		 * Batch cache invalidation: Invalidate all descriptors that
+		 * completed in this batch before processing them. This is more
+		 * efficient than invalidating per-descriptor. Hardware writes
+		 * descriptor status via DMA which bypasses CPU cache.
+		 */
+		num_completed = (end - i) & eh_dev->fifo_color_mask;
+		if (num_completed > 0)
+			eh_invalidate_descriptor_range(eh_dev, i, end);
 
 		/* Process the completed compression requests */
 		do {
@@ -863,12 +898,9 @@ static void eh_deinit_compression(struct eh_device *eh_dev)
 		eh_dev->completions = NULL;
 	}
 
-	if (eh_dev->fifo) {
-		dma_free_coherent(eh_dev->dev, eh_dev->fifo_alloc_size,
-				  eh_dev->fifo, eh_dev->fifo_dma_addr);
-		eh_dev->fifo = NULL;
-		eh_dev->fifo_dma_addr = 0;
-		eh_dev->fifo_alloc_size = 0;
+	if (eh_dev->fifo_alloc) {
+		kfree(eh_dev->fifo_alloc);
+		eh_dev->fifo_alloc = NULL;
 	}
 }
 
@@ -892,17 +924,18 @@ static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_siz
 	}
 
 	/*
-	 * Use DMA-coherent memory for the descriptor FIFO to eliminate
-	 * cache coherency races between hardware DMA writes and CPU reads.
+	 * Allocate FIFO in regular cacheable memory.
+	 * Cache invalidation will be performed explicitly before reading
+	 * descriptors to ensure we see hardware DMA updates.
 	 */
-	eh_dev->fifo_alloc_size = fifo_size * desc_size;
-	eh_dev->fifo = dma_alloc_coherent(eh_dev->dev, eh_dev->fifo_alloc_size,
-					  &eh_dev->fifo_dma_addr, GFP_KERNEL);
-	if (!eh_dev->fifo) {
+	eh_dev->fifo_alloc = kzalloc(fifo_size * (desc_size + 1),
+				     GFP_KERNEL | GFP_DMA);
+	if (!eh_dev->fifo_alloc) {
 		ret = -ENOMEM;
 		goto out_cleanup;
 	}
 
+	eh_dev->fifo = PTR_ALIGN(eh_dev->fifo_alloc, desc_size);
 	eh_dev->compr_buffers = kzalloc(fifo_size * sizeof(void *),
 					GFP_KERNEL);
 	if (!eh_dev->compr_buffers) {
@@ -1052,15 +1085,6 @@ static int eh_init(struct device *device, struct eh_device *eh_dev,
 	    (fifo_size > EH_MAX_FIFO_SIZE)) {
 		pr_err("invalid fifo size %u\n", fifo_size);
 		return -EINVAL;
-	}
-
-	eh_dev->dev = device;
-
-	/* Set DMA mask before any DMA allocations */
-	ret = dma_set_mask_and_coherent(device, DMA_BIT_MASK(36));
-	if (ret) {
-		dev_err(device, "failed to set DMA mask: %d\n", ret);
-		return ret;
 	}
 
 	ret = eh_hw_init(eh_dev, fifo_size, regs, quirks);
