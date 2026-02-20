@@ -266,13 +266,10 @@ static void eh_setup_descriptor(struct eh_device *eh_dev, struct page *src_page,
 	desc = eh_descriptor(eh_dev, index);
 	/* Set the source address */
 	eh_setup_src_addr(desc, src_page);
-	/*
-	 * Set intr_request before status. dma_wmb() ensures descriptor
-	 * fields are visible before OWN bit (status=PENDING) is set.
-	 */
-	desc->intr_request = 1;
-	dma_wmb();
+	/* mark it as pend for hardware */
 	desc->status = EH_CDESC_PENDING;
+	/* Generate an interrupt upon completing a compression */
+	desc->intr_request = 1;
 	/*
 	 * Skip setting other fields of the descriptor for the performance
 	 * reason. It's doable since they are never changed once they are
@@ -695,12 +692,6 @@ static int eh_process_compress(struct eh_device *eh_dev)
 	do {
 		/* Wait for the next completed index */
 		end = eh_wait_next_index(eh_dev, i);
-
-		/*
-		 * Ensure CPU sees hardware DMA writes to descriptors.
-		 * Hardware writes status to memory then updates register.
-		 */
-		dma_rmb();
 
 		/* Process the completed compression requests */
 		do {
