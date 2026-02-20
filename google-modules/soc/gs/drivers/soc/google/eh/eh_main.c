@@ -40,7 +40,6 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/dma-mapping.h>
 #include <linux/highmem.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
@@ -207,42 +206,6 @@ static struct eh_compress_desc *eh_descriptor(struct eh_device *eh_dev,
 						   unsigned int index)
 {
 	return eh_dev->fifo + index * EH_COMPRESS_DESC_SIZE;
-}
-
-/**
- * eh_invalidate_descriptor_range - Invalidate CPU cache for descriptor range
- * @eh_dev: EH device
- * @start: Starting index in the ring buffer
- * @end: Ending index in the ring buffer (exclusive)
- *
- * Invalidates CPU cache for a range of descriptors that hardware has updated
- * via DMA. Handles ring buffer wrap-around by performing two invalidations
- * if necessary.
- */
-static void eh_invalidate_descriptor_range(struct eh_device *eh_dev,
-					   unsigned int start,
-					   unsigned int end)
-{
-	unsigned int start_index = start & eh_dev->fifo_index_mask;
-	unsigned int end_index = end & eh_dev->fifo_index_mask;
-	unsigned long start_addr, end_addr;
-
-	if (end_index > start_index) {
-		/* No wrap-around: single contiguous invalidation */
-		start_addr = (unsigned long)eh_descriptor(eh_dev, start_index);
-		end_addr = (unsigned long)eh_descriptor(eh_dev, end_index);
-		dcache_inval_poc(start_addr, end_addr);
-	} else {
-		/* Wrap-around: invalidate from start to FIFO end */
-		start_addr = (unsigned long)eh_descriptor(eh_dev, start_index);
-		end_addr = (unsigned long)eh_descriptor(eh_dev, eh_dev->fifo_size);
-		dcache_inval_poc(start_addr, end_addr);
-
-		/* Then invalidate from FIFO start to end */
-		start_addr = (unsigned long)eh_descriptor(eh_dev, 0);
-		end_addr = (unsigned long)eh_descriptor(eh_dev, end_index);
-		dcache_inval_poc(start_addr, end_addr);
-	}
 }
 
 static inline unsigned long eh_read_dcmd_status(struct eh_device *eh_dev,
@@ -707,7 +670,6 @@ static unsigned int eh_wait_next_index(struct eh_device *eh_dev, unsigned int i)
 static int eh_process_compress(struct eh_device *eh_dev)
 {
 	unsigned int i = eh_dev->complete_index, end, index;
-	unsigned int num_completed;
 	int ret;
 
 	/* Flush sw_fifo in case hw_fifo is empty */
@@ -717,16 +679,6 @@ static int eh_process_compress(struct eh_device *eh_dev)
 	do {
 		/* Wait for the next completed index */
 		end = eh_wait_next_index(eh_dev, i);
-
-		/*
-		 * Batch cache invalidation: Invalidate all descriptors that
-		 * completed in this batch before processing them. This is more
-		 * efficient than invalidating per-descriptor. Hardware writes
-		 * descriptor status via DMA which bypasses CPU cache.
-		 */
-		num_completed = (end - i) & eh_dev->fifo_color_mask;
-		if (num_completed > 0)
-			eh_invalidate_descriptor_range(eh_dev, i, end);
 
 		/* Process the completed compression requests */
 		do {
@@ -923,11 +875,7 @@ static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_siz
 		return -ENOMEM;
 	}
 
-	/*
-	 * Allocate FIFO in regular cacheable memory.
-	 * Cache invalidation will be performed explicitly before reading
-	 * descriptors to ensure we see hardware DMA updates.
-	 */
+	/* driver allocates fifo in regular memory - dma coherent case */
 	eh_dev->fifo_alloc = kzalloc(fifo_size * (desc_size + 1),
 				     GFP_KERNEL | GFP_DMA);
 	if (!eh_dev->fifo_alloc) {
