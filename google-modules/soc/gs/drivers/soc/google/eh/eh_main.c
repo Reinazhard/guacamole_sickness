@@ -570,9 +570,33 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 		break;
 	};
 
-	/* do the callback */
-	(*eh_dev->comp_callback)(compr_result, compr_data, compr_size,
-				 compl->priv);
+	/*
+	 * Guard against use-after-free on spurious FIFO re-visits.
+	 *
+	 * On a FIFO index wrap-around the driver may arrive at a slot whose
+	 * hardware status is still IDLE or PENDING from the previous ring
+	 * generation.  compl->priv then holds a pointer that was already freed
+	 * by the legitimate first-pass callback, and calling comp_callback with
+	 * it causes a kernel panic (use-after-free in bio_endio).
+	 *
+	 * We prevent this by zeroing compl->priv immediately after every
+	 * callback (so a future spurious re-visit sees NULL) and by skipping
+	 * the callback entirely when priv is NULL (emitting a rate-limited
+	 * error instead).
+	 *
+	 * If priv is non-NULL we are on either a normal completion or a
+	 * genuine (first-time) IDLE/PENDING hardware error; in both cases
+	 * invoke the callback so the upper layer can release its resources.
+	 */
+	if (likely(compl->priv)) {
+		(*eh_dev->comp_callback)(compr_result, compr_data, compr_size,
+					 compl->priv);
+		compl->priv = NULL;
+	} else {
+		pr_err_ratelimited("descriptor 0x%x: priv already NULL, "
+				   "skipping callback (spurious re-visit)\n",
+				   fifo_index);
+	}
 
 	/* set the descriptor back to IDLE */
 	desc->status = EH_CDESC_IDLE;
