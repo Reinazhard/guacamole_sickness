@@ -160,6 +160,38 @@ config ANDROID_SIMPLE_LMK_TIMEOUT_MSEC
 	  needed. After the specified timeout elapses, Simple LMK will stop
 	  waiting and make itself available to kill more processes.
 
+config ANDROID_SIMPLE_LMK_PRESSURE
+	int "VM pressure threshold to trigger reclaim"
+	range 50 99
+	default 90
+	help
+	  Simple LMK will start killing processes when the global VM pressure
+	  notification value reaches this threshold. The pressure value is a
+	  percentage representing how many scanned pages could not be reclaimed
+	  by kswapd or direct reclaim.
+
+	  Lower values (e.g. 80) trigger earlier intervention, reducing stutter
+	  under memory pressure at the cost of killing processes sooner. Higher
+	  values (e.g. 95) delay intervention, preserving running applications
+	  but risking lag when free memory becomes critically low.
+
+	  The upstream vmpressure critical level is 95. A default of 90 provides
+	  proactive intervention before reclaim stalls become user-visible.
+
+config ANDROID_SIMPLE_LMK_COOLDOWN_MSEC
+	int "Minimum milliseconds between reclaim cycles"
+	range 0 1000
+	default 100
+	help
+	  Minimum time that must elapse between consecutive reclaim trigger
+	  events. This prevents kill storms when VM pressure remains elevated
+	  for an extended period, giving killed processes time for their memory
+	  to be freed and watermarks to recover before the next cycle begins.
+
+	  A value of 0 disables cooldown entirely. The default of 100 ms allows
+	  roughly 10 reclaim cycles per second, which is sufficient for severe
+	  pressure while avoiding excessive killing.
+
 endif
 
 endmenu
