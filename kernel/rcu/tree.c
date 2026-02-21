@@ -3125,7 +3125,7 @@ need_wait_for_krwp_work(struct kfree_rcu_cpu_work *krwp)
 	int i;
 
 	for (i = 0; i < FREE_N_CHANNELS; i++)
-		if (krwp->bkvhead_free[i])
+		if (&krwp->bulk_head_free[i])
 			return true;
 
 	return !!krwp->head_free;
