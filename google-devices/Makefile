@@ -6,5 +6,6 @@
 # `google-modules` inside the kernel tree. This way, when the modules include
 # with `-I$(KERNEL_SRC)/../google-modules/SOME_MODULE`, inclusion works as-is.
 export KERNEL_SRC := $(srctree)/google-modules
+export ROOT_DIR := $(srctree)
 
 obj-y += bluejay/display/
