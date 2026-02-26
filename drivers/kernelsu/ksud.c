@@ -693,8 +693,8 @@ int grab_transition_sids()
 	return 0;
 }
 
-bool is_ksu_transition(const struct task_security_struct *old_tsec,
-			const struct task_security_struct *new_tsec)
+bool is_ksu_transition(const struct cred_security_struct *old_tsec,
+			const struct cred_security_struct *new_tsec)
 {
 
 	// we don't need this hook anymore after the third ksud run, which is boot-complete.

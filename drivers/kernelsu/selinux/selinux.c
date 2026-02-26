@@ -19,14 +19,10 @@ static int transive_to_domain(const char *domain, struct cred *cred)
 {
 	u32 sid;
 	int error;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
-	struct task_security_struct *tsec;
-#else
-	struct cred_security_struct *tsec;
-#endif
-	tsec = selinux_cred(cred);
-	if (!tsec) {
-		pr_err("tsec == NULL!\n");
+	struct cred_security_struct *crsec;
+	crsec = selinux_cred(cred);
+	if (!crsec) {
+		pr_err("crsec == NULL!\n");
 		return -1;
 	}
 	error = security_secctx_to_secid(domain, strlen(domain), &sid);
@@ -35,10 +31,10 @@ static int transive_to_domain(const char *domain, struct cred *cred)
 				sid, error);
 	}
 	if (!error) {
-		tsec->sid = sid;
-		tsec->create_sid = 0;
-		tsec->keycreate_sid = 0;
-		tsec->sockcreate_sid = 0;
+		crsec->sid = sid;
+		crsec->create_sid = 0;
+		crsec->keycreate_sid = 0;
+		crsec->sockcreate_sid = 0;
 	}
 	return error;
 }
@@ -164,24 +160,20 @@ static bool is_sid_match(const struct cred *cred, u32 cached_sid, const char *fa
 	if (!cred) {
 		return false;
 	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
-	const struct task_security_struct *tsec = selinux_cred(cred);
-#else
-	const struct cred_security_struct *tsec = selinux_cred(cred);
-#endif
-	if (!tsec) {
+	const struct cred_security_struct *crsec = selinux_cred(cred);
+	if (!crsec) {
 		return false;
 	}
 
 	// Fast path: use cached SID if available
 	if (likely(cached_sid != 0)) {
-		return tsec->sid == cached_sid;
+		return crsec->sid == cached_sid;
 	}
 
 	// Slow path fallback: string comparison (only before cache is initialized)
 	struct lsm_context ctx;
 	bool result;
-	if (__security_secid_to_secctx(tsec->sid, &ctx)) {
+	if (__security_secid_to_secctx(crsec->sid, &ctx)) {
 		return false;
 	}
 	result = strncmp(fallback_context, ctx.context, ctx.len) == 0;
