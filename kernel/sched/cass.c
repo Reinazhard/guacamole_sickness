@@ -92,6 +92,18 @@ bool cass_prime_cpu(const struct cass_cpu_cand *c)
 	       arch_scale_cpu_capacity(nr_cpu_ids - 2) != SCHED_CAPACITY_SCALE;
 }
 
+/*
+ * Returns true if @c is a little-cluster CPU, i.e. a CPU whose original
+ * capacity is strictly less than the system's maximum possible CPU capacity
+ * and which is not the sole prime CPU. Little-cluster CPUs are those that
+ * run at a lower energy-performance point than the big cluster.
+ */
+static __always_inline
+bool cass_little_cpu(const struct cass_cpu_cand *c)
+{
+	return c->cap_orig < SCHED_CAPACITY_SCALE && !cass_prime_cpu(c);
+}
+
 /* Returns true if @a is a better CPU than @b */
 static __always_inline
 bool cass_cpu_better(const struct cass_cpu_cand *a,
@@ -163,6 +175,8 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	int this_cpu = raw_smp_processor_id();
 	unsigned long p_util, uc_min;
 	bool has_idle = false;
+	bool need_big = false;
+	bool big_found = false;
 	int cidx = 0, cpu;
 
 	/*
@@ -171,6 +185,45 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	 */
 	p_util = rt ? 0 : task_util_est(p);
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
+
+	/*
+	 * Detect whether the task's current CPU is a little-cluster CPU that
+	 * would be pinned at its maximum OPP by this task. A little-cluster CPU
+	 * is saturated when the task's effective utilization (task util plus
+	 * hard utilization from RT/DL/IRQ) equals or exceeds the CPU's current
+	 * maximum capacity. In that regime the cpufreq governor requests the
+	 * little cluster's maximum frequency, causing energy waste and potential
+	 * thermal pressure. Migrating the task to the big (non-prime) cluster
+	 * relieves this pressure while avoiding the latency of the prime CPU.
+	 *
+	 * We perform a lightweight pre-check using only the task utilization and
+	 * the raw original capacity of prev_cpu to avoid touching per-CPU rq
+	 * data before the main loop.
+	 */
+	if (!rt && prev_cpu >= 0) {
+		unsigned long prev_cap_orig = arch_scale_cpu_capacity(prev_cpu);
+
+		if (prev_cap_orig < SCHED_CAPACITY_SCALE) {
+			struct rq *prev_rq = cpu_rq(prev_cpu);
+			unsigned long prev_cap_max, hard_util, eff_util;
+
+			prev_cap_max = prev_cap_orig -
+				       thermal_load_avg(prev_rq);
+			hard_util = cpu_util_rt(prev_rq) +
+				    cpu_util_dl(prev_rq) +
+				    cpu_util_irq(prev_rq);
+			eff_util = max(p_util + hard_util, uc_min);
+
+			/*
+			 * If placing @p on prev_cpu would push the effective
+			 * utilization to the CPU's throttled capacity ceiling,
+			 * the governor will request the little cluster's maximum
+			 * OPP. Signal that @p needs to move to the big cluster.
+			 */
+			if (eff_util >= prev_cap_max)
+				need_big = true;
+		}
+	}
 
 	/*
 	 * Find the best CPU to wake @p on. Although idle_get_state() requires
@@ -194,6 +247,24 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 
 		/* Get the _current_, throttled maximum capacity of this CPU */
 		curr->cap_max = curr->cap_orig - thermal_load_avg(rq);
+
+		/*
+		 * When the task saturated its little-cluster CPU, only consider
+		 * big (non-prime) cluster CPUs as migration targets. Skip CPUs
+		 * that are still on the little cluster (cap_orig < system max)
+		 * or on the prime CPU (sole highest-capacity CPU). This steers
+		 * the task to the medium-capacity big cluster where it can run
+		 * without pinning the cluster OPP at its ceiling.
+		 */
+		if (need_big) {
+			struct cass_cpu_cand tmp = { .cpu = cpu,
+						    .cap_orig = curr->cap_orig };
+
+			if (cass_little_cpu(&tmp) || cass_prime_cpu(&tmp))
+				continue;
+
+			big_found = true;
+		}
 
 		/* Prefer the CPU that more closely meets the uclamp minimum */
 		if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
@@ -288,6 +359,69 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 				    sync)) {
 			best = curr;
 			cidx ^= 1;
+		}
+	}
+
+	/*
+	 * If big-cluster migration was requested but no suitable big CPU was
+	 * found (e.g. all big CPUs are offline or excluded by affinity), fall
+	 * back to the normal unrestricted selection so that @best->cpu always
+	 * points to a valid CPU. A second pass is needed because the initial
+	 * pass may have skipped all candidates early.
+	 */
+	if (need_big && !big_found) {
+		has_idle = false;
+		cidx = 0;
+		best = cands;
+		for_each_cpu_and(cpu, p->cpus_ptr, cpu_active_mask) {
+			struct cass_cpu_cand *curr = &cands[cidx];
+			struct cpuidle_state *idle_state;
+			struct rq *rq = cpu_rq(cpu);
+
+			curr->cap_orig = arch_scale_cpu_capacity(cpu);
+			curr->cap_max = curr->cap_orig - thermal_load_avg(rq);
+
+			if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
+				continue;
+
+			curr->cpu = cpu;
+			if ((sync && cpu == this_cpu && rq->nr_running == 1) ||
+			    available_idle_cpu(cpu) || sched_idle_cpu(cpu)) {
+				if (!has_idle &&
+				    uc_min <= arch_scale_min_freq_capacity(cpu) &&
+				    !cass_prime_cpu(curr)) {
+					best = curr;
+					has_idle = true;
+				}
+				curr->exit_lat = 1;
+				idle_state = idle_get_state(rq);
+				if (idle_state)
+					curr->exit_lat += idle_state->exit_latency;
+			} else {
+				if (has_idle)
+					continue;
+				curr->exit_lat = 0;
+			}
+
+			cass_cpu_util(curr, this_cpu, sync);
+
+			if (cpu != task_cpu(p))
+				curr->util += p_util;
+
+			curr->eff_util = max(curr->util + curr->hard_util, uc_min);
+
+			if (curr->util < uc_min)
+				curr->util = uc_min;
+
+			curr->util =
+				curr->util * SCHED_CAPACITY_SCALE / curr->cap_no_therm;
+
+			if (best == curr ||
+			    cass_cpu_better(curr, best, p_util, this_cpu, prev_cpu,
+					    sync)) {
+				best = curr;
+				cidx ^= 1;
+			}
 		}
 	}
 
