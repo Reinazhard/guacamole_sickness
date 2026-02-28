@@ -84,6 +84,8 @@ DEFINE_STATIC_KEY_FALSE(cpusets_insane_config_key);
 
 /* See "Frequency meter" comments, below. */
 
+static bool cpuset_userspace_readonly = true;
+
 struct fmeter {
 	int cnt;		/* unprocessed events count */
 	int val;		/* most recent output value */
@@ -2816,6 +2818,9 @@ static int cpuset_write_u64(struct cgroup_subsys_state *css, struct cftype *cft,
 	cpuset_filetype_t type = cft->private;
 	int retval = 0;
 
+	if (cpuset_userspace_readonly)
+		return 0;
+
 	cpus_read_lock();
 	mutex_lock(&cpuset_mutex);
 	if (!is_cpuset_online(cs)) {
@@ -2865,6 +2870,9 @@ static int cpuset_write_s64(struct cgroup_subsys_state *css, struct cftype *cft,
 	cpuset_filetype_t type = cft->private;
 	int retval = -ENODEV;
 
+	if (cpuset_userspace_readonly)
+		return 0;
+
 	cpus_read_lock();
 	mutex_lock(&cpuset_mutex);
 	if (!is_cpuset_online(cs))
@@ -2893,6 +2901,9 @@ static ssize_t cpuset_write_resmask(struct kernfs_open_file *of,
 	struct cpuset *cs = css_cs(of_css(of));
 	struct cpuset *trialcs;
 	int retval = -ENODEV;
+
+	if (cpuset_userspace_readonly)
+		return nbytes;
 
 	buf = strstrip(buf);
 
@@ -3075,6 +3086,9 @@ static ssize_t sched_partition_write(struct kernfs_open_file *of, char *buf,
 	struct cpuset *cs = css_cs(of_css(of));
 	int val;
 	int retval = -ENODEV;
+
+	if (cpuset_userspace_readonly)
+		return nbytes;
 
 	buf = strstrip(buf);
 
