@@ -21,7 +21,7 @@ blocks:
         - name: KBUILD_BUILD_TIMESTAMP
           value: "Fri Jan 9 16:33:46 UTC 2026"
         - name: RELEASE
-          value: "0"
+          value: "1"
       prologue:
         commands:
           - checkout
@@ -54,7 +54,7 @@ blocks:
         - name: KBUILD_BUILD_TIMESTAMP
           value: "Fri Jan 9 16:33:46 UTC 2026"
         - name: RELEASE
-          value: "0"
+          value: "1"
       prologue:
         commands:
           - checkout
