@@ -24,9 +24,17 @@
 
 				google,fv-max-uv = <4450000>;
 
-				google,thermal-stats-lvl-map = <0 2 4 7>;
-				google,thermal-mitigation = <4300000 3500000 3000000
-					2500000 2000000 1500000 1000000 500000>;
+				google,thermal-mitigation =
+				<4000000 3860000 3720000 3580000 3440000 3300000 3160000 3020000 2880000
+				 2740000 2600000 2460000 2320000 2180000 2040000 1900000 1760000 1620000
+				 1480000 1340000 1200000 1060000  920000  780000  640000  500000>;
+
+				// thermal budgets
+				google,thermal-mitigation-budgets =
+				<4599000 4400000 4136000 3862000 3611000 3369000 3135000 2861000 2636000
+				 2421000 2220000 2028000 1841000 1665000 1497000 1350000 1209000 1075000
+				  947000  844000  744000  646000  582000  512000  435000  353000>;
+				google,thermal-stats-lvl-map = <0 2 5 8>;
 
 				/* b/170700459 thresholds, updated in b/191070950 */
 				google,bd-resume-abs-temp = <280>;
@@ -45,6 +53,9 @@
 				google,chg-termination-5v;
 			};
 
+			google_mdis_charger: google,mdis_charger {
+				#cooling-cells = <2>;
+			};
 		};
 	};
 };
