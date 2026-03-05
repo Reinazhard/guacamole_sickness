@@ -197,7 +197,7 @@
 						level = <0x03 0x30 0xC0>;
 
 						boost0 {
-							enable = <0>;
+							enable = <1>;
 							measure = <TPMON_MEASURE_TP>;
 							proto = <TPMON_PROTO_ALL>;
 							boost_threshold = <250 1600>;
@@ -254,7 +254,7 @@
 						boost_name = "CL1";
 						target = <TPMON_TARGET_CPU_CL1>;
 						extra_idx = <4>;
-						level = <0 799000>;
+						level = <0 1663000>;
 
 						boost0 {
 							enable = <1>;
@@ -284,10 +284,10 @@
 						boost_name = "IRQ_0";
 						target = <TPMON_TARGET_IRQ_PCIE>;
 						extra_idx = <3>;
-						level = <0x0C 0x30>;
+						level = <0x04 0x20>;
 
 						boost0 {
-							enable = <1>;
+							enable = <0>;
 							measure = <TPMON_MEASURE_TP>;
 							proto = <TPMON_PROTO_ALL>;
 							boost_threshold = <500>;
@@ -302,7 +302,7 @@
 						level = <0x04 0x20>;
 
 						boost0 {
-							enable = <0>;
+							enable = <1>;
 							measure = <TPMON_MEASURE_TP>;
 							proto = <TPMON_PROTO_ALL>;
 							boost_threshold = <250>;
@@ -310,7 +310,7 @@
 						};
 
 						boost1 {
-							enable = <0>;
+							enable = <1>;
 							measure = <TPMON_MEASURE_PKTPROC_DL_Q>;
 							proto = <TPMON_PROTO_ALL>;
 							boost_threshold = <6000>;
@@ -318,7 +318,7 @@
 						};
 
 						boost2 {
-							enable = <0>;
+							enable = <1>;
 							measure = <TPMON_MEASURE_DIT_SRC_Q>;
 							proto = <TPMON_PROTO_ALL>;
 							boost_threshold = <7000>;
