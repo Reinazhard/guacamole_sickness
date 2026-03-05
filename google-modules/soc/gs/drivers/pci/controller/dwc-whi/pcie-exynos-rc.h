@@ -44,6 +44,8 @@
 #define PCIE_APP_LTSSM_ENABLE		0x054
 #define PCIE_ELBI_LTSSM_DISABLE		0x0
 #define PCIE_ELBI_LTSSM_ENABLE		0x1
+#define PCIE_SLV_PEND_SEL_NAK           0x03D8
+#define PCIE_APP_XFER_PENDING           0x0074
 #define PCIE_APP_REQ_EXIT_L1		0x06C
 #define APP_INIT_RST			0x100
 #define XMIT_PME_TURNOFF		0x118
@@ -135,7 +137,7 @@
 #define PCI_EXP_LNKCTL2_TLS_5_0GB	0x2
 #define PCI_EXP_LNKCTL2_TLS_8_0GB	0x3
 #define PCIE_CAP_CPL_TIMEOUT_VAL_MASK	0xf
-#define PCIE_CAP_CPL_TIMEOUT_VAL_44MS_DEFALT	0x0
+#define PCIE_CAP_CPL_TIMEOUT_VAL_44MS_DEFAULT	0x5
 #define PCIE_CAP_CPL_TIMEOUT_VAL_6_2MS	0x2
 #define PCIE_LINK_L1SS_CONTROL		0x19C
 #define PORT_LINK_TCOMMON_32US		(0x20 << 8)
@@ -202,6 +204,8 @@
 #define EXYNOS_PCIE_ATU_BUS(x)		(((x) & 0xff) << 24)
 #define EXYNOS_PCIE_ATU_DEV(x)		(((x) & 0x1f) << 19)
 #define EXYNOS_PCIE_ATU_FUNC(x)		(((x) & 0x7) << 16)
+#undef PCIE_ATU_UPPER_TARGET
+#define PCIE_ATU_UPPER_TARGET		0x91C
 
 #define PCIE_MSI_ADDR_LO		0x820
 #define PCIE_MSI_ADDR_HI		0x824
@@ -342,7 +346,7 @@ extern struct dma_map_ops exynos_pcie_dma_ops;
 
 static void __maybe_unused pcie_sysmmu_enable(int hsi_block_num)
 {
-	pr_err("PCIe SysMMU is NOT Enabled!!!\n");
+	pr_err("PCIe SysMMU is Enabled!!!\n");
 }
 
 static void __maybe_unused pcie_sysmmu_disable(int hsi_block_num)
@@ -353,20 +357,15 @@ static void __maybe_unused pcie_sysmmu_disable(int hsi_block_num)
 static int __maybe_unused pcie_iommu_map(unsigned long iova, phys_addr_t paddr,
 					 size_t size, int prot, int hsi_block_num)
 {
-	pr_err("PCIe SysMMU is NOT Enabled!!!\n");
+	pr_err("PCIe SysMMU is Mapped!!!\n");
 	return -ENODEV;
 }
 
 static size_t __maybe_unused pcie_iommu_unmap(unsigned long iova, size_t size,
 					    int hsi_block_num)
 {
-	pr_err("PCIe SysMMU is NOT Enabled!!!\n");
+	pr_err("PCIe SysMMU is Unmapped!!!\n");
 	return 0;
-}
-
-static void __maybe_unused pcie_sysmmu_set_use_iocc(int hsi_block_num)
-{
-	pr_err("PCIe SysMMU is NOT Enabled!!!\n");
 }
 #endif
 
@@ -389,5 +388,4 @@ int exynos_pcie_rc_set_outbound_atu(int ch_num, u32 target_addr, u32 offset, u32
 int exynos_pcie_rc_check_link_speed(int ch_num);
 int exynos_pcie_rc_change_link_speed(int ch_num, int target_speed);
 int exynos_pcie_l1_exit(int ch_num);
-void exynos_pcie_rc_register_dump(int ch_num);
 #endif
