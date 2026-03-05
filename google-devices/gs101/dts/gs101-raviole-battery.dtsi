@@ -20,14 +20,14 @@
 
 				/* charge table */
 				google,chg-temp-limits = <0 100 200 420 460 480 550>;
-				google,chg-cv-limits = <4200000 4300000 4350000 4480000>;
+				google,chg-cv-limits = <4200000 4300000 4450000>;
 				google,chg-cc-limits = <
-					 50   30    0   0
-					 70   30   30  30
-					120  120  120  50
-					100  100  100  50
-					 50   50    0   0
-					 30    0    0   0
+					 30  10   0
+					 50  30  30
+					100  70  50
+					 80  50  50
+					 50  50   0
+					 30   0   0
 				>;
 
 				google,aact-cv-limits = <4200000 4300000 4450000>;
@@ -66,7 +66,7 @@
 				google,fv-uv-margin-dpct = <1025>;
 				/* tier switch */
 				google,cv-range-accuracy = <20000>;
-				google,cv-otv-margin = <12000>;
+				google,cv-otv-margin = <25000>;
 				google,cv-debounce-cnt = <3>;
 				google,cv-tier-ov-cnt = <10>;
 				google,cv-tier-switch-cnt = <3>;
@@ -80,8 +80,6 @@
 				google,bd-trickle-recharge-soc = <80>;
 				/* Disable TRICKLE-DEFEND, b/259428308 */
 				/* google,bd-trickle-enable; */
-				/* Battery virtual sensor */
-				google,batt-vs-tz-name = "batt_vs";
 
 				/* record over temperature time */
 				google,temp-record-thr = <300 350 400>;
@@ -229,3 +227,5 @@
 	};
 
 };
+
+

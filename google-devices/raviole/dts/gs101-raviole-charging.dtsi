@@ -38,11 +38,10 @@
 				google,chg-power-supply = "gcpm";
 				google,bat-power-supply = "battery";
 				google,usb-power-supply = "usb";
-				google,tcpm-power-supply = <&max77759tcpc>;
 
-				google,fv-max-uv = <4480000>;
+				google,fv-max-uv = <4450000>;
 
-				google,wlc-thermal-mitigation = <1100000 500000 250000 110000>;
+				google,wlc-thermal-mitigation = <1100000 500000 250000 100000>;
 				google,therm-wlc-overrides-fcc;
 				google,wlc-thermal-dc-fan-alarm = <2>;
 
@@ -59,9 +58,6 @@
 				google,bd-recharge-soc = <79>;
 				/* Enable TEMP-DEFEND */
 				google,bd-temp-enable;
-				google,bd-temp-dry-run;
-
-				google,chg-termination-5v;
 			};
 
 			google_bms {
@@ -73,10 +69,6 @@
 			};
 
 			google_wlc_fcc_charger: google,wlc_fcc_charger {
-				#cooling-cells = <2>;
-			};
-
-			google_mdis_charger: google,mdis_charger {
 				#cooling-cells = <2>;
 			};
 		};
@@ -115,12 +107,7 @@
 		interrupt-parent = <&gpa6>;
 		pca9468,irq-gpio = <&gpa6 0 GPIO_ACTIVE_LOW>; /* PLC_INT_L */
 
-		pca9468,float-voltage = <4300000>; /* 4.3V */
-
-		pca9468,ta-max-vol = <10500000>; /* 10.5V */
-
-		pca9468,input-itopoff = <500000>; /* 500mA */
-		pca9468,sense-resistance = <0>; /* 5mOhm */
+		pca9468,input-itopoff = <600000>; /* 600mA */
 		pca9468,switching-frequency = <3>; /* 980KHz */
 
 		/* disable USBC NTC */
