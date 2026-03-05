@@ -29,6 +29,7 @@
 #define MAX_RC_NUM		2
 #define PHY_VREG_ON		1
 #define PHY_VREG_OFF		0
+#define NUM_LINK_SPEEDS		4
 
 #define to_exynos_pcie(x)	dev_get_drvdata((x)->dev)
 
@@ -166,6 +167,24 @@ struct power_stats {
 	u64	last_entry_ts;
 };
 
+enum link_duration_opcodes {
+	LINK_DURATION_INIT,
+	LINK_DURATION_RESET,
+	LINK_DURATION_UP,
+	LINK_DURATION_DOWN,
+	LINK_DURATION_SPD_CHG,
+	LINK_DURATION_OPCODE_MAX
+};
+
+struct link_duration_stats {
+	int last_link_speed;
+	struct link_entry {
+		u64 count;
+		u64 duration;
+		u64 last_entry_ts;
+	} speed[NUM_LINK_SPEEDS];
+};
+
 #define LINK_STATS_AVG_SAMPLE_SIZE 50
 
 struct link_stats {
@@ -240,13 +259,13 @@ struct exynos_pcie {
 	struct s2mpu_info	*s2mpu;
 	struct pci_dev		*ep_pci_dev;
 	void __iomem		*elbi_base;
+	void __iomem		*soc_base;
 	void __iomem		*udbg_base;
 	void __iomem		*phy_base;
 	void __iomem		*sysreg_base;
 	void __iomem		*rc_dbi_base;
 	void __iomem		*phy_pcs_base;
 	void __iomem		*ia_base;
-	u32			*pma_regs;
 	u32			elbi_base_physical_addr;
 	u32			phy_base_physical_addr;
 	u32			ia_base_physical_addr;
@@ -271,6 +290,7 @@ struct exynos_pcie {
 	int			idle_ip_index;
 	int			separated_msi;
 	bool			use_msi;
+	bool			support_msi64_addressing;
 	bool			use_cache_coherency;
 	bool			use_sicd;
 	bool			use_pcieon_sleep;
@@ -282,11 +302,11 @@ struct exynos_pcie {
 	bool			use_nclkoff_en;
 	bool                    cpl_timeout_recovery;
 	bool			sudden_linkdown;
-	bool			pma_regs_valid;
 	spinlock_t		conf_lock;		/* pcie config - link status change */
 	spinlock_t		reg_lock;		/* pcie config - reg_lock(reserved) */
 	spinlock_t		pcie_l1_exit_lock;	/* pcie l1.2 exit - ctrl_id_state */
 	spinlock_t		power_stats_lock;	/* pcie config - power state change */
+	spinlock_t		link_duration_lock; /* pcie link speed duration 		*/
 	spinlock_t		s2mpu_refcnt_lock;
 	struct workqueue_struct	*pcie_wq;
 	struct exynos_pcie_clks	clks;
@@ -296,6 +316,7 @@ struct exynos_pcie {
 	struct notifier_block   ss_dma_mon_nb;
 	struct delayed_work	dislink_work;
 	struct delayed_work	cpl_timeout_work;
+	struct delayed_work     link_recovery_fail_work;
 	struct exynos_pcie_register_event *event_reg;
 #if IS_ENABLED(CONFIG_PM_DEVFREQ)
 	unsigned int            int_min_lock;
@@ -310,15 +331,23 @@ struct exynos_pcie {
 	int			work_l1ss_cnt;
 	int			ep_device_type;
 	int			max_link_speed;
+	int			target_link_speed;
+	int			target_link_width;
+	int			perst_delay_us;
+	int			sbb_debug;
 	struct power_stats	link_up;
 	struct power_stats	link_down;
 	struct link_stats	link_stats;
+	struct link_duration_stats link_duration_stats;
+	bool l1ss_force;
+	bool l11_enable;
+	bool l12_enable;
+	bool l1_enable;
 
 	struct pinctrl		*pcie_pinctrl;
 	struct pinctrl_state	*pin_state[MAX_PCIE_PIN_STATE];
 	struct pcie_eom_result **eom_result;
 	struct notifier_block	itmon_nb;
-	struct notifier_block   panic_nb;
 
 	int wlan_gpio;
 	int ssd_gpio;
@@ -334,6 +363,9 @@ struct exynos_pcie {
 	u32 btl_offset;
 	u32 btl_size;
 
+	struct device dup_ep_dev;
+	int copy_dup_ep;
+
 	bool use_phy_isol_con;
 	int phy_control;
 	struct logbuffer *log;
@@ -342,6 +374,12 @@ struct exynos_pcie {
 	int pcieon_sleep_enable_cnt;
 
 	struct mutex power_onoff_lock;
+	bool skip_config;
+
+	struct delayed_work cfg_access_work;
+
+	bool			customized_de_emphasis;
+	int			de_emphasis_value;
 };
 
 #define PCIE_MAX_MSI_NUM	(8)
@@ -373,12 +411,14 @@ static inline void exynos_##base##_write(struct exynos_pcie *pcie, type value, t
 }
 
 PCIE_EXYNOS_OP_READ(elbi, u32);
+PCIE_EXYNOS_OP_READ(soc, u32);
 PCIE_EXYNOS_OP_READ(udbg, u32);
 PCIE_EXYNOS_OP_READ(phy, u32);
 PCIE_EXYNOS_OP_READ(phy_pcs, u32);
 PCIE_EXYNOS_OP_READ(sysreg, u32);
 PCIE_EXYNOS_OP_READ(ia, u32);
 PCIE_EXYNOS_OP_WRITE(elbi, u32);
+PCIE_EXYNOS_OP_WRITE(soc, u32);
 PCIE_EXYNOS_OP_WRITE(udbg, u32);
 PCIE_EXYNOS_OP_WRITE(phy, u32);
 PCIE_EXYNOS_OP_WRITE(phy_pcs, u32);
