@@ -17,9 +17,7 @@
 #include <linux/module.h>
 #include <linux/of_gpio.h>
 #include <linux/of_address.h>
-#include <linux/panic_notifier.h>
 #include <linux/pci.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/resource.h>
@@ -40,9 +38,9 @@
 #include <linux/random.h>
 #include <linux/irqdomain.h>
 
+#include <soc/google/exynos-pm.h>
 #if IS_ENABLED(CONFIG_CPU_IDLE)
 #include <soc/google/exynos-powermode.h>
-#include <soc/google/exynos-pm.h>
 #include <soc/google/exynos-cpupm.h>
 #endif
 #if IS_ENABLED(CONFIG_PM_DEVFREQ)
@@ -63,19 +61,27 @@
 #include <linux/dma-map-ops.h>
 #include <soc/google/s2mpu.h>
 #include "../../../iommu/exynos-pcie-iommu-exp.h"
+#include <trace/hooks/pci.h>
+
+#include <soc/google/exynos-el3_mon.h>
+#include <misc/sbbm.h>
 
 struct exynos_pcie g_pcie_rc[MAX_RC_NUM];
 int pcie_is_linkup;	/* checkpatch: do not initialise globals to 0 */
+
 static struct separated_msi_vector sep_msi_vec[MAX_RC_NUM][PCIE_MAX_SEPA_IRQ_NUM];
-/* currnet_cnt & current_cnt2 for EOM test */
-static int current_cnt;
-static int current_cnt2;
 
 static struct pci_dev *exynos_pcie_get_pci_dev(struct dw_pcie_rp *pp);
 
+#define LINK_L11_ENABLE (PCI_L1SS_CAP_PCIPM_L1_1 | PCI_L1SS_CAP_ASPM_L1_1)
+#define LINK_L12_ENABLE (PCI_L1SS_CAP_PCIPM_L1_2 | PCI_L1SS_CAP_ASPM_L1_2)
+
 #if IS_ENABLED(CONFIG_PM_DEVFREQ)
-static struct exynos_pm_qos_request exynos_pcie_int_qos[MAX_RC_NUM];
+struct exynos_pm_qos_request exynos_pcie_int_qos[MAX_RC_NUM];
 #endif
+
+/* Set this value slightly larger than PCIe CPL timeout, which is 44 ms by default */
+#define EP_CONFIG_ACCESS_TIMEOUT_MS	(50)
 
 #define PMU_CHECK_MASK (BIT(2) | BIT(3) | BIT(10))
 /*
@@ -83,14 +89,14 @@ static struct exynos_pm_qos_request exynos_pcie_int_qos[MAX_RC_NUM];
  * PCIe channel1 is in the HSI2 block.
  */
 #define pcie_ch_to_hsi(ch_num)	((ch_num) + 1)
+#define to_pci_dev_from_dev(dev) container_of((dev), struct pci_dev, dev)
 #if IS_ENABLED(CONFIG_GS_S2MPU) || IS_ENABLED(CONFIG_EXYNOS_PCIE_IOMMU)
 static const struct dma_map_ops pcie_dma_ops;
-static struct device fake_dma_dev;
-#define to_pci_dev_from_dev(dev) container_of((dev), struct pci_dev, dev)
+//static void exynos_d3_sleep_hook(void *unused, struct pci_dev *dev,
+//				 unsigned int *delay);
 
 #define MODEM_CH_NUM    0
 #define WIFI_CH_NUM     1
-#define NUM_PMA_REGS	2048
 
 #if IS_ENABLED(CONFIG_GS_S2MPU)
 struct phys_mem {
@@ -235,26 +241,55 @@ static int get_ch_num(struct pci_dev *epdev)
 	return ch_num;
 }
 
+static void exynos_pcie_mem_copy_epdev(struct exynos_pcie *exynos_pcie)
+{
+	struct device *epdev = &exynos_pcie->ep_pci_dev->dev;
+
+	dev_info(epdev,"COPY ep_dev to PCIe memory struct\n");
+	memcpy(&exynos_pcie->dup_ep_dev, epdev,
+			sizeof(exynos_pcie->dup_ep_dev));
+	exynos_pcie->dup_ep_dev.dma_ops = NULL;
+
+	return;
+}
+
 static void *pcie_dma_alloc_attrs(struct device *dev, size_t size,
 				  dma_addr_t *dma_handle, gfp_t flag,
 				  unsigned long attrs)
 {
 	void *cpu_addr;
 	struct pci_dev *epdev = to_pci_dev_from_dev(dev);
-	int ch_num = get_ch_num(epdev);
-	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
-	int ret;
+	int ch_num = 0;
+	struct exynos_pcie *exynos_pcie;
+	int ret = 0;
 
-	cpu_addr = dma_alloc_attrs(&fake_dma_dev, size,
+	if (unlikely(dev == NULL)) {
+		pr_err("EP device is NULL!!!\n");
+		return NULL;
+	}
+	ch_num = get_ch_num(epdev);
+
+	exynos_pcie = &g_pcie_rc[ch_num];
+
+	/* Some EP device need to copy EP device structure again. */
+	if (exynos_pcie->copy_dup_ep == 0) {
+		memcpy(&exynos_pcie->dup_ep_dev, dev,
+				sizeof(exynos_pcie->dup_ep_dev));
+		exynos_pcie->dup_ep_dev.dma_ops = NULL;
+		exynos_pcie->copy_dup_ep = 1;
+	}
+
+	cpu_addr = dma_alloc_attrs(&exynos_pcie->dup_ep_dev, size,
 				   dma_handle, flag, attrs);
+
 	if (exynos_pcie->s2mpu) {
 		s2mpu_update_refcnt(dev, *dma_handle, size, true, DMA_BIDIRECTIONAL);
-	} else if (exynos_pcie->use_sysmmu) {
+	} else if (exynos_pcie->use_sysmmu && cpu_addr != NULL) {
 		ret = pcie_iommu_map(*dma_handle, *dma_handle, size,
-				     DMA_BIDIRECTIONAL, pcie_ch_to_hsi(ch_num));
+				DMA_BIDIRECTIONAL, pcie_ch_to_hsi(ch_num));
 		if (ret != 0) {
 			pr_err("Can't map PCIe SysMMU table!\n");
-			dma_free_attrs(&fake_dma_dev, size,
+			dma_free_attrs(&exynos_pcie->dup_ep_dev, size,
 				       cpu_addr, *dma_handle, attrs);
 			return NULL;
 		}
@@ -268,10 +303,18 @@ static void pcie_dma_free_attrs(struct device *dev, size_t size,
 				unsigned long attrs)
 {
 	struct pci_dev *epdev = to_pci_dev_from_dev(dev);
-	int ch_num = get_ch_num(epdev);
-	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+	int ch_num = 0;
+	struct exynos_pcie *exynos_pcie;
 
-	dma_free_attrs(&fake_dma_dev, size, cpu_addr, dma_addr, attrs);
+	if (unlikely(dev == NULL)) {
+		pr_err("EP device is NULL!!!\n");
+		return;
+	}
+	ch_num = get_ch_num(epdev);
+
+	exynos_pcie = &g_pcie_rc[ch_num];
+
+	dma_free_attrs(&exynos_pcie->dup_ep_dev, size, cpu_addr, dma_addr, attrs);
 	if (exynos_pcie->s2mpu)
 		s2mpu_update_refcnt(dev, dma_addr, size, false, DMA_BIDIRECTIONAL);
 	else if (exynos_pcie->use_sysmmu)
@@ -284,18 +327,26 @@ static dma_addr_t pcie_dma_map_page(struct device *dev, struct page *page,
 				    unsigned long attrs)
 {
 	struct pci_dev *epdev = to_pci_dev_from_dev(dev);
-	int ch_num = get_ch_num(epdev);
-	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+	int ch_num = 0;
+	struct exynos_pcie *exynos_pcie;
 	dma_addr_t dma_addr;
-	int ret;
+	int ret = 0;
 
-	dma_addr = dma_map_page_attrs(&fake_dma_dev, page, offset,
+	if (unlikely(dev == NULL)) {
+		pr_err("EP device is NULL!!!\n");
+		return -EINVAL;
+	}
+	ch_num = get_ch_num(epdev);
+
+	exynos_pcie = &g_pcie_rc[ch_num];
+
+	dma_addr = dma_map_page_attrs(&exynos_pcie->dup_ep_dev, page, offset,
 				      size, dir, attrs);
 	if (exynos_pcie->s2mpu) {
 		s2mpu_update_refcnt(dev, dma_addr, size, true, dir);
-	} else if (exynos_pcie->use_sysmmu) {
+	} else if (exynos_pcie->use_sysmmu && dma_addr != DMA_MAPPING_ERROR) {
 		ret = pcie_iommu_map(dma_addr, dma_addr, size,
-				     dir, pcie_ch_to_hsi(ch_num));
+				dir, pcie_ch_to_hsi(ch_num));
 		if (ret != 0) {
 			pr_err("DMA map - Can't map PCIe SysMMU table!!!\n");
 			return 0;
@@ -309,10 +360,18 @@ static void pcie_dma_unmap_page(struct device *dev, dma_addr_t dma_addr,
 				unsigned long attrs)
 {
 	struct pci_dev *epdev = to_pci_dev_from_dev(dev);
-	int ch_num = get_ch_num(epdev);
-	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+	int ch_num = 0;
+	struct exynos_pcie *exynos_pcie;
 
-	dma_unmap_page_attrs(&fake_dma_dev, dma_addr, size, dir, attrs);
+	if (unlikely(dev == NULL)) {
+		pr_err("EP device is NULL!!!\n");
+		return;
+	}
+	ch_num = get_ch_num(epdev);
+
+	exynos_pcie = &g_pcie_rc[ch_num];
+
+	dma_unmap_page_attrs(&exynos_pcie->dup_ep_dev, dma_addr, size, dir, attrs);
 
 	if (exynos_pcie->s2mpu)
 		s2mpu_update_refcnt(dev, dma_addr, size, false, dir);
@@ -343,53 +402,6 @@ static const struct dma_map_ops pcie_dma_ops = {
 };
 #endif
 
-static void save_pma_regs(struct exynos_pcie *exynos_pcie)
-{
-	struct device *dev = exynos_pcie->pci->dev;
-	u32 *save;
-	int i;
-
-	if (!exynos_pcie)
-		return;
-
-	if (exynos_pcie->pma_regs_valid)
-		return;
-
-	save = exynos_pcie->pma_regs;
-	for (i = 0; i < NUM_PMA_REGS; i++) {
-		*save = exynos_phy_read(exynos_pcie, i * sizeof(u32));
-		dev_dbg(dev, "i=%d val=0x%08x\n", i, *save);
-		save++;
-	}
-	exynos_pcie->pma_regs_valid = true;
-}
-
-static void restore_pma_regs(struct exynos_pcie *exynos_pcie)
-{
-	struct device *dev = exynos_pcie->pci->dev;
-	u32 *save;
-	u32 val;
-	int i;
-
-	if (!exynos_pcie)
-		return;
-
-	if (!exynos_pcie->pma_regs_valid) {
-		dev_err(dev, "pma regs are not valid, restore skipped\n");
-		return;
-	}
-
-	save = exynos_pcie->pma_regs;
-	for (i = 0; i < NUM_PMA_REGS; i++) {
-		val = exynos_phy_read(exynos_pcie, i * sizeof(u32));
-		if (val != *save)
-			dev_err(dev, "diff i=%d curr_val=0x%08x save_val=0x%08x\n",
-				i, val, *save);
-		exynos_phy_write(exynos_pcie, *save, i * sizeof(u32));
-		save++;
-	}
-}
-
 static void exynos_pcie_phy_isolation(struct exynos_pcie *exynos_pcie, int val)
 {
 	struct device *dev = exynos_pcie->pci->dev;
@@ -411,15 +423,15 @@ void exynos_pcie_set_perst_gpio(int ch_num, bool on)
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
 
 	if (exynos_pcie->ep_device_type == EP_SAMSUNG_MODEM) {
-		pr_debug("%s: force setting for abnormal state\n", __func__);
+		pr_info("%s: force settig for abnormal state\n", __func__);
 		if (on) {
 			gpio_set_value(exynos_pcie->perst_gpio, 1);
-			pr_debug("%s: Set PERST to HIGH, gpio val = %d\n",
-				 __func__, gpio_get_value(exynos_pcie->perst_gpio));
+			pr_info("%s: Set PERST to HIGH, gpio val = %d\n",
+				__func__, gpio_get_value(exynos_pcie->perst_gpio));
 		} else {
 			gpio_set_value(exynos_pcie->perst_gpio, 0);
-			pr_debug("%s: Set PERST to LOW, gpio val = %d\n",
-				 __func__, gpio_get_value(exynos_pcie->perst_gpio));
+			pr_info("%s: Set PERST to LOW, gpio val = %d\n",
+				__func__, gpio_get_value(exynos_pcie->perst_gpio));
 		}
 	}
 }
@@ -463,7 +475,10 @@ static ssize_t exynos_pcie_rc_store(struct device *dev, struct device_attribute 
 	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (sscanf(buf, "%10d", &op_num) == 0)
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%10d", &op_num) <= 0)
 		return -EINVAL;
 
 	if (exynos_pcie->use_phy_isol_con)
@@ -522,11 +537,6 @@ static ssize_t exynos_pcie_rc_store(struct device *dev, struct device_attribute 
 		exynos_pcie_rc_set_outbound_atu(1, 0x47200000, 0x0, SZ_1M);
 		break;
 
-	case 17:
-		dev_info(dev, "## Dump RC Registers ##\n");
-		exynos_pcie_rc_register_dump(exynos_pcie->ch_num);
-		break;
-
 	default:
 		dev_err(dev, "Unsupported Test Number(%d)...\n", op_num);
 	}
@@ -546,12 +556,13 @@ static ssize_t exynos_pcie_eom1_show(struct device *dev, struct device_attribute
 	struct device_node *np = dev->of_node;
 	int len = 0;
 	u32 test_cnt = 0;
+	static int current_cnt;
 	unsigned int lane_width = 1;
 	int i = 0, ret;
 
 	if (!eom_result) {
-		len += snprintf(buf + len, PAGE_SIZE, "eom_result structure is NULL !!!\n");
-
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "eom_result structure is NULL !!!\n");
 		goto exit;
 	}
 
@@ -560,11 +571,11 @@ static ssize_t exynos_pcie_eom1_show(struct device *dev, struct device_attribute
 		lane_width = 0;
 
 	while (current_cnt != EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX) {
-		len += snprintf(buf + len, PAGE_SIZE,
-				"%u %u %lu\n",
-				eom_result[i][current_cnt].phase,
-				eom_result[i][current_cnt].vref,
-				eom_result[i][current_cnt].err_cnt);
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "%u %u %lu\n",
+				 eom_result[i][current_cnt].phase,
+				 eom_result[i][current_cnt].vref,
+				 eom_result[i][current_cnt].err_cnt);
 		current_cnt++;
 		test_cnt++;
 		if (test_cnt == 100)
@@ -584,17 +595,15 @@ static ssize_t exynos_pcie_eom1_store(struct device *dev, struct device_attribut
 	int op_num;
 	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
 
-	if (sscanf(buf, "%10d", &op_num) == 0)
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%10d", &op_num) <= 0)
 		return -EINVAL;
 	switch (op_num) {
 	case 0:
 		if (exynos_pcie->phy_ops.phy_eom)
 			exynos_pcie->phy_ops.phy_eom(dev, exynos_pcie->phy_base);
-
-		/* reset the counter before start eom_show() func. */
-		current_cnt = 0;
-		current_cnt2 = 0;
-
 		break;
 	}
 
@@ -621,43 +630,44 @@ static ssize_t exynos_pcie_eom2_show(struct device *dev, struct device_attribute
 	struct device_node *np = dev->of_node;
 	int len = 0;
 	u32 test_cnt = 0;
+	static int current_cnt;
 	unsigned int lane_width = 1;
 	int i = 1, ret;
 
 	if (!eom_result) {
-		len += snprintf(buf + len, PAGE_SIZE, "eom_result structure is NULL!!\n");
-
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "eom_result structure is NULL!!\n");
 		goto exit;
 	}
 
 	ret = of_property_read_u32(np, "num-lanes", &lane_width);
 	if (ret) {
 		lane_width = 0;
-		len += snprintf(buf + len, PAGE_SIZE,
-				"can't get num of lanes!!\n");
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "can't get num of lanes!!\n");
 		goto exit;
 	}
 
 	if (lane_width == 1) {
-		len += snprintf(buf + len, PAGE_SIZE,
-				"EOM2NULL\n");
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "EOM2NULL\n");
 		goto exit;
 	}
 
-	while (current_cnt2 != EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX) {
-		len += snprintf(buf + len, PAGE_SIZE,
-				"%u %u %lu\n",
-				eom_result[i][current_cnt2].phase,
-				eom_result[i][current_cnt2].vref,
-				eom_result[i][current_cnt2].err_cnt);
-		current_cnt2++;
+	while (current_cnt != EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX) {
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "%u %u %lu\n",
+				 eom_result[i][current_cnt].phase,
+				 eom_result[i][current_cnt].vref,
+				 eom_result[i][current_cnt].err_cnt);
+		current_cnt++;
 		test_cnt++;
 		if (test_cnt == 100)
 			break;
 	}
 
-	if (current_cnt2 == EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX)
-		current_cnt2 = 0;
+	if (current_cnt == EOM_PH_SEL_MAX * EOM_DEF_VREF_MAX)
+		current_cnt = 0;
 
 exit:
 	return len;
@@ -666,51 +676,12 @@ exit:
 static DEVICE_ATTR(eom2, S_IWUSR | S_IWGRP | S_IRUSR | S_IRGRP,
 		   exynos_pcie_eom2_show, exynos_pcie_eom2_store);
 
-static ssize_t l12_state_show(struct device *dev,
-			      struct device_attribute *attr, char *buf)
-{
-	int  ret;
-	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
-
-	ret = scnprintf(buf, PAGE_SIZE, "l1ss_ctrl_id_state = 0x%08x\n",
-			exynos_pcie->l1ss_ctrl_id_state);
-	ret += scnprintf(buf, PAGE_SIZE, "LTSSM: 0x%08x, PM_STATE = 0x%08x\n",
-			 exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP),
-			 exynos_phy_pcs_read(exynos_pcie, PM_POWER_STATE));
-	return ret;
-}
-
-static ssize_t l12_state_store(struct device *dev,
-			       struct device_attribute *attr,
-			       const char *buf, size_t count)
-{
-	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
-	int ch_num = exynos_pcie->ch_num;
-	int enable;
-
-	if (sscanf(buf, "%10d", &enable) == 0)
-		return -EINVAL;
-
-	if (enable == 1) {
-		dev_info(dev, "L1.2 Enable....on PCIe_ch%d\n", ch_num);
-		exynos_pcie_rc_l1ss_ctrl(1, PCIE_L1SS_CTRL_TEST, ch_num);
-	} else if (enable == 0) {
-		dev_info(dev, "L1.2 Disable....on PCIe_ch%d\n", ch_num);
-		exynos_pcie_rc_l1ss_ctrl(0, PCIE_L1SS_CTRL_TEST, ch_num);
-	} else {
-		dev_err(dev, "Value needs to be 0 or 1\n");
-		return -EINVAL;
-	}
-
-	return count;
-}
-
 static ssize_t link_speed_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "GEN%d\n", exynos_pcie->max_link_speed);
+	return scnprintf(buf, PAGE_SIZE, "GEN%d\n", exynos_pcie->target_link_speed);
 }
 
 static ssize_t link_speed_store(struct device *dev,
@@ -720,16 +691,76 @@ static ssize_t link_speed_store(struct device *dev,
 	int link_speed;
 	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
 
-	if (sscanf(buf, "%10d", &link_speed) == 0)
+	if (!buf)
 		return -EINVAL;
 
-	if (link_speed < 1 || link_speed > 3) {
-		dev_info(dev, "Value needs to be between 1-3\n");
+	if (sscanf(buf, "%10d", &link_speed) <= 0)
+		return -EINVAL;
+
+	if (link_speed < LINK_SPEED_GEN1 || link_speed > exynos_pcie->max_link_speed) {
+		dev_info(dev, "Value needs to be between 1-%d\n", exynos_pcie->max_link_speed);
 		return -EINVAL;
 	}
 
 	dev_info(dev, "Change Link Speed: Target Link Speed = GEN%d\n", link_speed);
-	exynos_pcie->max_link_speed = link_speed;
+	exynos_pcie->target_link_speed = link_speed;
+
+	return count;
+}
+
+static ssize_t link_width_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "link width: %d\n", exynos_pcie->target_link_width);
+}
+
+static ssize_t link_width_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	int link_width;
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+
+	if (!buf || sscanf(buf, "%10d", &link_width) != 1)
+		return -EINVAL;
+
+	if (link_width < 1 || link_width > exynos_pcie->num_lanes) {
+		dev_info(dev, "Value needs to be between 1-%d\n", exynos_pcie->num_lanes);
+		return -EINVAL;
+	}
+
+	dev_info(dev, "Change Link Width: Target Link Width = %d\n", link_width);
+	exynos_pcie->target_link_width = link_width;
+
+	return count;
+}
+
+static ssize_t sbb_debug_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", exynos_pcie->sbb_debug);
+}
+
+static ssize_t sbb_debug_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	int ret;
+	int value;
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+
+	ret = kstrtoint(buf, 0, &value);
+	if (ret != 0)
+		return -EINVAL;
+
+	if (value < 0 || value > 1)
+		return -EINVAL;
+
+	exynos_pcie->sbb_debug = value;
 
 	return count;
 }
@@ -868,10 +899,138 @@ static ssize_t power_stats_show(struct device *dev, struct device_attribute *att
 	return ret;
 }
 
-static DEVICE_ATTR_RW(l12_state);
+static void link_duration_update(struct exynos_pcie *pcie, u32 opcode)
+{
+	int i;
+	int link_speed;
+	int last_speed;
+	u64 current_ts;
+	u64 link_duration_delta;
+	unsigned long flags;
+
+	if (opcode >= LINK_DURATION_OPCODE_MAX)
+		return;
+
+	spin_lock_irqsave(&pcie->link_duration_lock, flags);
+
+	switch(opcode) {
+		case LINK_DURATION_INIT:
+			pcie->link_duration_stats.last_link_speed = 0;
+			for(i = 0; i < NUM_LINK_SPEEDS; i++) {
+				pcie->link_duration_stats.speed[i].count = 0;
+				pcie->link_duration_stats.speed[i].duration = 0;
+				pcie->link_duration_stats.speed[i].last_entry_ts = 0;
+			}
+
+			break;
+		case LINK_DURATION_UP:
+			link_speed = pcie->target_link_speed;
+			pcie->link_duration_stats.last_link_speed = link_speed;
+
+			if (link_speed > NUM_LINK_SPEEDS || link_speed <= 0)
+				break;
+
+			current_ts = power_stats_get_ts();
+
+			pcie->link_duration_stats.speed[link_speed - 1].count++;
+			pcie->link_duration_stats.speed[link_speed - 1].last_entry_ts =
+				current_ts;
+
+			break;
+		case LINK_DURATION_DOWN:
+			link_speed = pcie->target_link_speed;
+			pcie->link_duration_stats.last_link_speed = link_speed;
+
+			if (link_speed > NUM_LINK_SPEEDS || link_speed <= 0)
+				break;
+
+			current_ts = power_stats_get_ts();
+			link_duration_delta = current_ts -
+				pcie->link_duration_stats.speed[link_speed - 1].last_entry_ts;
+
+			pcie->link_duration_stats.speed[link_speed - 1].duration +=
+				link_duration_delta;
+			pcie->link_duration_stats.speed[link_speed - 1].last_entry_ts =
+				current_ts;
+			break;
+		case LINK_DURATION_SPD_CHG:
+			link_speed = pcie->target_link_speed;
+			last_speed = pcie->link_duration_stats.last_link_speed;
+
+			if (link_speed > NUM_LINK_SPEEDS || link_speed <= 0)
+				break;
+
+			current_ts = power_stats_get_ts();
+
+			if (link_speed != last_speed) {
+				link_duration_delta = current_ts -
+					pcie->link_duration_stats.speed[last_speed - 1].last_entry_ts;
+
+				pcie->link_duration_stats.speed[last_speed - 1].duration +=
+					link_duration_delta;
+				pcie->link_duration_stats.speed[last_speed - 1].last_entry_ts =
+					current_ts;
+
+				pcie->link_duration_stats.speed[link_speed - 1].count++;
+				pcie->link_duration_stats.speed[link_speed - 1].last_entry_ts =
+					current_ts;
+				pcie->link_duration_stats.last_link_speed = link_speed;
+			}
+
+			break;
+	}
+
+	spin_unlock_irqrestore(&pcie->link_duration_lock, flags);
+}
+
+static ssize_t link_duration_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	int i;
+	int ret = 0;
+	int link_speed;
+	u64 current_ts;
+	u64 link_duration_delta = 0;
+	unsigned long flags;
+	enum exynos_pcie_state pcie_state;
+	struct link_duration_stats link_duration_copy;
+	struct exynos_pcie *pcie = dev_get_drvdata(dev);
+
+	spin_lock_irqsave(&pcie->link_duration_lock, flags);
+	memcpy(&link_duration_copy, &pcie->link_duration_stats,
+		sizeof(struct link_duration_stats));
+	current_ts = power_stats_get_ts();
+	pcie_state = pcie->state;
+	link_speed = pcie->target_link_speed;
+	spin_unlock_irqrestore(&pcie->link_duration_lock, flags);
+
+	if (link_speed <= NUM_LINK_SPEEDS &&
+			(pcie_state == STATE_LINK_UP || pcie_state == STATE_LINK_DOWN_TRY))
+		link_duration_delta = current_ts -
+			link_duration_copy.speed[link_speed - 1].last_entry_ts;
+
+	ret += sysfs_emit(buf, "link_speed:\n    GEN%d\n", link_speed);
+
+	for (i = 0; i < NUM_LINK_SPEEDS; i++) {
+		if (link_duration_copy.speed[i].count) {
+			ret += sysfs_emit_at(buf, ret,
+				"Gen%d:\n    count: %#llx\n    duration msec: %#llx\n",
+				i + 1,
+				link_duration_copy.speed[i].count,
+				(link_duration_copy.speed[i].duration +
+					(i == (link_speed - 1) ? link_duration_delta : 0)));
+		}
+	}
+
+	return ret;
+}
+
 static DEVICE_ATTR_RW(link_speed);
+static DEVICE_ATTR_RW(link_width);
 static DEVICE_ATTR_RO(link_state);
 static DEVICE_ATTR_RO(power_stats);
+static DEVICE_ATTR_RW(sbb_debug);
+static DEVICE_ATTR_RO(link_duration);
 
 /* percentage (0-100) to weight new datapoints in moving average */
 #define NEW_DATA_AVERAGE_WEIGHT  10
@@ -897,7 +1056,6 @@ static void link_stats_log_link_up(struct exynos_pcie *pcie, u32 link_up_time)
 			      link_up_time * NEW_DATA_AVERAGE_WEIGHT, 100);
 }
 
-#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
 static void link_stats_log_pll_lock(struct exynos_pcie *pcie, u32 pll_lock_time)
 {
 	pcie->link_stats.pll_lock_time_avg =
@@ -940,7 +1098,6 @@ static int check_exynos_pcie_reg_status(struct exynos_pcie *exynos_pcie,
 
 	return status;
 }
-#endif
 
 static ssize_t link_down_irqs_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -1134,6 +1291,140 @@ static const struct attribute_group link_stats_group = {
 	.name = "link_stats",
 };
 
+static ssize_t l1ss_force_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *pcie = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", pcie->l1ss_force);
+}
+
+static ssize_t l1ss_force_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+	int val;
+
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%x", &val) <= 0)
+		return -EINVAL;
+
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	exynos_pcie->l1ss_force = val;
+
+	return count;
+}
+
+static ssize_t l11_enable_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *pcie = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", pcie->l11_enable);
+}
+
+static ssize_t l11_enable_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+	int val;
+
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%x", &val) <= 0)
+		return -EINVAL;
+
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	exynos_pcie->l11_enable = val;
+
+	return count;
+}
+
+static ssize_t l12_enable_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *pcie = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", pcie->l12_enable);
+}
+
+static ssize_t l12_enable_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+	int val;
+
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%x", &val) <= 0)
+		return -EINVAL;
+
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	exynos_pcie->l12_enable = val;
+
+	return count;
+}
+
+static ssize_t l1_enable_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct exynos_pcie *pcie = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", pcie->l1_enable);
+}
+
+static ssize_t l1_enable_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct exynos_pcie *exynos_pcie = dev_get_drvdata(dev);
+	int val;
+
+	if (!buf)
+		return -EINVAL;
+
+	if (sscanf(buf, "%x", &val) <= 0)
+		return -EINVAL;
+
+	if (val < 0 || val > 1)
+		return -EINVAL;
+
+	exynos_pcie->l1_enable = val;
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(l1ss_force);
+static DEVICE_ATTR_RW(l11_enable);
+static DEVICE_ATTR_RW(l12_enable);
+static DEVICE_ATTR_RW(l1_enable);
+
+static struct attribute *l1ss_attrs[] = {
+	&dev_attr_l1ss_force.attr,
+	&dev_attr_l11_enable.attr,
+	&dev_attr_l12_enable.attr,
+	&dev_attr_l1_enable.attr,
+	NULL,
+};
+
+static const struct attribute_group l1ss_group = {
+	.attrs = l1ss_attrs,
+	.name = "l1ss",
+};
+
 static inline int create_pcie_sys_file(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
@@ -1166,15 +1457,21 @@ static inline int create_pcie_sys_file(struct device *dev)
 		}
 	}
 
-	ret = device_create_file(dev, &dev_attr_l12_state);
-	if (ret) {
-		dev_err(dev, "couldn't create device file for l12_state(%d)\n", ret);
-		return ret;
-	}
-
 	ret = device_create_file(dev, &dev_attr_link_speed);
 	if (ret) {
 		dev_err(dev, "couldn't create device file for link_speed(%d)\n", ret);
+		return ret;
+	}
+
+	ret = device_create_file(dev, &dev_attr_link_width);
+	if (ret) {
+		dev_err(dev, "couldn't create device file for link_width(%d)\n", ret);
+		return ret;
+	}
+
+	ret = device_create_file(dev, &dev_attr_sbb_debug);
+	if (ret) {
+		dev_err(dev, "couldn't create device file for sbb_debug(%d)\n", ret);
 		return ret;
 	}
 
@@ -1190,9 +1487,21 @@ static inline int create_pcie_sys_file(struct device *dev)
 		return ret;
 	}
 
+	ret = device_create_file(dev, &dev_attr_link_duration);
+	if (ret) {
+		dev_err(dev, "couldn't create device file for link_duration(%d)\n", ret);
+		return ret;
+	}
+
 	ret = sysfs_create_group(&pdev->dev.kobj, &link_stats_group);
 	if (ret) {
 		dev_err(dev, "couldn't create sysfs group for link_stats(%d)\n", ret);
+		return ret;
+	}
+
+	ret = sysfs_create_group(&pdev->dev.kobj, &l1ss_group);
+	if (ret) {
+		dev_err(dev, "couldn't create sysfs group for l1ss(%d))\n", ret);
 		return ret;
 	}
 
@@ -1204,11 +1513,14 @@ static inline void remove_pcie_sys_file(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev_from_dev(dev);
 
 	device_remove_file(dev, &dev_attr_pcie_rc_test);
-	device_remove_file(dev, &dev_attr_l12_state);
 	device_remove_file(dev, &dev_attr_link_speed);
+	device_remove_file(dev, &dev_attr_link_width);
+	device_remove_file(dev, &dev_attr_sbb_debug);
 	device_remove_file(dev, &dev_attr_link_state);
 	device_remove_file(dev, &dev_attr_power_stats);
+	device_remove_file(dev, &dev_attr_link_duration);
 	sysfs_remove_group(&pdev->dev.kobj, &link_stats_group);
+	sysfs_remove_group(&pdev->dev.kobj, &l1ss_group);
 }
 
 static int exynos_pcie_rc_clock_enable(struct dw_pcie_rp *pp, int enable)
@@ -1268,12 +1580,36 @@ void exynos_pcie_rc_print_link_history(struct dw_pcie_rp *pp)
 	}
 }
 
+// In some cases we will prevent config space access during wifi recovery,
+// this flag will be reset when wifi driver call exynos_pcie_pm_resume()
+void exynos_pcie_set_skip_config(int ch_num, bool val)
+{
+	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+	exynos_pcie->skip_config = val;
+	logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "Skip config flag set to %d\n", val);
+}
+EXPORT_SYMBOL_GPL(exynos_pcie_set_skip_config);
+
+static bool exynos_pcie_check_skip_config(struct exynos_pcie *exynos_pcie)
+{
+	return exynos_pcie->skip_config;
+}
+
 static int exynos_pcie_rc_rd_own_conf(struct dw_pcie_rp *pp, int where, int size, u32 *val)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct device *dev = pci->dev;
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
+	int is_linked = 0;
+	int ret = 0;
+	u32 __maybe_unused reg_val;
 	unsigned long flags;
-	int ret;
+
+	if (exynos_pcie_check_skip_config(exynos_pcie)) {
+		*val = 0xffffffff;
+		dev_err(dev, "skip rd_own_conf where=%#04x\n", where);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 
 	if (exynos_pcie->phy_control == PCIE_PHY_ISOLATION) {
 		*val = 0xffffffff;
@@ -1282,7 +1618,30 @@ static int exynos_pcie_rc_rd_own_conf(struct dw_pcie_rp *pp, int where, int size
 
 	spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 
+	if (exynos_pcie->state == STATE_LINK_UP)
+		is_linked = 1;
+
+	if (is_linked == 0) {
+		exynos_pcie_rc_clock_enable(pp, PCIE_ENABLE_CLOCK);
+		exynos_pcie_rc_phy_clock_enable(pp, PCIE_ENABLE_CLOCK);
+
+		if (exynos_pcie->phy_ops.phy_check_rx_elecidle)
+			exynos_pcie->phy_ops.phy_check_rx_elecidle(exynos_pcie->phy_pcs_base,
+								   IGNORE_ELECIDLE,
+								   exynos_pcie->ch_num);
+	}
+
 	ret = dw_pcie_read(exynos_pcie->rc_dbi_base + (where), size, val);
+
+	if (is_linked == 0) {
+		if (exynos_pcie->phy_ops.phy_check_rx_elecidle)
+			exynos_pcie->phy_ops.phy_check_rx_elecidle(exynos_pcie->phy_pcs_base,
+								   ENABLE_ELECIDLE,
+								   exynos_pcie->ch_num);
+
+		exynos_pcie_rc_phy_clock_enable(pp, PCIE_DISABLE_CLOCK);
+		exynos_pcie_rc_clock_enable(pp, PCIE_DISABLE_CLOCK);
+	}
 	spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 	return ret;
@@ -1291,20 +1650,51 @@ static int exynos_pcie_rc_rd_own_conf(struct dw_pcie_rp *pp, int where, int size
 static int exynos_pcie_rc_wr_own_conf(struct dw_pcie_rp *pp, int where, int size, u32 val)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct device *dev = pci->dev;
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
+	int is_linked = 0;
+	int ret = 0;
+	u32 __maybe_unused reg_val;
 	unsigned long flags;
-	int ret;
+
+	if (exynos_pcie_check_skip_config(exynos_pcie)) {
+		dev_err(dev,"skip wr_own_conf where=%#04x val=%#02x\n", where, val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 
 	if (exynos_pcie->phy_control == PCIE_PHY_ISOLATION)
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 
+	if (exynos_pcie->state == STATE_LINK_UP)
+		is_linked = 1;
+
+	if (is_linked == 0) {
+		exynos_pcie_rc_clock_enable(pp, PCIE_ENABLE_CLOCK);
+		exynos_pcie_rc_phy_clock_enable(pp, PCIE_ENABLE_CLOCK);
+
+		if (exynos_pcie->phy_ops.phy_check_rx_elecidle)
+			exynos_pcie->phy_ops.phy_check_rx_elecidle(exynos_pcie->phy_pcs_base,
+								   IGNORE_ELECIDLE,
+								   exynos_pcie->ch_num);
+	}
+
 	/* If secure ATU then make SMC call, since only TFA has write access */
 	if (exynos_pcie->use_secure_atu && where == SECURE_ATU_ENABLE)
 		ret = exynos_smc(SMC_SECURE_ATU_SETUP, 0, 0, 0);
 	else
 		ret = dw_pcie_write(exynos_pcie->rc_dbi_base + (where), size, val);
+
+	if (is_linked == 0) {
+		if (exynos_pcie->phy_ops.phy_check_rx_elecidle)
+			exynos_pcie->phy_ops.phy_check_rx_elecidle(exynos_pcie->phy_pcs_base,
+								   ENABLE_ELECIDLE,
+								   exynos_pcie->ch_num);
+
+		exynos_pcie_rc_phy_clock_enable(pp, PCIE_DISABLE_CLOCK);
+		exynos_pcie_rc_clock_enable(pp, PCIE_DISABLE_CLOCK);
+	}
 
 	spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 	return ret;
@@ -1316,7 +1706,6 @@ static void exynos_pcie_rc_prog_viewport_cfg0(struct dw_pcie_rp *pp, u32 busdev)
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
 
 	/* ATU needs to be written just once during establish link */
-
 	if (exynos_pcie->atu_ok)
 		return;
 
@@ -1372,7 +1761,7 @@ int exynos_pcie_rc_set_bar(int ch_num, u32 bar_num)
 	struct dw_pcie *pci = exynos_pcie->pci;
 	struct dw_pcie_rp *pp = &pci->pp;
 	struct pci_dev *ep_pci_dev;
-	u32 val;
+	u32 val, ret;
 
 	pr_info("%s: +++\n", __func__);
 
@@ -1390,8 +1779,9 @@ int exynos_pcie_rc_set_bar(int ch_num, u32 bar_num)
 	ep_pci_dev->resource[bar_num].end =
 		exynos_pcie->btl_target_addr + exynos_pcie->btl_offset + exynos_pcie->btl_size;
 	ep_pci_dev->resource[bar_num].flags = 0x82000000;
-	if (pci_assign_resource(ep_pci_dev, bar_num) != 0)
-		pr_warn("%s: failed to assign PCI resource for %i\n", __func__, bar_num);
+	ret = pci_assign_resource(ep_pci_dev, bar_num);
+	if (ret)
+		pr_err("%s: fail\n", __func__);
 
 	pci_read_config_dword(ep_pci_dev, PCI_BASE_ADDRESS_0 + (bar_num * 0x4), &val);
 	pr_info("%s: Check EP BAR[%d] = 0x%x\n", __func__, bar_num, val);
@@ -1457,15 +1847,45 @@ int exynos_pcie_rc_set_outbound_atu(int ch_num, u32 target_addr, u32 offset, u32
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_rc_set_outbound_atu);
 
+static int exynos_pcie_rc_link_up(struct dw_pcie *pci)
+{
+	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
+	u32 val;
+
+	if (exynos_pcie->state != STATE_LINK_UP)
+		return 0;
+
+	val = exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP) & PCIE_ELBI_LTSSM_STATE_MASK;
+	if (val >= S_RCVRY_LOCK && val <= S_L1_IDLE)
+		return 1;
+
+	return 0;
+}
+
+static int exynos_pcie_get_next_online_cpu(void)
+{
+	int cpu = cpumask_next(smp_processor_id(), cpu_online_mask);
+	if (cpu >= nr_cpu_ids)
+		cpu = cpumask_first(cpu_online_mask);
+	return cpu;
+}
+
 static int exynos_pcie_rc_rd_other_conf(struct dw_pcie_rp *pp, struct pci_bus *bus, u32 devfn,
 					int where, int size, u32 *val)
 {
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
+	struct device *dev = pci->dev;
+	struct pci_dev *pdev = exynos_pcie->ep_pci_dev;
 	u32 busdev, cfg_size;
 	u64 cpu_addr;
 	void __iomem *va_cfg_base;
+	int ret;
 
 	busdev = EXYNOS_PCIE_ATU_BUS(bus->number) | EXYNOS_PCIE_ATU_DEV(PCI_SLOT(devfn)) |
 		 EXYNOS_PCIE_ATU_FUNC(PCI_FUNC(devfn));
+
+	exynos_elbi_write(exynos_pcie, 0x1, PCIE_APP_XFER_PENDING);
 
 	cpu_addr = pp->cfg0_base;
 	cfg_size = pp->cfg0_size;
@@ -1473,7 +1893,39 @@ static int exynos_pcie_rc_rd_other_conf(struct dw_pcie_rp *pp, struct pci_bus *b
 	/* setup ATU for cfg/mem outbound */
 	exynos_pcie_rc_prog_viewport_cfg0(pp, busdev);
 
-	return dw_pcie_read(va_cfg_base + where, size, val);
+	if ((exynos_pcie->ch_num == 0) && (where == 0x44)) {
+		/* Failure case for b/328825657 */
+		queue_delayed_work_on(exynos_pcie_get_next_online_cpu(), exynos_pcie->pcie_wq,
+				      &exynos_pcie->cfg_access_work,
+				      msecs_to_jiffies(EP_CONFIG_ACCESS_TIMEOUT_MS));
+		ret = dw_pcie_read(va_cfg_base + where, size, val);
+		cancel_delayed_work(&exynos_pcie->cfg_access_work);
+	}
+	else
+		ret = dw_pcie_read(va_cfg_base + where, size, val);
+
+	exynos_elbi_write(exynos_pcie, 0x0, PCIE_APP_XFER_PENDING);
+	// Fake code for Samsung Modem.
+	if (exynos_pcie->ep_device_type == EP_SAMSUNG_MODEM) {
+
+		// Fake class code return (class code set as network device)
+		if (where == PCI_CLASS_REVISION && (*val >> 8) == 0x0) {
+			dev_dbg(dev, "Fake return as a Network device...\n");
+			*val |= (PCI_CLASS_NETWORK_OTHER << 16);
+		}
+
+		// It should be skipped before EP scan
+		if (pdev == NULL)
+			return ret;
+
+		// Set MSI multiple message capable to a fake value of 16
+		if (where == pdev->msi_cap + PCI_MSI_FLAGS &&
+					(*val & PCI_MSI_FLAGS_QMASK) == 0x0) {
+			dev_dbg(dev, "Fake return as supporting 16 MSI...\n");
+			*val |= (0x4 << 1);
+		}
+	}
+	return ret;
 }
 
 static int exynos_pcie_rc_wr_other_conf(struct dw_pcie_rp *pp, struct pci_bus *bus, u32 devfn,
@@ -1504,7 +1956,13 @@ static int exynos_pcie_rc_rd_other_conf_new(struct pci_bus *bus,
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
 	int ret = 0;
 
-	if (exynos_pcie->state == STATE_LINK_UP)
+	if (exynos_pcie_check_skip_config(exynos_pcie)) {
+		*val = 0xffffffff;
+		dev_err(pci->dev,"skip rd_other_conf where=%#04x\n", where);
+		return ret;
+	}
+
+	if (exynos_pcie_rc_link_up(pci))
 		ret = exynos_pcie_rc_rd_other_conf(pp, bus, devfn, where, size, val);
 	return ret;
 }
@@ -1518,7 +1976,12 @@ static int exynos_pcie_rc_wr_other_conf_new(struct pci_bus *bus,
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
 	int ret = 0;
 
-	if (exynos_pcie->state == STATE_LINK_UP)
+	if (exynos_pcie_check_skip_config(exynos_pcie)) {
+		dev_err(pci->dev,"skip wr_other_conf where=%#04x val=%#02x\n", where, val);
+		return ret;
+	}
+
+	if (exynos_pcie_rc_link_up(pci))
 		ret = exynos_pcie_rc_wr_other_conf(pp, bus, devfn, where, size, val);
 	return ret;
 }
@@ -1577,21 +2040,6 @@ void exynos_pcie_rc_write_dbi(struct dw_pcie *pci, void __iomem *base, u32 reg, 
 	exynos_pcie_rc_wr_own_conf(pp, reg, size, val);
 }
 
-static int exynos_pcie_rc_link_up(struct dw_pcie *pci)
-{
-	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
-	u32 val;
-
-	if (exynos_pcie->state != STATE_LINK_UP)
-		return 0;
-
-	val = exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP) & PCIE_ELBI_LTSSM_STATE_MASK;
-	if (val >= S_RCVRY_LOCK && val <= S_L1_IDLE)
-		return 1;
-
-	return 0;
-}
-
 static const struct dw_pcie_ops dw_pcie_ops = {
 	.read_dbi = exynos_pcie_rc_read_dbi,
 	.write_dbi = exynos_pcie_rc_write_dbi,
@@ -1607,12 +2055,6 @@ static void exynos_pcie_rc_set_iocc(struct dw_pcie_rp *pp, int enable)
 
 	if (!exynos_pcie->use_cache_coherency) {
 		dev_err(pci->dev, "IOCC: use_cache_coherency = false\n");
-
-		return;
-	}
-
-	if (exynos_pcie->ip_ver != EXYNOS_IP_VER_OF_WHI) {
-		dev_info(pci->dev, "IOCC: not supported SoC(ip_ver=0x%x)\n", exynos_pcie->ip_ver);
 
 		return;
 	}
@@ -1668,7 +2110,7 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 	struct device_node *syscon_np;
 	struct resource res;
 	const char *use_cache_coherency;
-	const char *use_msi;
+	const char *use_msi, *support_msi64_addressing;
 	const char *use_sicd;
 	const char *use_sysmmu;
 	const char *use_ia;
@@ -1714,6 +2156,12 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 		/* Default Link Speet is GEN1 */
 		exynos_pcie->max_link_speed = LINK_SPEED_GEN1;
 	}
+	exynos_pcie->target_link_speed = exynos_pcie->max_link_speed;
+
+	if (of_property_read_u32(np, "perst-delay-us", &exynos_pcie->perst_delay_us)) {
+		dev_err(dev, "PERST delay is NOT defined...default to 20ms\n");
+		exynos_pcie->perst_delay_us = 20000;
+	}
 
 	if (of_property_read_u32(np, "chip-ver", &exynos_pcie->chip_ver)) {
 		dev_err(dev, "Failed to parse the number of chip-ver, default '0'\n");
@@ -1726,6 +2174,7 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 	} else {
 		dev_info(dev, "parse the number of lanes: %d\n", exynos_pcie->num_lanes);
 	}
+	exynos_pcie->target_link_width = exynos_pcie->num_lanes;
 
 	if (of_property_read_u32(np, "separated-msi", &exynos_pcie->separated_msi)) {
 		dev_info(dev, "Unset separated-msi value, default '0'\n");
@@ -1761,6 +2210,22 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 		}
 	} else {
 		exynos_pcie->use_msi = false;
+	}
+
+	if (exynos_pcie->use_msi &&
+	    !of_property_read_string(np, "support-msi64-addressing", &support_msi64_addressing)) {
+		if (!strcmp(support_msi64_addressing, "true")) {
+			exynos_pcie->support_msi64_addressing = true;
+			dev_info(dev, "Support for 64-bit MSI addressing is ENABLED.\n");
+		} else if (!strcmp(support_msi64_addressing, "false")) {
+			dev_info(dev, "## PCIe don't support 64-bit MSI addressing\n");
+			exynos_pcie->support_msi64_addressing = false;
+		} else {
+			dev_err(dev, "Invalid support-msi64-addressing value(Set to default->true)\n");
+			exynos_pcie->support_msi64_addressing = true;
+		}
+	} else {
+		exynos_pcie->support_msi64_addressing = false;
 	}
 
 	/* Even if MSI is enabled, we need to set msi_irq to -ENODEV.
@@ -1954,6 +2419,16 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 		gpio_direction_output(exynos_pcie->ssd_gpio, 0);
 	}
 
+	exynos_pcie->customized_de_emphasis = of_property_read_bool(np, "customized-de-emphasis");
+
+	if (of_property_read_u32(np, "de-emphasis-value", &exynos_pcie->de_emphasis_value)) {
+		exynos_pcie->de_emphasis_value = 0;
+		exynos_pcie->customized_de_emphasis = false;
+	}
+
+	dev_info(dev, "customized de-emphasis enable %d with value: %d\n",
+		 exynos_pcie->de_emphasis_value, exynos_pcie->de_emphasis_value);
+
 	return 0;
 }
 
@@ -2070,10 +2545,19 @@ static int exynos_pcie_rc_get_resource(struct platform_device *pdev,
 		return ret;
 	}
 
+	temp_rsc = platform_get_resource_byname(pdev, IORESOURCE_MEM, "soc");
+	exynos_pcie->soc_base = devm_ioremap_resource(&pdev->dev, temp_rsc);
+	if (temp_rsc && IS_ERR(exynos_pcie->soc_base)) {
+		ret = PTR_ERR(exynos_pcie->soc_base);
+
+		return ret;
+	}
+
 	temp_rsc = platform_get_resource_byname(pdev, IORESOURCE_MEM, "udbg");
 	exynos_pcie->udbg_base = devm_ioremap_resource(&pdev->dev, temp_rsc);
 	if (temp_rsc && IS_ERR(exynos_pcie->udbg_base)) {
 		ret = PTR_ERR(exynos_pcie->udbg_base);
+
 		return ret;
 	}
 
@@ -2182,6 +2666,40 @@ static void __maybe_unused exynos_pcie_notify_callback(struct dw_pcie_rp *pp, in
 	}
 }
 
+bool exynos_pcie_is_sysmmu_enabled(int ch_num)
+{
+	struct exynos_pcie *exynos_pcie  = &g_pcie_rc[ch_num];
+
+	return exynos_pcie->use_sysmmu;
+}
+EXPORT_SYMBOL_GPL(exynos_pcie_is_sysmmu_enabled);
+
+void exynos_pcie_rc_print_aer_register(int ch_num)
+{
+	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+	struct dw_pcie *pci = exynos_pcie->pci;
+	struct dw_pcie_rp *pp = &pci->pp;
+	u32 i, val_0, val_4, val_8, val_c;
+	unsigned long flags;
+
+	spin_lock_irqsave(&exynos_pcie->conf_lock, flags);
+
+	dev_err(pci->dev, "[Advanced Error Report]\n");
+	dev_err(pci->dev, "offset:	0x0	0x4	0x8	0xC\n");
+	for (i = 0x100; i < 0x150; i += 0x10) {
+		exynos_pcie_rc_rd_own_conf(pp, i + 0x0, 4, &val_0);
+		exynos_pcie_rc_rd_own_conf(pp, i + 0x4, 4, &val_4);
+		exynos_pcie_rc_rd_own_conf(pp, i + 0x8, 4, &val_8);
+		exynos_pcie_rc_rd_own_conf(pp, i + 0xC, 4, &val_c);
+		dev_err(pci->dev, "DBI %#02x: %#04x %#04x %#04x %#04x\n",
+				i, val_0, val_4, val_8, val_c);
+	}
+	dev_err(pci->dev, "\n");
+
+	spin_unlock_irqrestore(&exynos_pcie->conf_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos_pcie_rc_print_aer_register);
+
 void exynos_pcie_rc_print_msi_register(int ch_num)
 {
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
@@ -2189,6 +2707,14 @@ void exynos_pcie_rc_print_msi_register(int ch_num)
 	struct dw_pcie_rp *pp = &pci->pp;
 	u32 val;
 	int ctrl;
+	unsigned long flags;
+
+	spin_lock_irqsave(&exynos_pcie->conf_lock, flags);
+	if (exynos_pcie->state != STATE_LINK_UP) {
+		dev_err(pci->dev, "[%s] Link is not up\n", __func__);
+		spin_unlock_irqrestore(&exynos_pcie->conf_lock, flags);
+		return;
+	}
 
 	val = exynos_elbi_read(exynos_pcie, PCIE_IRQ2_EN);
 	dev_info(pci->dev, "PCIE_IRQ2_EN: 0x%x\n", val);
@@ -2213,6 +2739,7 @@ void exynos_pcie_rc_print_msi_register(int ch_num)
 				(ctrl * MSI_REG_CTRL_BLOCK_SIZE), 4, &val);
 		dev_info(pci->dev, "PCIE_MSI_INTR0_STATUS: 0x%x\n", val);
 	}
+	spin_unlock_irqrestore(&exynos_pcie->conf_lock, flags);
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_rc_print_msi_register);
 
@@ -2334,6 +2861,24 @@ void exynos_pcie_rc_register_dump(int ch_num)
 	pr_err("\n");
 
 	/* ---------------------- */
+	/* UDBG: 0xA000 ~ 0xAFFF */
+	/* ---------------------- */
+	if (!IS_ERR(exynos_pcie->udbg_base)) {
+		exynos_udbg_write(exynos_pcie, 0x13, 0xC604); /* change udbg read mode */
+		pr_err("[Print UDBG region]\n");
+		pr_err("offset: 0x0     0x4     0x8     0xC\n");
+		for (i = 0xA000; i < 0xB000; i += 0x10) {
+			pr_err("UDBG 0x%04x:    0x%08x    0x%08x    0x%08x    0x%08x\n",
+					i,
+					exynos_udbg_read(exynos_pcie, i + 0x0),
+					exynos_udbg_read(exynos_pcie, i + 0x4),
+					exynos_udbg_read(exynos_pcie, i + 0x8),
+					exynos_udbg_read(exynos_pcie, i + 0xC));
+		}
+		pr_err("\n");
+	}
+
+	/* ---------------------- */
 	/* PHY PCS : 0x0 ~ 0x19C */
 	/* ---------------------- */
 	pr_err("[Print PHY_PCS region]\n");
@@ -2362,24 +2907,6 @@ void exynos_pcie_rc_register_dump(int ch_num)
 				i, val_0, val_4, val_8, val_c);
 	}
 	pr_err("\n");
-
-	/* ---------------------- */
-	/* UDBG: 0xA000 ~ 0xAFFF */
-	/* ---------------------- */
-	if (!IS_ERR(exynos_pcie->udbg_base)) {
-		exynos_udbg_write(exynos_pcie, 0x13, 0xC604); /* change udbg read mode */
-		pr_err("[Print UDBG region]\n");
-		pr_err("offset: 0x0     0x4     0x8     0xC\n");
-		for (i = 0xA000; i < 0xB000; i += 0x10) {
-			pr_err("UDBG 0x%04x:    0x%08x    0x%08x    0x%08x    0x%08x\n",
-					i,
-					exynos_udbg_read(exynos_pcie, i + 0x0),
-					exynos_udbg_read(exynos_pcie, i + 0x4),
-					exynos_udbg_read(exynos_pcie, i + 0x8),
-					exynos_udbg_read(exynos_pcie, i + 0xC));
-		}
-		pr_err("\n");
-	}
 	pr_err("%s: ---\n", __func__);
 
 }
@@ -2447,6 +2974,9 @@ void exynos_pcie_rc_dislink_work(struct work_struct *work)
 		pcie_is_linkup = 0;
 	}
 
+	/* Reset ATU flag as dislink */
+	exynos_pcie->atu_ok = 0;
+
 	exynos_pcie_notify_callback(pp, EXYNOS_PCIE_EVENT_LINKDOWN);
 }
 
@@ -2457,33 +2987,39 @@ void exynos_pcie_rc_cpl_timeout_work(struct work_struct *work)
 	struct dw_pcie *pci = exynos_pcie->pci;
 	struct dw_pcie_rp *pp = &pci->pp;
 	struct device *dev = pci->dev;
-	unsigned long flags;
 
 	if (exynos_pcie->state == STATE_LINK_DOWN)
 		return;
-
-	if (exynos_pcie->ep_device_type != EP_SAMSUNG_MODEM) {
-		spin_lock_irqsave(&exynos_pcie->conf_lock, flags);
-		exynos_pcie_rc_print_link_history(pp);
-		exynos_pcie_rc_dump_link_down_status(exynos_pcie->ch_num);
-		exynos_pcie_rc_register_dump(exynos_pcie->ch_num);
-		spin_unlock_irqrestore(&exynos_pcie->conf_lock, flags);
-	}
 
 	if (exynos_pcie->use_pcieon_sleep) {
 		dev_info(dev, "[%s] pcie_is_linkup = 0\n", __func__);
 		pcie_is_linkup = 0;
 	}
+	exynos_pcie_rc_print_aer_register(exynos_pcie->ch_num);
+
+	/* Reset ATU flag as CPL timeout */
+	exynos_pcie->atu_ok = 0;
 
 	dev_info(dev, "call PCIE_CPL_TIMEOUT callback\n");
 	exynos_pcie_notify_callback(pp, EXYNOS_PCIE_EVENT_CPL_TIMEOUT);
 }
 
+void exynos_pcie_rc_link_recovery_fail_work(struct work_struct *work)
+{
+	struct exynos_pcie *exynos_pcie =
+		container_of(work, struct exynos_pcie, link_recovery_fail_work.work);
+	struct dw_pcie *pci = exynos_pcie->pci;
+	struct dw_pcie_rp *pp = &pci->pp;
+	struct device *dev = pci->dev;
+
+	dev_err(dev, "call PCIE_LINK_DOWN_RECOVERY_FAIL callback function\n");
+	exynos_pcie_notify_callback(pp, EXYNOS_PCIE_EVENT_LINKDOWN_RECOVERY_FAIL);
+}
+
 static void exynos_pcie_rc_use_ia(struct exynos_pcie *exynos_pcie)
 {
 	if (!exynos_pcie->use_ia) {
-		pr_info("[%s] Not support I/A(use_ia = false)\n", __func__);
-
+		pr_debug("[%s] Not support I/A(use_ia = false)\n", __func__);
 		return;
 	}
 
@@ -2615,6 +3151,7 @@ void exynos_pcie_rc_assert_phy_reset(struct dw_pcie_rp *pp)
 
 	ret = exynos_pcie_rc_phy_clock_enable(pp, PCIE_ENABLE_CLOCK);
 	dev_dbg(dev, "phy clk enable, ret value = %d\n", ret);
+
 	if (exynos_pcie->phy_ops.phy_config)
 		exynos_pcie->phy_ops.phy_config(exynos_pcie, exynos_pcie->ch_num);
 
@@ -2640,24 +3177,20 @@ void exynos_pcie_rc_resumed_phydown(struct dw_pcie_rp *pp)
 	if (exynos_pcie->ch_num == 1) {
 		void __iomem *pmu_addr, *cmu_addr;
 		u32 pmu_val, cmu_val;
-
 		pmu_addr = ioremap(exynos_pcie->pmu_alive_pa + 0x3C10, 0x4);
 		cmu_addr = ioremap(0x14400800, 0x4);
 		pmu_val = readl(pmu_addr);
 		cmu_val = readl(cmu_addr);
-
 		/* Make sure TXCO always on was enabled */
 		if ((pmu_val & PMU_CHECK_MASK) != PMU_CHECK_MASK) {
 			dev_err(dev, "ERR pmu+0x3C10=%#x\n", pmu_val);
 			pmu_val |= 0x40C;
 			writel(pmu_val, pmu_addr);
 		}
-
 		/* Disable automatic clock gating on OSCCLK */
 		cmu_val &= ~BIT(28);
 		writel(cmu_val, cmu_addr);
 		logbuffer_log(exynos_pcie->log, "Disable automatic clock gating on OSCCLK");
-
 		iounmap(pmu_addr);
 		iounmap(cmu_addr);
 	}
@@ -2737,7 +3270,7 @@ static void exynos_pcie_setup_rc(struct dw_pcie_rp *pp)
 	exynos_pcie_rc_rd_own_conf(pp, pcie_cap_off + PCI_EXP_DEVCTL2, 4, &val);
 	/* pr_info("%s:read:device_ctrl_status2(0x98)=0x%x\n", __func__, val); */
 	val &= ~(PCIE_CAP_CPL_TIMEOUT_VAL_MASK);
-	val |= PCIE_CAP_CPL_TIMEOUT_VAL_44MS_DEFALT;
+	val |= PCIE_CAP_CPL_TIMEOUT_VAL_44MS_DEFAULT;
 	exynos_pcie_rc_wr_own_conf(pp, pcie_cap_off + PCI_EXP_DEVCTL2, 4, val);
 }
 
@@ -2746,7 +3279,7 @@ static int exynos_pcie_rc_init(struct dw_pcie_rp *pp)
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
 
-	/* Setup RC to avoid initialization faile in PCIe stack */
+	/* Setup RC to avoid initialization failure in PCIe stack */
 	if (exynos_pcie->use_phy_isol_con)
 		pp->bridge->ops = &exynos_pcie_rc_root_ops;
 	pp->bridge->child_ops = &exynos_pcie_rc_child_ops;
@@ -2849,7 +3382,7 @@ static irqreturn_t exynos_pcie_rc_irq_handler(int irq, void *arg)
 		logbuffer_logk(exynos_pcie->log, LOGLEVEL_INFO,
 			       "!! PCIE_CPL_TIMEOUT-irq2_state: 0x%x !!", val_irq2);
 		dev_info(dev, "(irq0 = 0x%x, irq1 = 0x%x, irq2 = 0x%x)\n",
-			 val_irq0, val_irq1, val_irq2);
+				val_irq0, val_irq1, val_irq2);
 		exynos_pcie->link_stats.cmpl_timeout_irq_count++;
 
 		val_irq2 = exynos_elbi_read(exynos_pcie, PCIE_IRQ2);
@@ -2864,6 +3397,7 @@ static irqreturn_t exynos_pcie_rc_irq_handler(int irq, void *arg)
 					      "in cpl recovery");
 			else {
 				logbuffer_log(exynos_pcie->log, "start cpl recovery");
+				cancel_delayed_work(&exynos_pcie->cfg_access_work);
 				exynos_pcie->cpl_timeout_recovery = 1;
 				exynos_pcie->state = STATE_LINK_DOWN_TRY;
 				queue_work(exynos_pcie->pcie_wq,
@@ -2948,11 +3482,11 @@ static int exynos_pcie_rc_msi_init(struct dw_pcie_rp *pp)
 	exynos_pcie_rc_rd_own_conf(pp, PCIE_MSI_INTR0_MASK, 4, &mask_val);
 
 	if (exynos_pcie->separated_msi) {
-		pr_debug("Enable Separated MSI IRQs.\n");
+		dev_dbg(dev, "Enable Separated MSI IRQs.\n");
 		for (i = PCIE_START_SEP_MSI_VEC; i < PCIE_MAX_SEPA_IRQ_NUM; i++) {
 			if (sep_msi_vec[exynos_pcie->ch_num][i].is_used) {
 				/* Enable MSI interrupt for separated MSI. */
-				pr_debug("Separated MSI%d is Enabled.\n", i);
+				dev_dbg(dev, "Separated MSI%d is Enabled.\n", i);
 				exynos_pcie_rc_wr_own_conf(pp, PCIE_MSI_INTR0_ENABLE +
 						(i * MSI_REG_CTRL_BLOCK_SIZE), 4, 0x1);
 				exynos_pcie_rc_wr_own_conf(pp, PCIE_MSI_INTR0_MASK +
@@ -2975,7 +3509,13 @@ static int exynos_pcie_rc_msi_init(struct dw_pcie_rp *pp)
 	udelay(1);
 	exynos_pcie_rc_rd_own_conf(pp, PCIE_MSI_INTR0_MASK, 4, &mask_val);
 #endif
-
+	if (exynos_pcie->ep_device_type == EP_BCM_WIFI) {
+		exynos_pcie_rc_wr_own_conf(pp, PCIE_MSI_INTR0_ENABLE, 4, 0xffffffff);
+		exynos_pcie_rc_wr_own_conf(pp, PCIE_MSI_INTR0_MASK, 4, 0x0);
+		udelay(1);
+		exynos_pcie_rc_rd_own_conf(pp, PCIE_MSI_INTR0_MASK, 4, &mask_val);
+		exynos_pcie_rc_rd_own_conf(pp, PCIE_MSI_INTR0_ENABLE, 4, &val);
+	}
 	dev_dbg(dev, "%s: MSI INIT END (MSI_ENABLE(0x%x)=0x%x, MSI_MASK(0x%x)=0x%x)\n",
 		__func__, PCIE_MSI_INTR0_ENABLE, val, PCIE_MSI_INTR0_MASK, mask_val);
 
@@ -3014,7 +3554,6 @@ static void exynos_pcie_rc_send_pme_turn_off(struct exynos_pcie *exynos_pcie)
 	exynos_elbi_write(exynos_pcie, val, PCIE_APP_REQ_EXIT_L1_MODE);
 
 	exynos_elbi_write(exynos_pcie, 0x1, XMIT_PME_TURNOFF);
-	logbuffer_log(exynos_pcie->log, "Xmit OFF sent");
 
 	while (count < MAX_L2_TIMEOUT) {
 		if ((exynos_elbi_read(exynos_pcie, PCIE_IRQ0) & IRQ_RADM_PM_TO_ACK)) {
@@ -3033,6 +3572,7 @@ static void exynos_pcie_rc_send_pme_turn_off(struct exynos_pcie *exynos_pcie)
 			       "cannot receive ack message from EP");
 
 	exynos_elbi_write(exynos_pcie, 0x0, XMIT_PME_TURNOFF);
+	logbuffer_log(exynos_pcie->log, "Xmit OFF sent");
 
 	count = 0;
 	do {
@@ -3041,6 +3581,10 @@ static void exynos_pcie_rc_send_pme_turn_off(struct exynos_pcie *exynos_pcie)
 		if (val == S_L2_IDLE) {
 			dev_dbg(dev, "received Enter_L23_READY DLLP packet\n");
 			logbuffer_log(exynos_pcie->log, "received Enter_L23_READY DLLP packet");
+
+			if (exynos_pcie->sbb_debug)
+				SBBM_SIGNAL_UPDATE(SBB_SIG_PCIE_LINK_STATE, 0);
+
 			break;
 		}
 		udelay(10);
@@ -3058,22 +3602,20 @@ static int exynos_pcie_rc_establish_link(struct dw_pcie_rp *pp)
 	struct exynos_pcie *exynos_pcie = to_exynos_pcie(pci);
 	struct device *dev = pci->dev;
 	u32 val, busdev;
+	u32 cur_link_width = 0;
 	int count = 0, try_cnt = 0;
 	unsigned int save_before_state = 0xff;
-#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
 	void __iomem *phy_base_regs = exynos_pcie->phy_base;
 	bool pll_lock, cdr_lock, oc_done;
 	int lock_cnt;
-#endif
-
 retry:
-	logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "OC Initial Status check: 0x5FC(0x%x)\n",
-			exynos_phy_read(exynos_pcie, 0x5FC));
+	logbuffer_log(exynos_pcie->log,
+		      "OC Initial Status check: 0x5FC(0x%x)\n",
+		      exynos_phy_read(exynos_pcie, 0x5FC));
 
 	/* to call eyxnos_pcie_rc_pcie_phy_config() in cal.c file */
 	exynos_pcie_rc_assert_phy_reset(pp);
 
-#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
 	/* check pll lock */
 	pll_lock = check_exynos_pcie_reg_status(exynos_pcie, phy_base_regs,
 						0x03F0, BIT(3), BIT(3), &lock_cnt);
@@ -3094,7 +3636,6 @@ retry:
 	logbuffer_log(exynos_pcie->log,
 		      "PLL_LOCK:%d, CDR_LOCK:%d, OC:%d",
 		      pll_lock, cdr_lock, oc_done);
-#endif
 
 	/* Soft Power RST */
 	val = exynos_elbi_read(exynos_pcie, PCIE_SOFT_RESET);
@@ -3137,17 +3678,16 @@ retry:
 
 	dev_dbg(dev, "%s: Set PERST to HIGH, gpio val = %d\n",
 		__func__, gpio_get_value(exynos_pcie->perst_gpio));
-	if (exynos_pcie->ep_device_type == EP_BCM_WIFI) {
-		usleep_range(20000, 22000);
-	} else {
-		usleep_range(18000, 20000);
-	}
+
+	usleep_range(exynos_pcie->perst_delay_us,
+		     exynos_pcie->perst_delay_us + 2000);
 
 	val = exynos_elbi_read(exynos_pcie, PCIE_APP_REQ_EXIT_L1_MODE);
 	val |= APP_REQ_EXIT_L1_MODE;
 	val |= L1_REQ_NAK_CONTROL_MASTER;
 	exynos_elbi_write(exynos_pcie, val, PCIE_APP_REQ_EXIT_L1_MODE);
 	exynos_elbi_write(exynos_pcie, PCIE_LINKDOWN_RST_MANUAL, PCIE_LINKDOWN_RST_CTRL_SEL);
+	exynos_elbi_write(exynos_pcie, 0x1, PCIE_APP_XFER_PENDING);
 
 	/* Q-Channel support */
 	val = exynos_elbi_read(exynos_pcie, PCIE_QCH_SEL);
@@ -3176,12 +3716,47 @@ retry:
 	if (exynos_pcie->use_cache_coherency)
 		exynos_pcie_rc_set_iocc(pp, 1);
 
-	logbuffer_logk(exynos_pcie->log, LOGLEVEL_INFO, "D state: %x, LTSSM: %x",
+	dev_dbg(dev, "D state: %x, LTSSM: %x\n",
 		exynos_elbi_read(exynos_pcie, PCIE_PM_DSTATE) & PCIE_PM_DSTATE_MASK,
 		exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP) & PCIE_ELBI_LTSSM_STATE_MASK);
+	logbuffer_log(exynos_pcie->log, "D state: %x, LTSSM: %x", exynos_elbi_read(exynos_pcie,
+		      PCIE_PM_DSTATE) & PCIE_PM_DSTATE_MASK, exynos_elbi_read(exynos_pcie,
+		      PCIE_ELBI_RDLH_LINKUP) & PCIE_ELBI_LTSSM_STATE_MASK);
+
 
 	save_before_state = exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP);
 	/* DBG: sleep_range(48000, 50000); */
+
+	val = exynos_elbi_read(exynos_pcie, PCIE_STATE_HISTORY_CHECK);
+	val &= ~(HISTORY_BUFFER_CONDITION_SEL);
+	exynos_elbi_write(exynos_pcie, val, PCIE_STATE_HISTORY_CHECK);
+
+	exynos_elbi_write(exynos_pcie, 0xffffffff, PCIE_STATE_POWER_S);
+	exynos_elbi_write(exynos_pcie, 0xffffffff, PCIE_STATE_POWER_M);
+
+	/* enable history buffer */
+	val = exynos_elbi_read(exynos_pcie, PCIE_STATE_HISTORY_CHECK);
+	val |= HISTORY_BUFFER_ENABLE;
+	exynos_elbi_write(exynos_pcie, val, PCIE_STATE_HISTORY_CHECK);
+
+	/* Set target lane-width */
+	if (exynos_pcie->num_lanes == 2) {
+		val = dw_pcie_readl_dbi(pci, PCIE_PORT_LINK_CONTROL);
+		val &= ~PORT_LINK_MODE_MASK;
+		if (exynos_pcie->target_link_width == 1)
+			val |= PORT_LINK_MODE_1_LANES;
+		else
+			val |= PORT_LINK_MODE_2_LANES;
+		dw_pcie_writel_dbi(pci, PCIE_PORT_LINK_CONTROL, val);
+
+		val = dw_pcie_readl_dbi(pci, PCIE_LINK_WIDTH_SPEED_CONTROL);
+		val &= ~PORT_LOGIC_LINK_WIDTH_MASK;
+		if (exynos_pcie->target_link_width == 1)
+			val |= PORT_LOGIC_LINK_WIDTH_1_LANES;
+		else
+			val |= PORT_LOGIC_LINK_WIDTH_2_LANES;
+		dw_pcie_writel_dbi(pci, PCIE_LINK_WIDTH_SPEED_CONTROL, val);
+	}
 
 	/* assert LTSSM enable */
 	exynos_elbi_write(exynos_pcie, PCIE_ELBI_LTSSM_ENABLE, PCIE_APP_LTSSM_ENABLE);
@@ -3189,8 +3764,11 @@ retry:
 	while (count < MAX_TIMEOUT) {
 		val = exynos_elbi_read(exynos_pcie, PCIE_ELBI_RDLH_LINKUP)
 		      & PCIE_ELBI_LTSSM_STATE_MASK;
-		if (val == S_L0)
+		if (val == S_L0) {
+			if (exynos_pcie->sbb_debug)
+				SBBM_SIGNAL_UPDATE(SBB_SIG_PCIE_LINK_STATE, 1);
 			break;
+		}
 		count++;
 		usleep_range(10, 12);
 	}
@@ -3205,14 +3783,11 @@ retry:
 			       try_cnt, LINK_STATE_DISP(val), val);
 		exynos_pcie->link_stats.link_up_failure_count++;
 
-		restore_pma_regs(exynos_pcie);
-
 		if (try_cnt < 10) {
 			gpio_set_value(exynos_pcie->perst_gpio, 0);
-			dev_dbg(dev, "%s: Set PERST to LOW, gpio val = %d\n", __func__,
-				gpio_get_value(exynos_pcie->perst_gpio));
-			logbuffer_log(exynos_pcie->log, "%s: Set PERST to LOW, gpio val = %d",
-				      __func__, gpio_get_value(exynos_pcie->perst_gpio));
+			logbuffer_logk(exynos_pcie->log, LOGLEVEL_INFO,
+				       "%s: Set PERST to LOW, gpio val = %d", __func__,
+				       gpio_get_value(exynos_pcie->perst_gpio));
 			/* LTSSM disable */
 			exynos_elbi_write(exynos_pcie, PCIE_ELBI_LTSSM_DISABLE,
 					  PCIE_APP_LTSSM_ENABLE);
@@ -3222,10 +3797,13 @@ retry:
 		} else {
 			//exynos_pcie_host_v1_print_link_history(pp);
 			exynos_pcie_rc_print_link_history(pp);
+			logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR,"Link recovery retry fail count: %d\n",
+				try_cnt);
 			exynos_pcie_rc_dump_link_down_status(exynos_pcie->ch_num);
 			exynos_pcie_rc_register_dump(exynos_pcie->ch_num);
-
 			exynos_pcie->link_stats.link_recovery_failure_count++;
+
+			exynos_elbi_write(exynos_pcie, 0x0, PCIE_APP_XFER_PENDING);
 
 			return -EPIPE;
 		}
@@ -3235,8 +3813,6 @@ retry:
 		logbuffer_logk(exynos_pcie->log, LOGLEVEL_INFO, "%s(0x%x)", LINK_STATE_DISP(val),
 			       val);
 		link_stats_log_link_up(exynos_pcie, count);
-
-		save_pma_regs(exynos_pcie);
 
 		dev_dbg(dev, "(phy+0xC08=0x%x)(phy+0x1408=0x%x)(phy+0xC6C=0x%x)(phy+0x146C=0x%x)\n",
 			exynos_phy_read(exynos_pcie, 0xC08),
@@ -3251,23 +3827,27 @@ retry:
 			      exynos_phy_read(exynos_pcie, 0x146C));
 
 		/* need delay for link speed change from GEN1 to Max(ex GEN3) */
-		usleep_range(2800, 3000); /* 3 ms - OK */
+		if (exynos_pcie->target_link_speed != LINK_SPEED_GEN1)
+			usleep_range(2800, 3000); /* 3 ms - OK */
 
 		exynos_pcie_rc_rd_own_conf(pp, PCIE_LINK_CTRL_STAT, 4, &val);
+		cur_link_width = (val >> 20) & (0x3F);
 		val = (val >> 16) & 0xf;
-		dev_dbg(dev, "Current Link Speed is GEN%d (MAX GEN%d)\n",
-			val, exynos_pcie->max_link_speed);
-		logbuffer_log(exynos_pcie->log, "Current Link Speed is GEN%d (MAX GEN%d)",
-			      val, exynos_pcie->max_link_speed);
+		dev_dbg(dev, "Current Link Speed is GEN%d (MAX GEN%d), Current link-width is %d (MAX link-width%d)\n",
+				val, exynos_pcie->max_link_speed, cur_link_width, exynos_pcie->num_lanes);
+		logbuffer_log(exynos_pcie->log,
+				"Current Link Speed is GEN%d (MAX GEN%d), Current link-width is %d (MAX link-width%d)\n",
+				val, exynos_pcie->max_link_speed, cur_link_width, exynos_pcie->num_lanes);
+
 
 		/* check link training result(speed) */
-		if (exynos_pcie->ip_ver >= 0x982000 && val < exynos_pcie->max_link_speed) {
+		if (exynos_pcie->ip_ver >= 0x982000 && val < exynos_pcie->target_link_speed) {
 			try_cnt++;
-			dev_info(dev, "%s: Link is up. But not max speed, try count: %d\n",
+			dev_info(dev, "%s: Link is up. But not target speed, try count: %d\n",
 				__func__, try_cnt);
 			if (try_cnt < 10) {
 				gpio_set_value(exynos_pcie->perst_gpio, 0);
-				dev_dbg(dev, "Set PERST LOW, gpio val = %d\n",
+				dev_info(dev, "Set PERST LOW, gpio val = %d\n",
 					gpio_get_value(exynos_pcie->perst_gpio));
 				/* LTSSM disable */
 				exynos_elbi_write(exynos_pcie, PCIE_ELBI_LTSSM_DISABLE,
@@ -3276,7 +3856,7 @@ retry:
 
 				goto retry;
 			} else {
-				dev_info(dev, "Current Link Speed is GEN%d (MAX GEN%d)\n",
+				dev_dbg(dev, "Current Link Speed is GEN%d (MAX GEN%d)\n",
 					val, exynos_pcie->max_link_speed);
 			}
 		}
@@ -3307,6 +3887,8 @@ retry:
 		busdev = EXYNOS_PCIE_ATU_BUS(1) | EXYNOS_PCIE_ATU_DEV(0) | EXYNOS_PCIE_ATU_FUNC(0);
 		exynos_pcie_rc_prog_viewport_cfg0(pp, busdev);
 		exynos_pcie_rc_prog_viewport_mem_outbound(pp);
+
+		exynos_elbi_write(exynos_pcie, 0x0, PCIE_APP_XFER_PENDING);
 	}
 
 	return 0;
@@ -3318,7 +3900,6 @@ int exynos_pcie_rc_poweron(int ch_num)
 	struct dw_pcie *pci;
 	struct dw_pcie_rp *pp;
 	struct device *dev;
-	u32 val, vendor_id, device_id;
 	int ret;
 	unsigned long flags;
 
@@ -3336,6 +3917,7 @@ int exynos_pcie_rc_poweron(int ch_num)
 
 	dev_dbg(dev, "start poweron, state: %d\n", exynos_pcie->state);
 	logbuffer_log(exynos_pcie->log, "start poweron, state: %d", exynos_pcie->state);
+
 	if (exynos_pcie->state == STATE_LINK_DOWN) {
 		if (exynos_pcie->use_phy_isol_con)
 			exynos_pcie_phy_isolation(exynos_pcie, PCIE_PHY_BYPASS);
@@ -3347,6 +3929,15 @@ int exynos_pcie_rc_poweron(int ch_num)
 		ret = exynos_pcie_rc_clock_enable(pp, PCIE_ENABLE_CLOCK);
 		dev_dbg(dev, "pcie clk enable, ret value = %d\n", ret);
 		logbuffer_log(exynos_pcie->log, "pcie clk enable, ret value = %d", ret);
+
+		if (pci_load_saved_state(exynos_pcie->pci_dev,
+					 exynos_pcie->pci_saved_configs)) {
+			logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR,
+				       "Failed to load pcie state");
+			goto poweron_fail;
+		}
+		dev_dbg(dev, "Restoring PCIe root port state");
+		pci_restore_state(exynos_pcie->pci_dev);
 
 #if IS_ENABLED(CONFIG_CPU_IDLE)
 		if (exynos_pcie->use_sicd) {
@@ -3387,48 +3978,24 @@ int exynos_pcie_rc_poweron(int ch_num)
 
 		enable_irq(pp->irq);
 
-		if (exynos_pcie_rc_establish_link(pp)) {
+		if (exynos_pcie_rc_establish_link(pp) != 0) {
 			logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "pcie link up fail");
+
 			goto poweron_fail;
 		}
 
 		exynos_pcie->sudden_linkdown = 0;
 		exynos_pcie->cpl_timeout_recovery = 0;
 
-		val = exynos_elbi_read(exynos_pcie, PCIE_STATE_HISTORY_CHECK);
-		val &= ~(HISTORY_BUFFER_CONDITION_SEL);
-		exynos_elbi_write(exynos_pcie, val, PCIE_STATE_HISTORY_CHECK);
-
-		exynos_elbi_write(exynos_pcie, 0xffffffff, PCIE_STATE_POWER_S);
-		exynos_elbi_write(exynos_pcie, 0xffffffff, PCIE_STATE_POWER_M);
-
-		val = exynos_elbi_read(exynos_pcie, PCIE_STATE_HISTORY_CHECK);
-		val |= HISTORY_BUFFER_ENABLE;
-		exynos_elbi_write(exynos_pcie, val, PCIE_STATE_HISTORY_CHECK);
-
 		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 		exynos_pcie->state = STATE_LINK_UP;
 		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
 
 		power_stats_update_up(exynos_pcie);
+		link_duration_update(exynos_pcie, LINK_DURATION_UP);
 
 		dev_dbg(dev, "[%s] exynos_pcie->probe_ok : %d\n", __func__, exynos_pcie->probe_ok);
 		if (!exynos_pcie->probe_ok) {
-			exynos_pcie_rc_rd_own_conf(pp, PCI_VENDOR_ID, 4, &val);
-			vendor_id = val & ID_MASK;
-			device_id = (val >> 16) & ID_MASK;
-
-			exynos_pcie->pci_dev = pci_get_device(vendor_id, device_id, NULL);
-			if (!exynos_pcie->pci_dev) {
-				logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR,
-					       "Failed to get pci device");
-
-				goto poweron_fail;
-			}
-			dev_dbg(dev, "(%s):ep_pci_device:vendor/device id = 0x%x\n", __func__, val);
-			logbuffer_log(exynos_pcie->log, "ep_pci_device:vendor/device id = 0x%x",
-				      val);
-
 			pci_rescan_bus(exynos_pcie->pci_dev->bus);
 			if (exynos_pcie->use_msi) {
 				ret = exynos_pcie_rc_msi_init(pp);
@@ -3440,23 +4007,15 @@ int exynos_pcie_rc_poweron(int ch_num)
 				}
 			}
 
-			if (pci_save_state(exynos_pcie->pci_dev)) {
-				dev_err(dev, "Failed to save pcie state\n");
-
-				goto poweron_fail;
-			}
-			exynos_pcie->pci_saved_configs =
-				pci_store_saved_state(exynos_pcie->pci_dev);
-
 			exynos_pcie->ep_pci_dev = exynos_pcie_get_pci_dev(&pci->pp);
 
 #if IS_ENABLED(CONFIG_GS_S2MPU) || IS_ENABLED(CONFIG_EXYNOS_PCIE_IOMMU)
+			exynos_pcie_mem_copy_epdev(exynos_pcie);
+
 			if (exynos_pcie->s2mpu || exynos_pcie->use_sysmmu) {
 				if (exynos_pcie->ep_device_type == EP_BCM_WIFI) {
 					set_dma_ops(&exynos_pcie->ep_pci_dev->dev, &pcie_dma_ops);
 					dev_info(dev, "Wifi DMA operations are changed\n");
-					memcpy(&fake_dma_dev, exynos_pcie->pci->dev,
-					       sizeof(fake_dma_dev));
 				}
 			}
 #endif
@@ -3473,21 +4032,8 @@ int exynos_pcie_rc_poweron(int ch_num)
 					return ret;
 				}
 			}
-
-			if (pci_load_saved_state(exynos_pcie->pci_dev,
-						 exynos_pcie->pci_saved_configs)) {
-				logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR,
-					       "Failed to load pcie state");
-
-				goto poweron_fail;
-			}
-			pci_restore_state(exynos_pcie->pci_dev);
 		}
 	}
-
-	if (exynos_pcie->ep_l1ss_cap_off == U32_MAX)
-		WRITE_ONCE(exynos_pcie->ep_l1ss_cap_off,
-			   pci_find_ext_capability(exynos_pcie->ep_pci_dev, PCI_EXT_CAP_ID_L1SS));
 
 	dev_dbg(dev, "end poweron, state: %d\n", exynos_pcie->state);
 	logbuffer_log(exynos_pcie->log, "end poweron, state: %d\n", exynos_pcie->state);
@@ -3504,7 +4050,6 @@ int exynos_pcie_rc_poweron(int ch_num)
 		cmu_val |= BIT(28);
 		writel(cmu_val, cmu_addr);
 		logbuffer_log(exynos_pcie->log, "Enable automatic clock gating on OSCCLK");
-
 		iounmap(cmu_addr);
 	}
 
@@ -3514,6 +4059,12 @@ poweron_fail:
 	exynos_pcie->state = STATE_LINK_UP;
 	mutex_unlock(&exynos_pcie->power_onoff_lock);
 	exynos_pcie_rc_poweroff(exynos_pcie->ch_num);
+
+	if (exynos_pcie->sudden_linkdown || exynos_pcie->cpl_timeout_recovery) {
+		logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "pcie link up fail, force cp crash");
+		exynos_pcie->state = STATE_LINK_DOWN;
+		queue_work(exynos_pcie->pcie_wq, &exynos_pcie->link_recovery_fail_work.work);
+	}
 
 	return -EPIPE;
 }
@@ -3525,6 +4076,7 @@ void exynos_pcie_rc_poweroff(int ch_num)
 	struct dw_pcie_rp *pp;
 	struct device *dev;
 	unsigned long flags, flags1;
+	struct pci_saved_state *newbackup;
 	u32 val;
 
 	if (!exynos_pcie) {
@@ -3549,6 +4101,16 @@ void exynos_pcie_rc_poweroff(int ch_num)
 
 		disable_irq(pp->irq);
 
+		dev_dbg(dev, "Saving PCI state");
+		pci_save_state(exynos_pcie->pci_dev);
+		newbackup = pci_store_saved_state(exynos_pcie->pci_dev);
+		if (newbackup) {
+			kfree(exynos_pcie->pci_saved_configs);
+			exynos_pcie->pci_saved_configs = newbackup;
+		} else {
+			dev_err(dev, "%s: Unable to store saved state\n", __func__);
+		}
+
 		/* disable LINKDOWN irq */
 		if (exynos_pcie->ip_ver == 0x982000) {
 			/* only support EVT1.1 */
@@ -3565,6 +4127,7 @@ void exynos_pcie_rc_poweroff(int ch_num)
 		exynos_pcie->state = STATE_LINK_DOWN;
 		exynos_pcie_rc_send_pme_turn_off(exynos_pcie);
 		power_stats_update_down(exynos_pcie);
+		link_duration_update(exynos_pcie, LINK_DURATION_DOWN);
 
 		/* Disable SysMMU */
 		if (exynos_pcie->use_sysmmu)
@@ -3578,12 +4141,13 @@ void exynos_pcie_rc_poweroff(int ch_num)
 		gpio_set_value(exynos_pcie->perst_gpio, 0);
 		dev_dbg(dev, "%s: Set PERST to LOW, gpio val = %d\n",
 			__func__, gpio_get_value(exynos_pcie->perst_gpio));
-		logbuffer_log(exynos_pcie->log, "%s: Set PERST to LOW, gpio val = %d", __func__,
-			      gpio_get_value(exynos_pcie->perst_gpio));
+		logbuffer_log(exynos_pcie->log, "%s: Set PERST to LOW, gpio val = %d",
+			      __func__, gpio_get_value(exynos_pcie->perst_gpio));
 
 		/* LTSSM disable */
 		exynos_elbi_write(exynos_pcie, PCIE_ELBI_LTSSM_DISABLE, PCIE_APP_LTSSM_ENABLE);
 
+		spin_lock(&exynos_pcie->reg_lock);
 		/* force SOFT_PWR_RESET */
 		val = exynos_elbi_read(exynos_pcie, PCIE_SOFT_RESET);
 		val &= ~SOFT_PWR_RESET;
@@ -3591,6 +4155,7 @@ void exynos_pcie_rc_poweroff(int ch_num)
 		udelay(20);
 		val |= SOFT_PWR_RESET;
 		exynos_elbi_write(exynos_pcie, val, PCIE_SOFT_RESET);
+		spin_unlock(&exynos_pcie->reg_lock);
 
 		/* phy all power down */
 		if (exynos_pcie->phy_ops.phy_all_pwrdn)
@@ -3663,6 +4228,10 @@ int exynos_pcie_pm_resume(int ch_num)
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
 
 	logbuffer_log(exynos_pcie->log, "pm_resume api called");
+	if (exynos_pcie_check_skip_config(exynos_pcie)) {
+		exynos_pcie_set_skip_config(ch_num, 0);
+		logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "reset skip config access flag\n");
+	}
 	return exynos_pcie_rc_poweron(ch_num);
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_pm_resume);
@@ -3671,8 +4240,6 @@ bool exynos_pcie_rc_get_sudden_linkdown_state(int ch_num)
 {
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
 
-	logbuffer_log(exynos_pcie->log, "get_sudden_linkdown state=%d",
-		      exynos_pcie->sudden_linkdown);
 	return exynos_pcie->sudden_linkdown;
 }
 EXPORT_SYMBOL(exynos_pcie_rc_get_sudden_linkdown_state);
@@ -3788,7 +4355,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 	struct device *dev = pci->dev;
 	u32 val;
 	unsigned long flags;
-	int domain_num;
+	int domain_num, aspm_l1_enable = PCI_EXP_LNKCTL_ASPM_L1;
 	struct pci_bus *ep_pci_bus;
 	u32 exp_cap_off = PCIE_CAP_OFFSET;
 
@@ -3820,9 +4387,9 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 			__func__, exynos_pcie->l1ss_ctrl_id_state, id);
 
 		return -1;
-	} else if (READ_ONCE(exynos_pcie->ep_l1ss_cap_off) == U32_MAX) {
-		return -1;
 	} else {
+		exynos_pcie->ep_l1ss_cap_off =
+			pci_find_ext_capability(exynos_pcie->ep_pci_dev, PCI_EXT_CAP_ID_L1SS);
 		exynos_pcie->ep_link_ctrl_off = exynos_pcie->ep_pci_dev->pcie_cap + PCI_EXP_LNKCTL;
 		exynos_pcie->ep_l1ss_ctrl1_off = exynos_pcie->ep_l1ss_cap_off + PCI_L1SS_CTL1;
 		exynos_pcie->ep_l1ss_ctrl2_off = exynos_pcie->ep_l1ss_cap_off + PCI_L1SS_CTL2;
@@ -3835,7 +4402,24 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 		__func__, domain_num, ep_pci_bus);
 
 	spin_lock_irqsave(&exynos_pcie->conf_lock, flags);
-	if (enable) {	/* enable == 1 */
+	if (enable) {
+		if (exynos_pcie->l1ss_force) {
+			enable &= ~LINK_L11_ENABLE;
+			if (exynos_pcie->l11_enable)
+				enable |= LINK_L11_ENABLE;
+
+			enable &= ~LINK_L12_ENABLE;
+			if (exynos_pcie->l12_enable)
+				enable |= LINK_L12_ENABLE;
+
+			aspm_l1_enable &= ~PCI_EXP_LNKCTL_ASPM_L1;
+			if (exynos_pcie->l1_enable)
+				aspm_l1_enable |= PCI_EXP_LNKCTL_ASPM_L1;
+
+			dev_info(dev, "force l1ss_enable=0x%x aspm_l1_enable 0x%x\n", enable,
+				 aspm_l1_enable);
+		}
+
 		exynos_pcie->l1ss_ctrl_id_state &= ~(id);
 
 		if (exynos_pcie->l1ss_ctrl_id_state == 0) {
@@ -3846,8 +4430,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				/* 1) [RC] enable L1SS */
 				exynos_pcie_rc_rd_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, &val);
 				/* Actual TCOMMON is 42usec (val = 0x2a << 8) */
-				val |= PORT_LINK_TCOMMON_32US
-					| PORT_LINK_L1SS_ENABLE;
+				val |= PORT_LINK_TCOMMON_32US | enable;
 				dev_dbg(dev, "CPen:1RC:L1SS_CTRL(0x19C) = 0x%x\n", val);
 				exynos_pcie_rc_wr_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, val);
 
@@ -3891,7 +4474,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				/* 2) [EP] enable L1SS */
 				exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0,
 							     exynos_pcie->ep_l1ss_ctrl1_off, 4, &val);
-				val |= PORT_LINK_L1SS_ENABLE;
+				val |= enable;
 				exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0,
 							     exynos_pcie->ep_l1ss_ctrl1_off, 4, val);
 				dev_dbg(dev, "CPen:2EP:L1SS_CTRL(0x19C)=0x%x\n", val);
@@ -3900,7 +4483,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				exynos_pcie_rc_rd_own_conf(pp, exp_cap_off +
 							   PCI_EXP_LNKCTL, 4, &val);
 				val &= ~PCI_EXP_LNKCTL_ASPMC;
-				val |= PCI_EXP_LNKCTL_CCC | PCI_EXP_LNKCTL_ASPM_L1;
+				val |= PCI_EXP_LNKCTL_CCC | aspm_l1_enable;
 				exynos_pcie_rc_wr_own_conf(pp, exp_cap_off +
 							   PCI_EXP_LNKCTL, 4, val);
 				dev_dbg(dev, "CPen:3RC:ASPM(0x70+16)=0x%x\n", val);
@@ -3908,8 +4491,9 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				/* 4) [EP] enable ASPM */
 				exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0,
 							     exynos_pcie->ep_link_ctrl_off, 4, &val);
+				val &= ~PCI_EXP_LNKCTL_ASPM_L1;
 				val |= PCI_EXP_LNKCTL_CCC | PCI_EXP_LNKCTL_CLKREQ_EN |
-					PCI_EXP_LNKCTL_ASPM_L1;
+				       aspm_l1_enable;
 				exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0,
 							     exynos_pcie->ep_link_ctrl_off, 4, val);
 				dev_dbg(dev, "CPen:4EP:ASPM(0x80)=0x%x\n", val);
@@ -3944,8 +4528,8 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				 * [RC:enable] L1SS_ENABLE(0xf)
 				 */
 				exynos_pcie_rc_rd_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, &val);
-				val |= PORT_LINK_L12_LTR_THRESHOLD | PORT_LINK_TCOMMON_32US |
-				       PORT_LINK_L1SS_ENABLE;
+				val |= PORT_LINK_L12_LTR_THRESHOLD |
+				       PORT_LINK_TCOMMON_32US | enable;
 				exynos_pcie_rc_wr_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, val);
 				dev_dbg(dev, "WIFIen:1RC:L1SS_CTRL(0x19C)=0x%x\n", val);
 
@@ -3974,8 +4558,8 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				 */
 				exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0, WIFI_L1SS_CONTROL,
 							     4, &val);
-				val |= PORT_LINK_L12_LTR_THRESHOLD | WIFI_COMMON_RESTORE_TIME |
-				       WIFI_ALL_PM_ENABEL;
+				val |= PORT_LINK_L12_LTR_THRESHOLD |
+				       WIFI_COMMON_RESTORE_TIME | enable;
 				exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0, WIFI_L1SS_CONTROL,
 							     4, val);
 				dev_dbg(dev, "WIFIen:2EP:L1SS_CTRL(0x248)=0x%x\n", val);
@@ -3985,7 +4569,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 							   4, &val);
 				val &= ~PCI_EXP_LNKCTL_ASPMC;
 				/* PCI_EXP_LNKCTL_CCC: Common Clock Configuration */
-				val |= PCI_EXP_LNKCTL_CCC | PCI_EXP_LNKCTL_ASPM_L1;
+				val |= PCI_EXP_LNKCTL_CCC | aspm_l1_enable;
 				exynos_pcie_rc_wr_own_conf(pp, exp_cap_off + PCI_EXP_LNKCTL,
 							   4, val);
 				dev_dbg(dev, "WIFIen:3RC:ASPM(0x70+16)=0x%x\n", val);
@@ -3994,8 +4578,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0, WIFI_L1SS_LINKCTRL,
 							     4, &val);
 				val &= ~(WIFI_ASPM_CONTROL_MASK);
-				val |= WIFI_CLK_REQ_EN | WIFI_USE_SAME_REF_CLK |
-				       WIFI_ASPM_L1_ENTRY_EN;
+				val |= WIFI_CLK_REQ_EN | WIFI_USE_SAME_REF_CLK | aspm_l1_enable;
 				exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0, WIFI_L1SS_LINKCTRL,
 							     4, val);
 				dev_dbg(dev, "WIFIen:4EP:ASPM(0xBC)=0x%x\n", val);
@@ -4027,7 +4610,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				 */
 				exynos_pcie_rc_rd_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, &val);
 				val |= WIFI_QC_L12_LTR_THRESHOLD | PORT_LINK_TCOMMON_32US |
-				       PORT_LINK_L1SS_ENABLE;
+				       aspm_l1_enable;
 				exynos_pcie_rc_wr_own_conf(pp, PCIE_LINK_L1SS_CONTROL, 4, val);
 				dev_dbg(dev, "%s: WIFIen:1RC:L1SS_CTRL(0x19C)=0x%x\n",
 						__func__, val);
@@ -4066,7 +4649,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 							   4, &val);
 				val &= ~PCI_EXP_LNKCTL_ASPMC;
 				/* PCI_EXP_LNKCTL_CCC: Common Clock Configuration */
-				val |= PCI_EXP_LNKCTL_CCC | PCI_EXP_LNKCTL_ASPM_L1;
+				val |= PCI_EXP_LNKCTL_CCC | aspm_l1_enable;
 				exynos_pcie_rc_wr_own_conf(pp, exp_cap_off + PCI_EXP_LNKCTL,
 							   4, val);
 				dev_dbg(dev, "%s: WIFIen:3RC:ASPM(0x70+16)=0x%x\n", __func__, val);
@@ -4075,7 +4658,7 @@ static int exynos_pcie_rc_set_l1ss(int enable, struct dw_pcie_rp *pp, int id)
 				exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0,
 						exp_cap_off+PCI_EXP_LNKCTL, 4, &val);
 				val |= PCI_EXP_LNKCTL_CCC | PCI_EXP_LNKCTL_CLKREQ_EN |
-					PCI_EXP_LNKCTL_ASPM_L1;
+					aspm_l1_enable;
 				exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0,
 						exp_cap_off+PCI_EXP_LNKCTL, 4, val);
 				dev_dbg(dev, "%s: WIFIen:4EP:ASPM(0x%x)=0x%x\n",
@@ -4230,21 +4813,31 @@ int exynos_pcie_rc_l1ss_ctrl(int enable, int id, int ch_num)
 		return -EINVAL;
 	}
 
-	if (pp)
+	/* if enable is 1 then set enable to PORT_LINK_L1SS_ENABLE (0xf) to
+	 * enable both L11 and L12, since this what the end points expect.
+	 */
+
+	if (pp) {
+		if (enable) {
+			enable = PORT_LINK_L1SS_ENABLE;
+		}
 		return	exynos_pcie_rc_set_l1ss(enable, pp, id);
-	else
+	} else {
 		return -EINVAL;
+	}
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_rc_l1ss_ctrl);
 
 /* to support CP driver */
-int exynos_pcie_poweron(int ch_num, int spd)
+int exynos_pcie_poweron(int ch_num, int spd, int width)
 {
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
 	struct dw_pcie *pci = exynos_pcie->pci;
 
-	dev_dbg(pci->dev, "%s requested with link speed GEN%d\n", __func__, spd);
-	exynos_pcie->max_link_speed = spd;
+	dev_dbg(pci->dev, "%s requested with link speed GEN%d, lane num %d\n",
+			__func__, spd, width);
+	exynos_pcie->target_link_speed = spd;
+	exynos_pcie->target_link_width = width;
 
 	return exynos_pcie_rc_poweron(ch_num);
 }
@@ -4255,6 +4848,22 @@ void exynos_pcie_poweroff(int ch_num)
 	return exynos_pcie_rc_poweroff(ch_num);
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_poweroff);
+
+int exynos_pcie_get_max_link_speed(int ch_num)
+{
+	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+
+	return exynos_pcie->max_link_speed;
+}
+EXPORT_SYMBOL_GPL(exynos_pcie_get_max_link_speed);
+
+int exynos_pcie_get_max_link_width(int ch_num)
+{
+	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
+
+	return exynos_pcie->num_lanes;
+}
+EXPORT_SYMBOL_GPL(exynos_pcie_get_max_link_width);
 
 /* PCIe link status check function */
 int exynos_pcie_rc_chk_link_status(int ch_num)
@@ -4279,6 +4888,13 @@ int exynos_pcie_rc_chk_link_status(int ch_num)
 		return 0;
 
 	if (exynos_pcie->cpl_timeout_recovery) {
+		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
+		exynos_pcie->state = STATE_LINK_DOWN;
+		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
+		return 0;
+	}
+
+	if (exynos_pcie->sudden_linkdown) {
 		spin_lock_irqsave(&exynos_pcie->reg_lock, flags);
 		exynos_pcie->state = STATE_LINK_DOWN;
 		spin_unlock_irqrestore(&exynos_pcie->reg_lock, flags);
@@ -4336,43 +4952,30 @@ int exynos_pcie_rc_change_link_speed(int ch_num, int target_speed)
 	struct exynos_pcie *exynos_pcie = &g_pcie_rc[ch_num];
 	struct dw_pcie *pci = exynos_pcie->pci;
 	struct dw_pcie_rp *pp = &pci->pp;
-	struct pci_bus *ep_pci_bus;
 	int i;
-	u32 val, current_speed, new_speed;
+	u32 val, new_speed;
 
 	if (exynos_pcie->state != STATE_LINK_UP) {
 		dev_err(pci->dev, "Link is not up\n");
 		return -EINVAL;
 	}
 
-	if (target_speed > 3 || target_speed < 1) {
+	if (target_speed > exynos_pcie->max_link_speed
+		|| target_speed < LINK_SPEED_GEN1) {
 		dev_err(pci->dev, "Invalid target speed: Unable to change\n");
 
 		return -EINVAL;
 	}
 
-	current_speed = exynos_pcie_rc_check_link_speed(ch_num);
-	if (current_speed == target_speed) {
-		dev_err(pci->dev, "Already GEN%d(current), target: GEN%d\n",
-			current_speed, target_speed);
+	if (target_speed == exynos_pcie->target_link_speed)
+		return 0;
 
-		return -EINVAL;
-	}
-
-	/* make sure that the link state is L0 by accessing ep config register
-	 * such as 'PCI_VENDOR_ID'.
-	 */
-	ep_pci_bus = pci_find_bus(exynos_pcie->pci_dev->bus->domain_nr, 1);
-	exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0, PCI_VENDOR_ID, 4, &val);
+	dev_dbg(pci->dev, "%s: force l1ss disable\n", __func__);
+	exynos_pcie_rc_l1ss_ctrl(0, PCIE_L1SS_CTRL_SPEED, ch_num);
 
 	/* modify registers to change link speed:
 	 * 1. PCIe_LINK_CTRL2_STAT2(offset: 0xA0)
 	 */
-	exynos_pcie_rc_rd_other_conf(pp, ep_pci_bus, 0, PCIE_LINK_CTRL2_STAT2, 4, &val);
-	val = val & PCIE_LINK_CTRL2_TARGET_LINK_SPEED_MASK;
-	val = val | 0x3;
-	exynos_pcie_rc_wr_other_conf(pp, ep_pci_bus, 0, PCIE_LINK_CTRL2_STAT2, 4, val);
-
 	exynos_pcie_rc_rd_own_conf(pp, PCIE_LINK_CTRL2_STAT2, 4, &val);
 	val = val & PCIE_LINK_CTRL2_TARGET_LINK_SPEED_MASK;
 	val = val | target_speed;
@@ -4394,7 +4997,7 @@ int exynos_pcie_rc_change_link_speed(int ch_num, int target_speed)
 		      & PCIE_ELBI_LTSSM_STATE_MASK;
 		if (val >= S_L0 && val <= S_L1_IDLE)
 			break;
-		usleep_range(80, 100);
+		udelay(10);
 	}
 
 	for (i = 0; i < MAX_TIMEOUT_SPEEDCHANGE; i++) {
@@ -4403,19 +5006,31 @@ int exynos_pcie_rc_change_link_speed(int ch_num, int target_speed)
 		new_speed &= PCIE_LINK_CTRL_LINK_SPEED_MASK;
 		if (new_speed == target_speed)
 			break;
-		usleep_range(80, 100);
+		udelay(10);
 	}
 
 	if (new_speed != target_speed) {
 		dev_err(pci->dev, "Fail: Unable to change to GEN%d\n", target_speed);
 
+		dev_dbg(pci->dev, "%s: restore l1ss status\n", __func__);
+		exynos_pcie_rc_l1ss_ctrl(1, PCIE_L1SS_CTRL_SPEED, ch_num);
+
 		return -EINVAL;
 	}
 
-	dev_info(pci->dev, "Link Speed Changed: from GEN%d to GEN%d\n", current_speed, new_speed);
+	dev_info(pci->dev, "Link Speed Changed: from GEN%d to GEN%d\n",
+			exynos_pcie->target_link_speed, new_speed);
+
+	exynos_pcie->target_link_speed = new_speed;
+
+	link_duration_update(exynos_pcie, LINK_DURATION_SPD_CHG);
+
+	dev_dbg(pci->dev, "%s: restore l1ss status\n", __func__);
+	exynos_pcie_rc_l1ss_ctrl(1, PCIE_L1SS_CTRL_SPEED, ch_num);
 
 	return 0;
 }
+EXPORT_SYMBOL(exynos_pcie_rc_change_link_speed);
 
 int exynos_pcie_register_event(struct exynos_pcie_register_event *reg)
 {
@@ -4440,8 +5055,8 @@ int exynos_pcie_register_event(struct exynos_pcie_register_event *reg)
 
 	if (pp) {
 		exynos_pcie->event_reg = reg;
-		dev_info(pci->dev, "Event 0x%x is registered for RC %d\n",
-			 reg->events, exynos_pcie->ch_num);
+		dev_dbg(pci->dev, "Event 0x%x is registered for RC %d\n",
+			reg->events, exynos_pcie->ch_num);
 	} else {
 		pr_err("PCIe: did not find RC for pci endpoint device\n");
 		ret = -ENODEV;
@@ -4508,21 +5123,23 @@ EXPORT_SYMBOL_GPL(exynos_pcie_rc_set_affinity);
 
 int exynos_pcie_rc_set_enable_wake(struct irq_data *data, unsigned int enable)
 {
+	int ret = 0;
 	struct dw_pcie_rp *pp = data->parent_data->domain->host_data;
-	struct irq_data *parent;
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 
-	pr_debug("%s: enable = %d\n", __func__, enable);
+	dev_dbg(pci->dev, "%s: enable = %d\n", __func__, enable);
 
 	if (pp == NULL) {
 		pr_err("Warning: exynos_pcie_rc_set_enable_wake: not exist pp\n");
 		return -EINVAL;
 	}
 
-	parent = irq_get_irq_data(pp->irq);
-	if (parent && parent->chip->irq_set_wake)
-		return parent->chip->irq_set_wake(parent, enable);
+	if (enable)
+		ret = enable_irq_wake(pp->irq);
+	else
+		ret = disable_irq_wake(pp->irq);
 
-	return -EINVAL;
+	return ret;
 }
 
 #if IS_ENABLED(CONFIG_CPU_IDLE)
@@ -4589,6 +5206,10 @@ static int exynos_pcie_msi_set_affinity(struct irq_data *irq_data, const struct 
 	if (!exynos_pcie)
 		return -ENODEV;
 
+	/* modem driver sets msi irq affinity */
+	if (exynos_pcie->ch_num == 0)
+		return 0;
+
 	idata = irq_get_irq_data(pp->irq);
 	if (!idata || !idata->chip)
 		return -ENODEV;
@@ -4624,7 +5245,11 @@ int exynos_pcie_rc_itmon_notifier(struct notifier_block *nb, unsigned long actio
 
 			exynos_pcie_rc_register_dump(exynos_pcie->ch_num);
 		}
-	} else if (exynos_pcie->ip_ver == 0x984500){
+	} else if ((exynos_pcie->ip_ver == 0x984500) ||
+		   (exynos_pcie->ip_ver == 0x986500)) {
+		    /* Note that gs101, gs201 sets ip-ver in the pcie dts node
+		     * to 0x984500, but zuma sets it to 0x986500
+		     */
 		if ((itmon_info->port && !strcmp(itmon_info->port, "HSI2")) ||
 		    (itmon_info->dest && !strcmp(itmon_info->dest, "HSI2"))) {
 			regmap_read(exynos_pcie->pmureg, exynos_pcie->pmu_offset, &val);
@@ -4913,14 +5538,29 @@ skip_sep_request_irq:
 		}
 	}
 
+	if (exynos_pcie->support_msi64_addressing) {
+		/* Setup MSI flags */
+		u16 cap;
+		u8 offset;
+
+		dw_pcie_dbi_ro_wr_en(exynos_pcie->pci);
+		offset = dw_pcie_find_capability(exynos_pcie->pci, PCI_CAP_ID_MSI);
+		cap = dw_pcie_readw_dbi(exynos_pcie->pci, offset + PCI_MSI_FLAGS);
+
+		/* Enable MSI with 64-bit support */
+		cap |= PCI_MSI_FLAGS_ENABLE | PCI_MSI_FLAGS_64BIT;
+		dw_pcie_writew_dbi(exynos_pcie->pci, offset + PCI_MSI_FLAGS, cap);
+		dw_pcie_dbi_ro_wr_dis(exynos_pcie->pci);
+
+		dev_dbg(&pdev->dev, "MSI is supported with 64-bit mask.\n");
+	}
+
 	ret = dw_pcie_host_init(pp);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to dw pcie host init\n");
 
 		return ret;
 	}
-	// Reset this back to 36-bits
-	dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(36));
 
 	if (pp->msi_domain) {
 		msi_domain = pp->msi_domain;
@@ -4935,56 +5575,6 @@ skip_sep_request_irq:
 	}
 
 	return 0;
-}
-
-static int exynos_pcie_rc_panic_notifier(struct notifier_block *nb,
-		unsigned long action, void *nb_data)
-{
-	struct exynos_pcie *exynos_pcie = container_of(nb, struct exynos_pcie, panic_nb);
-
-	pr_err("%s ch%d: +++\n", __func__, exynos_pcie->ch_num);
-
-	if (exynos_pcie->phy_control == PCIE_PHY_ISOLATION)
-		exynos_pcie_phy_isolation(exynos_pcie, PCIE_PHY_BYPASS);
-
-	pr_err("trsv_reg38B [0x0E2C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E2C));
-	pr_err("cmn_reg17F [0x05FC]: %#x\n", exynos_phy_read(exynos_pcie, 0x05FC));
-	pr_err("cmn_reg0FC [0x03F0]: %#x\n", exynos_phy_read(exynos_pcie, 0x03F0));
-	pr_err("trsv_reg386 [0x0E18]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E18));
-	pr_err("trsv_reg39D [0x0E74]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E74));
-	pr_err("trsv_reg383 [0x0E0C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E0C));
-	pr_err("cmn_reg1D8 [0x0760]: %#x\n", exynos_phy_read(exynos_pcie, 0x0760));
-	pr_err("trsv_reg38A [0x0E28]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E28));
-	pr_err("trsv_reg36D [0x0DB4]: %#x\n", exynos_phy_read(exynos_pcie, 0x0DB4));
-	pr_err("trsv_reg36E [0x0DB8]: %#x\n", exynos_phy_read(exynos_pcie, 0x0DB8));
-	pr_err("trsv_reg39E [0x0E78]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E78));
-	pr_err("trsv_reg39F [0x0E7C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E7C));
-
-	pr_err("trsv_reg36F [0x0DBC]: %#x\n", exynos_phy_read(exynos_pcie, 0x0DBC));
-	pr_err("trsv_reg379 [0x0DE4]: %#x\n", exynos_phy_read(exynos_pcie, 0x0DE4));
-	pr_err("trsv_reg392 [0x0E48]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E48));
-	pr_err("trsv_reg393 [0x0E4C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E4C));
-	pr_err("trsv_reg394 [0x0E50]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E50));
-	pr_err("trsv_reg395 [0x0E54]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E54));
-	pr_err("trsv_reg396 [0x0E58]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E58));
-	pr_err("trsv_reg397 [0x0E5C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E5C));
-	pr_err("trsv_reg398 [0x0E60]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E60));
-	pr_err("trsv_reg399 [0x0E64]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E64));
-	pr_err("trsv_reg39A [0x0E68]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E68));
-	pr_err("trsv_reg39B [0x0E6C]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E6C));
-	pr_err("trsv_reg39C [0x0E70]: %#x\n", exynos_phy_read(exynos_pcie, 0x0E70));
-	pr_err("trsv_reg3B3 [0x0ECC]: %#x\n", exynos_phy_read(exynos_pcie, 0x0ECC));
-	pr_err("trsv_reg3B4 [0x0ED0]: %#x\n", exynos_phy_read(exynos_pcie, 0x0ED0));
-	pr_err("trsv_reg3B5 [0x0ED4]: %#x\n", exynos_phy_read(exynos_pcie, 0x0ED4));
-	pr_err("trsv_reg3B6 [0x0ED8]: %#x\n", exynos_phy_read(exynos_pcie, 0x0ED8));
-	pr_err("trsv_reg3B7 [0x0EDC]: %#x\n", exynos_phy_read(exynos_pcie, 0x0EDC));
-	pr_err("trsv_reg3B8 [0x0EE0]: %#x\n", exynos_phy_read(exynos_pcie, 0x0EE0));
-	pr_err("trsv_reg3B9 [0x0EE4]: %#x\n", exynos_phy_read(exynos_pcie, 0x0EE4));
-	pr_err("trsv_reg3BA [0x0EE8]: %#x\n", exynos_phy_read(exynos_pcie, 0x0EE8));
-
-	pr_err("%s: ---\n", __func__);
-
-	return NOTIFY_DONE;
 }
 
 static void exynos_pcie_rc_pcie_ops_init(struct dw_pcie_rp *pp)
@@ -5156,6 +5746,22 @@ static int setup_s2mpu_mem(struct device *dev, struct exynos_pcie *exynos_pcie)
 }
 #endif
 
+static void exynos_pcie_wait_cfg_access_work(struct work_struct *work)
+{
+	struct exynos_pcie *exynos_pcie =
+		container_of(work, struct exynos_pcie, cfg_access_work.work);
+
+	logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "[ERR] config access timeout");
+
+	if (exynos_pcie->cpl_timeout_recovery) {
+		logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR, "in cpl timeout recovery");
+		return;
+	}
+
+	exynos_pcie_rc_dump_all_status(exynos_pcie->ch_num);
+	BUG_ON(1);
+}
+
 static int exynos_pcie_rc_probe(struct platform_device *pdev)
 {
 	struct exynos_pcie *exynos_pcie;
@@ -5164,6 +5770,7 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	int ret = 0;
 	int ch_num;
+	u32 val, vendor_id, device_id;
 #if IS_ENABLED(CONFIG_GS_S2MPU)
 	struct device_node *s2mpu_dn;
 #endif
@@ -5196,15 +5803,6 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	pp = &pci->pp;
 	pp->ops = &exynos_pcie_rc_ops;
 
-	/* Reserve memory for pma_regs that may need to be restored on
-	 * pcie link up failure.
-	 */
-	exynos_pcie->pma_regs = devm_kcalloc(&pdev->dev, NUM_PMA_REGS,
-					     sizeof(u32), GFP_KERNEL);
-	if (!exynos_pcie->pma_regs)
-		return -ENOMEM;
-
-	exynos_pcie->ep_l1ss_cap_off = U32_MAX;
 	spin_lock_init(&exynos_pcie->pcie_l1_exit_lock);
 	spin_lock_init(&exynos_pcie->conf_lock);
 	spin_lock_init(&exynos_pcie->power_stats_lock);
@@ -5246,14 +5844,12 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(36));
 	platform_set_drvdata(pdev, exynos_pcie);
 	power_stats_init(exynos_pcie);
+	link_duration_update(exynos_pcie, LINK_DURATION_INIT);
 	link_stats_init(exynos_pcie);
 
 #if IS_ENABLED(CONFIG_GS_S2MPU)
 	s2mpu_dn = of_parse_phandle(np, "s2mpu", 0);
 	if (s2mpu_dn) {
-		memcpy(&fake_dma_dev, &pdev->dev, sizeof(fake_dma_dev));
-		fake_dma_dev.dma_ops = NULL;
-
 		exynos_pcie->s2mpu = s2mpu_fwnode_to_info(&s2mpu_dn->fwnode);
 		if (!exynos_pcie->s2mpu) {
 			dev_err(&pdev->dev, "Failed to get S2MPU\n");
@@ -5314,6 +5910,21 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	if (ret)
 		goto probe_fail;
 
+	exynos_pcie_rc_rd_own_conf(pp, PCI_VENDOR_ID, 4, &val);
+	vendor_id = val & ID_MASK;
+	device_id = (val >> 16) & ID_MASK;
+
+	exynos_pcie->pci_dev = pci_get_device(vendor_id, device_id, NULL);
+	if (!exynos_pcie->pci_dev) {
+		logbuffer_logk(exynos_pcie->log, LOGLEVEL_ERR,
+			       "Failed to get pci device");
+		goto probe_fail;
+	}
+	dev_dbg(&pdev->dev, "(%s):ep_pci_device:vendor/device id = 0x%x\n", __func__, val);
+	logbuffer_log(exynos_pcie->log, "ep_pci_device:vendor/device id = 0x%x",
+		      val);
+	exynos_pcie->pci_saved_configs = pci_store_saved_state(exynos_pcie->pci_dev);
+
 	if (exynos_pcie->use_cache_coherency)
 		exynos_pcie_rc_set_iocc(pp, 1);
 
@@ -5342,13 +5953,13 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&exynos_pcie->dislink_work, exynos_pcie_rc_dislink_work);
 	INIT_DELAYED_WORK(&exynos_pcie->cpl_timeout_work, exynos_pcie_rc_cpl_timeout_work);
+	INIT_DELAYED_WORK(&exynos_pcie->cfg_access_work, exynos_pcie_wait_cfg_access_work);
+	INIT_DELAYED_WORK(&exynos_pcie->link_recovery_fail_work, exynos_pcie_rc_link_recovery_fail_work);
 
 #if IS_ENABLED(CONFIG_EXYNOS_ITMON)
 	exynos_pcie->itmon_nb.notifier_call = exynos_pcie_rc_itmon_notifier;
 	itmon_notifier_chain_register(&exynos_pcie->itmon_nb);
 #endif
-	exynos_pcie->panic_nb.notifier_call = exynos_pcie_rc_panic_notifier;
-	atomic_notifier_chain_register(&panic_notifier_list, &exynos_pcie->panic_nb);
 
 	if (exynos_pcie->use_pcieon_sleep) {
 		dev_info(&pdev->dev, "## register pcie connection function\n");
@@ -5380,6 +5991,8 @@ static int __exit exynos_pcie_rc_remove(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "%s\n", __func__);
 
+	cancel_delayed_work_sync(&exynos_pcie->cfg_access_work);
+
 	mutex_destroy(&exynos_pcie->power_onoff_lock);
 
 	return 0;
@@ -5393,7 +6006,7 @@ static int exynos_pcie_rc_suspend_noirq(struct device *dev)
 
 	logbuffer_log(exynos_pcie->log, "pm_suspend_no_irq called");
 	if (exynos_pcie->state == STATE_LINK_DOWN) {
-		dev_dbg(dev, "PCIe PMU ISOLATION\n");
+		dev_info(dev, "PCIe PMU ISOLATION\n");
 		exynos_pcie_phy_isolation(exynos_pcie, PCIE_PHY_ISOLATION);
 
 		return 0;
