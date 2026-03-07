@@ -1,0 +1,72 @@
+version: v1.0
+name: Kernel Build
+agent:
+  machine:
+    type: f1-standard-2
+    os_image: ubuntu2404
+
+blocks:
+  - name: Build Standard Kernel
+    run:
+      when: "tag =~ '^86hm-rel'"
+    dependencies: []
+    task:
+      secrets:
+        - name: telegram-token
+      env_vars:
+        - name: KBUILD_BUILD_USER
+          value: "harumajati"
+        - name: KBUILD_BUILD_HOST
+          value: "marcejz"
+        - name: KBUILD_BUILD_TIMESTAMP
+          value: "Fri Jan 9 16:33:46 UTC 2026"
+        - name: RELEASE
+          value: "0"
+      prologue:
+        commands:
+          - checkout
+          - cache restore kernel-toolchain
+          - sudo apt-get update
+          - sudo apt-get install --no-install-recommends -y bc bison build-essential curl flex git libelf-dev libssl-dev lz4 python3 zip unzip openjdk-17-jre-headless
+          - wget https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/raviole/build.sh
+          - chmod +x build.sh
+      jobs:
+        - name: Standard Kernel
+          commands:
+            - set -euo pipefail
+            - KSU=0 CLEAN=1 OUT_DIR=out-standard ./build.sh
+            - cache store kernel-toolchain kernel-toolchain
+            - artifact push workflow AnyKernel3/*.zip || true
+
+  - name: Build KernelSU Kernel
+    run:
+      when: "tag =~ '^86hm-rel'"
+    dependencies:
+      - Build Standard Kernel
+    task:
+      secrets:
+        - name: telegram-token
+      env_vars:
+        - name: KBUILD_BUILD_USER
+          value: "harumajati"
+        - name: KBUILD_BUILD_HOST
+          value: "marcejz"
+        - name: KBUILD_BUILD_TIMESTAMP
+          value: "Fri Jan 9 16:33:46 UTC 2026"
+        - name: RELEASE
+          value: "0"
+      prologue:
+        commands:
+          - checkout
+          - cache restore kernel-toolchain
+          - sudo apt-get update
+          - sudo apt-get install --no-install-recommends -y bc bison build-essential curl flex git libelf-dev libssl-dev lz4 python3 zip unzip openjdk-17-jre-headless
+          - wget https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/raviole/build.sh
+          - chmod +x build.sh
+      jobs:
+        - name: KernelSU Kernel
+          commands:
+            - set -euo pipefail
+            - KSU=1 CLEAN=1 OUT_DIR=out-ksu ./build.sh
+            - cache store kernel-toolchain kernel-toolchain
+            - artifact push workflow AnyKernel3/*.zip || true
