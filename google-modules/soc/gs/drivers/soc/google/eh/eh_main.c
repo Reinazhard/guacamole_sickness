@@ -489,6 +489,7 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	void *compr_data = NULL;
 	int ret = 0;
 	int compr_result = 0;
+	bool real_completion;
 	struct eh_completion *compl = &eh_dev->completions[fifo_index];
 
 	desc = eh_descriptor(eh_dev, fifo_index);
@@ -576,7 +577,8 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	 * genuine (first-time) IDLE/PENDING hardware error; in both cases
 	 * invoke the callback so the upper layer can release its resources.
 	 */
-	if (likely(compl->priv)) {
+	real_completion = (compl->priv != NULL);
+	if (likely(real_completion)) {
 		(*eh_dev->comp_callback)(compr_result, compr_data, compr_size,
 					 compl->priv);
 		compl->priv = NULL;
@@ -589,9 +591,16 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	/* set the descriptor back to IDLE */
 	desc->status = EH_CDESC_IDLE;
 
-	/* Ensure the fifo slot is all freed before decrementing nr_request */
-	smp_mb__before_atomic();
-	atomic_dec(&eh_dev->nr_request);
+	/*
+	 * Only decrement nr_request for real completions.  A NULL priv
+	 * means this slot was already processed; decrementing again
+	 * would drive nr_request negative, permanently breaking
+	 * fifo_full() and allowing descriptor overwrites.
+	 */
+	if (likely(real_completion)) {
+		smp_mb__before_atomic();
+		atomic_dec(&eh_dev->nr_request);
+	}
 
 	update_fifo_complete_index(eh_dev);
 	return ret;
