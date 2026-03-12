@@ -118,7 +118,7 @@ static unsigned int eh_default_fifo_size = 4096;
 
 static bool sw_fifo_empty(struct eh_sw_fifo *fifo)
 {
-	return !fifo->has_reqs;
+	return !READ_ONCE(fifo->has_reqs);
 }
 
 /*
@@ -336,7 +336,7 @@ static void request_to_sw_fifo(struct eh_device *eh_dev, struct page *page,
 
 	spin_lock(&fifo->lock);
 	list_add_tail(&cookie->list, &fifo->head);
-	fifo->has_reqs = true;
+	WRITE_ONCE(fifo->has_reqs, true);
 	spin_unlock(&fifo->lock);
 
 	/* spin_unlock() provides a barrier before waitqueue_active() */
