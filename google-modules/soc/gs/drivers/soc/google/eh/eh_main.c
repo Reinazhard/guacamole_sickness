@@ -446,8 +446,13 @@ static irqreturn_t eh_error_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/* Maximum iterations for clearing interrupt status */
+#define EH_CINTR_CLEAR_MAX_TRIES 100
+
 static void eh_clear_cintr_status(struct eh_device *eh_dev)
 {
+	int tries = EH_CINTR_CLEAR_MAX_TRIES;
+
 	/*
 	 * Loop until the interrupt status is fully cleared in hardware. The
 	 * writeq() can be relaxed since there is a control dependency on the
@@ -456,6 +461,10 @@ static void eh_clear_cintr_status(struct eh_device *eh_dev)
 	 */
 	do {
 		writeq_relaxed(1, eh_dev->regs + EH_REG_INTRP_STS_CMP);
+		if (!--tries) {
+			pr_err_ratelimited("IRQ status clear stuck\n");
+			break;
+		}
 	} while (readq(eh_dev->regs + EH_REG_INTRP_STS_CMP));
 }
 
