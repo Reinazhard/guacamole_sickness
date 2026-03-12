@@ -794,6 +794,18 @@ static int eh_comp_thread(void *data)
 				       error);
 				eh_dump_regs(eh_dev);
 				eh_abort_incomplete_descriptors(eh_dev);
+
+				/*
+				 * Reset the FIFO so the driver can
+				 * continue operating.  Hold the
+				 * producer lock to prevent races with
+				 * concurrent submissions.
+				 */
+				spin_lock(&eh_dev->fifo_prod_lock);
+				atomic_set(&eh_dev->nr_request, 0);
+				eh_compr_fifo_init(eh_dev);
+				spin_unlock(&eh_dev->fifo_prod_lock);
+
 				WARN(1, "EH hardware error 0x%lx\n",
 				     error);
 			}
