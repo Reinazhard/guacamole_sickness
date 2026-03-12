@@ -785,7 +785,8 @@ static int eh_comp_thread(void *data)
 				       error);
 				eh_dump_regs(eh_dev);
 				eh_abort_incomplete_descriptors(eh_dev);
-				BUG();
+				WARN(1, "EH hardware error 0x%lx\n",
+				     error);
 			}
 
 			/*
