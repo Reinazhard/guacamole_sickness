@@ -684,6 +684,16 @@ static int eh_process_compress(struct eh_device *eh_dev)
 		/* Wait for the next completed index */
 		end = eh_wait_next_index(eh_dev, i);
 
+		/*
+		 * Guard against no-progress wakeups.  When end == i
+		 * the inner do-while would iterate through the entire
+		 * ring, processing descriptors that were never
+		 * submitted or already completed, corrupting
+		 * nr_request and complete_index.
+		 */
+		if (unlikely(end == i))
+			continue;
+
 		/* Process the completed compression requests */
 		do {
 			index = i & eh_dev->fifo_index_mask;
