@@ -1444,7 +1444,7 @@ unlock_out:
 }
 
 
-int scan_slots_for_writeback(struct zram *zram, u32 mode,
+void scan_slots_for_writeback(struct zram *zram, u32 mode,
 			     unsigned long lo, unsigned long hi,
 			     struct zram_pp_ctl *ctl)
 {
@@ -1485,8 +1485,6 @@ next:
 		index++;
 	}
 	kfree(pps);
-
-	return 0;
 }
 
 static ssize_t writeback_store(struct device *dev,
@@ -2649,7 +2647,7 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 #define RECOMPRESS_IDLE		(1 << 0)
 #define RECOMPRESS_HUGE		(1 << 1)
 
-static int scan_slots_for_recompress(struct zram *zram, u32 mode, u32 prio_max,
+static void scan_slots_for_recompress(struct zram *zram, u32 mode, u32 prio_max,
 				     struct zram_pp_ctl *ctl)
 {
 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
@@ -2693,7 +2691,6 @@ next:
 	}
 
 	kfree(pps);
-	return 0;
 }
 
 /*
