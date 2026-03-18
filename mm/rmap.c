@@ -835,7 +835,12 @@ static bool folio_referenced_one(struct folio *folio,
 		if (pvmw.pte)
 			trace_android_vh_look_around(&pvmw, folio, vma, &referenced);
 
-		if (lru_gen_enabled() && pvmw.pte) {
+		/*
+		 * When LRU is switching, we don’t know where the surrounding folios
+		 * are. —they could be on active/inactive lists or on MGLRU. So the
+		 * simplest approach is to disable this look-around optimization.
+		 */
+		if (lru_gen_enabled() && !lru_gen_switching() && pvmw.pte) {
 			if (lru_gen_look_around(&pvmw))
 				referenced++;
 		} else if (pvmw.pte) {
