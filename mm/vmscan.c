@@ -3501,6 +3501,7 @@ static struct lru_gen_mm_list *get_mm_list(struct mem_cgroup *memcg)
 	return &mm_list;
 }
 
+
 void lru_gen_add_mm(struct mm_struct *mm)
 {
 	int nid;
@@ -3659,7 +3660,8 @@ static bool should_skip_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
 	if (size < MIN_LRU_BATCH)
 		return true;
 
-	return !mmget_not_zero(mm);
+	mmgrab(mm);
+	return false;
 }
 
 static bool iterate_mm_list(struct lru_gen_mm_walk *walk, struct mm_struct **iter)
@@ -3723,7 +3725,7 @@ done:
 		reset_bloom_filter(lruvec, walk->seq + 1);
 
 	if (*iter)
-		mmput_async(*iter);
+		mmdrop(*iter);
 
 	*iter = mm;
 
