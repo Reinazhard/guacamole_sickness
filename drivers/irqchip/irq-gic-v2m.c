@@ -409,7 +409,7 @@ err_free_v2m:
 	return ret;
 }
 
-static __initconst struct of_device_id gicv2m_device_id[] = {
+static const struct of_device_id gicv2m_device_id[] __initconst = {
 	{	.compatible	= "arm,gic-v2m-frame",	},
 	{},
 };
