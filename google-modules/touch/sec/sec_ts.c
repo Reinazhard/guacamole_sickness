@@ -3230,7 +3230,7 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 							&ts->client->dev,
 							"%s: fail to write Sense_on\n",
 							__func__);
-						sec_ts_reinit(ts);
+					sec_ts_reinit(ts);
 					break;
 				case 0x40:
 					input_info(true, &ts->client->dev,
