@@ -496,6 +496,8 @@ static void dpu_print_log_atomic(struct dpu_log_atomic *atomic,
 	}
 }
 
+#define LOG_BUF_SIZE	176
+
 static void dpu_print_log_rsc(char *buf, int len, u32 decon_id, struct dpu_log_rsc_occupancy *rsc)
 {
 	int i, len_chs, len_wins;
@@ -519,7 +521,6 @@ static void dpu_print_log_rsc(char *buf, int len, u32 decon_id, struct dpu_log_r
 	sprintf(buf + len, "\t%s\t%s", str_chs, str_wins);
 }
 
-#define LOG_BUF_SIZE	176
 static int dpu_print_log_bts_update(char *buf, int len, struct dpu_log_bts_update *update)
 {
 	return scnprintf(buf + len, LOG_BUF_SIZE - len,
