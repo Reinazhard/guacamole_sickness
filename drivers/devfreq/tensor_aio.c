@@ -35,6 +35,21 @@
 #define MEMPERFD_POLL_HZ (HZ / 100)
 
 /*
+ * Wrapper functions for rt_mutex lock/unlock to be used as function pointers.
+ * These are needed because with CONFIG_DEBUG_LOCK_ALLOC, rt_mutex_lock is a
+ * macro that expands to rt_mutex_lock_nested, so we cannot take its address.
+ */
+static void rt_mutex_lock_wrapper(void *lock)
+{
+	rt_mutex_lock((struct rt_mutex *)lock);
+}
+
+static void rt_mutex_unlock_wrapper(void *lock)
+{
+	rt_mutex_unlock((struct rt_mutex *)lock);
+}
+
+/*
  * The percentage of the previous MIF frequency that MIF should be set to when
  * a memory-invariant workload is detected. This controls how fast the MIF
  * frequency is dropped after a memory-intensive workload.
@@ -2172,8 +2187,8 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 		rt_mutex_init(&data->min_nb_lock.rt_mutex);
 		rt_mutex_init(&data->max_nb_lock.rt_mutex);
 		rt_mutex_init(&data->nb_lock.rt_mutex);
-		data->nb_lock_fn = (void *)rt_mutex_lock;
-		data->nb_unlock_fn = (void *)rt_mutex_unlock;
+		data->nb_lock_fn = rt_mutex_lock_wrapper;
+		data->nb_unlock_fn = rt_mutex_unlock_wrapper;
 	}
 	platform_set_drvdata(pdev, data);
 
