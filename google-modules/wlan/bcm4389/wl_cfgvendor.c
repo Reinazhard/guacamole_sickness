@@ -7799,7 +7799,7 @@ static int wl_cfgvendor_lstats_get_info(struct wiphy *wiphy,
 	int cur_chansp, cur_band;
 	chanspec_t cur_chanspec;
 
-	COMPAT_STRUCT_IFACE(wifi_iface_stat, iface);
+	static COMPAT_STRUCT_IFACE(wifi_iface_stat, iface);
 
 	WL_TRACE(("%s: Enter \n", __func__));
 	RETURN_EIO_IF_NOT_UP(cfg);
