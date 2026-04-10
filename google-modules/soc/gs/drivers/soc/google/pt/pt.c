@@ -764,7 +764,10 @@ void pt_client_unregister(struct pt_handle *handle)
 	pt_internal_data.timestamp++;
 	list_del(&handle->list);
 	spin_unlock(&pt_internal_data.sl);
+
+	spin_unlock_irqrestore(&handle->lock, flags);
 	pt_handle_sysctl_unregister(handle);
+	spin_lock_irqsave(&handle->lock, flags);
 
 	for (id = 0; id < handle->id_cnt; id++) {
 		ptid_t ptid = handle->pts[id].ptid;
