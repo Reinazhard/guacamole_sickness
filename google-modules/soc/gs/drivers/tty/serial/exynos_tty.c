@@ -397,13 +397,9 @@ static void enable_auto_flow_control(struct exynos_uart_port *ourport)
 static void change_uart_gpio(int value, struct exynos_uart_port *ourport)
 {
 	int status = 0;
-	struct uart_port *port = &ourport->port;
-	unsigned long flags;
 
 	if (IS_ERR(ourport->pinctrl))
 		return;
-
-	spin_lock_irqsave(&port->lock, flags);
 
 	if (value) {
 		/* Disabled or default pin states	*/
@@ -439,23 +435,21 @@ static void change_uart_gpio(int value, struct exynos_uart_port *ourport)
 			ourport->rts_control = RTS_CTRL_DISABLE;
 		}
 	}
-
-	spin_unlock_irqrestore(&port->lock, flags);
 }
 
-static void change_flow_control_state(int en, struct exynos_uart_port *ourport)
+static void change_flow_control_state(int en, struct exynos_uart_port *ourport, bool change_gpio)
 {
 	/* during suspending skip control */
 	if (!ourport->suspending) {
 		if (en) {
 			if (ourport->rts_alive_control)
 				enable_auto_flow_control(ourport);
-			if (ourport->rts_control)
+			if (ourport->rts_control && change_gpio)
 				change_uart_gpio(DEFAULT_PINCTRL, ourport);
 		} else {
 			if (ourport->rts_alive_control)
 				disable_auto_flow_control(ourport);
-			if (ourport->rts_control)
+			if (ourport->rts_control && change_gpio)
 				change_uart_gpio(RTS_PINCTRL, ourport);
 		}
 	}
@@ -2592,7 +2586,7 @@ static int exynos_serial_sicd_notifier(struct notifier_block *self,
 				continue;
 
 			spin_lock_irqsave(&ourport->lock, flags);
-			change_flow_control_state(0, ourport);
+			change_flow_control_state(0, ourport, false);
 			spin_unlock_irqrestore(&ourport->lock, flags);
 		}
 
@@ -2607,7 +2601,7 @@ static int exynos_serial_sicd_notifier(struct notifier_block *self,
 				continue;
 
 			spin_lock_irqsave(&ourport->lock, flags);
-			change_flow_control_state(1, ourport);
+			change_flow_control_state(1, ourport, false);
 			spin_unlock_irqrestore(&ourport->lock, flags);
 		}
 		break;
@@ -2925,9 +2919,10 @@ static int exynos_serial_suspend(struct device *dev)
 		 * If rts line must be protected while suspending
 		 * we change the gpio pad as output high
 		 */
-		spin_lock_irqsave(&ourport->lock, flags);
 		//after set flow control, set suspending
-		change_flow_control_state(0, ourport);
+		change_flow_control_state(0, ourport, true);
+
+		spin_lock_irqsave(&ourport->lock, flags);
 		ourport->suspending = 1;
 		spin_unlock_irqrestore(&ourport->lock, flags);
 
@@ -3023,9 +3018,10 @@ static int exynos_serial_resume(struct device *dev)
 
 		spin_lock_irqsave(&ourport->lock, flags);
 		//reset suspend flag and change flow control
-		change_flow_control_state(1, ourport);
 		ourport->suspending = 0;
 		spin_unlock_irqrestore(&ourport->lock, flags);
+
+		change_flow_control_state(1, ourport, true);
 
 		if (ourport->dbg_mode & UART_DBG_MODE)
 			dev_err(dev, "UART resume notification for tty framework.\n");
