@@ -226,9 +226,11 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 			curr->exit_lat = 1;
 
 			/* Add on the actual idle exit latency, if any */
+			rcu_read_lock();
 			idle_state = idle_get_state(rq);
 			if (idle_state)
 				curr->exit_lat += idle_state->exit_latency;
+			rcu_read_unlock();
 		} else {
 			/* Skip non-idle CPUs if there's an idle candidate */
 			if (has_idle)
