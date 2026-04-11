@@ -2435,7 +2435,8 @@ dhdpcie_enable_irq(dhd_bus_t *bus)
 	}
 
 	dev = bus->dev;
-	enable_irq(dev->irq);
+	if (dhdpcie_irq_disabled(bus))
+		enable_irq(dev->irq);
 	return BCME_OK;
 }
 
