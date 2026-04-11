@@ -743,7 +743,6 @@ static int s2m_rtc_probe(struct platform_device *pdev)
 		goto err_rtc_dev_register;
 	}
 
-	enable_irq(info->alarm0_irq);
 	return 0;
 
 err_rtc_dev_register:
