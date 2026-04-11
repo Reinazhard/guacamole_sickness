@@ -587,15 +587,16 @@ s32 exynos_pm_qos_read_value(struct exynos_pm_qos_constraints *c)
 int exynos_pm_qos_read_req_value(int pm_qos_class, struct exynos_pm_qos_request *req)
 {
 	struct plist_node *p;
+	unsigned long flags;
 
-	spin_lock(&exynos_pm_qos_array[pm_qos_class]->constraints->lock);
+	spin_lock_irqsave(&exynos_pm_qos_array[pm_qos_class]->constraints->lock, flags);
 	plist_for_each(p, &exynos_pm_qos_array[pm_qos_class]->constraints->list) {
 		if (req == container_of(p, struct exynos_pm_qos_request, node)) {
-			spin_unlock(&exynos_pm_qos_array[pm_qos_class]->constraints->lock);
+			spin_unlock_irqrestore(&exynos_pm_qos_array[pm_qos_class]->constraints->lock, flags);
 			return p->prio;
 		}
 	}
-	spin_unlock(&exynos_pm_qos_array[pm_qos_class]->constraints->lock);
+	spin_unlock_irqrestore(&exynos_pm_qos_array[pm_qos_class]->constraints->lock, flags);
 
 	return -ENODATA;
 }
@@ -622,8 +623,9 @@ int exynos_pm_qos_update_target(struct exynos_pm_qos_constraints *c, struct plis
 {
 	int prev_value, curr_value, new_value;
 	int ret;
+	unsigned long flags;
 
-	spin_lock(&c->lock);
+	spin_lock_irqsave(&c->lock, flags);
 	prev_value = exynos_pm_qos_get_value(c);
 	if (value == EXYNOS_PM_QOS_DEFAULT_VALUE)
 		new_value = c->default_value;
@@ -654,7 +656,7 @@ int exynos_pm_qos_update_target(struct exynos_pm_qos_constraints *c, struct plis
 	curr_value = exynos_pm_qos_get_value(c);
 	exynos_pm_qos_set_value(c, curr_value);
 
-	spin_unlock(&c->lock);
+	spin_unlock_irqrestore(&c->lock, flags);
 
 	if (prev_value != curr_value) {
 		ret = 1;
