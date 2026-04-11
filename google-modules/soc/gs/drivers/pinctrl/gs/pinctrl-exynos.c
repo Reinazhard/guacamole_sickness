@@ -865,7 +865,7 @@ static inline void exynos_pinctrl_show_wkup_reason(struct samsung_pin_bank *bank
 		pr_info("%s [%s] PEND_REG: 0x%02lx", EXYNOS_PM_PREFIX, bank->name, pend_reg);
 	for_each_set_bit(pin, &pend_reg, 32) {
 		shift_cnt = (bank->eint_num % 32) + pin;
-		if (pmu_mask & (1 << shift_cnt))
+		if (pmu_mask & (1UL << shift_cnt))
 			continue;
 
 		irq = gpio_to_irq(pin_base + pin);
