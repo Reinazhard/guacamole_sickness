@@ -655,17 +655,20 @@ int copy_dmabuf_info(u64 clone_flags, struct task_struct *task)
 	}
 
 	/*
-	 * No sharing: Both MM and FD references to dmabufs were already duplicated in the child by
-	 * copy_files and copy_mm. The parent's dmabuf_info has not been synchronized with the child
-	 * since that occurred, and VM_DONTCOPY can also prevent a parent's VMAs from propagating to
-	 * the child. Construct the dmabuf accounting info for the child here based on what actually
-	 * made it into the child's files_struct and mm_struct.
+	 * No sharing: Both MM and FD references to dmabufs are duplicated in the child. We
+	 * duplicate the dmabuf accounting info into the child as well here.
+	 *
+	 * dup_dma_buf_info() returns a new object with refcnt=1. We must increment
+	 * it for each reference (task, mm, files) before storing pointers, so that
+	 * put_dmabuf_info() from any cleanup path correctly keeps the object alive
+	 * as long as at least one reference exists.
 	 */
 	put_dmabuf_info(parent_dmabuf_info);
 	child_dmabuf_info = compute_dmabuf_info(task);
 	if (!child_dmabuf_info)
 		return -ENOMEM;
 
+	refcount_inc(&child_dmabuf_info->refcnt); /* task reference */
 	task->dmabuf_info = child_dmabuf_info;
 
 	if (task->mm) {
