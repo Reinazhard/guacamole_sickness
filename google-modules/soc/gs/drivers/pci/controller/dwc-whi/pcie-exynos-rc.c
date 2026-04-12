@@ -5732,6 +5732,12 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (ch_num >= MAX_RC_NUM) {
+		dev_err(&pdev->dev, "Invalid channel number %d (max %d)\n",
+			ch_num, MAX_RC_NUM);
+		return -EINVAL;
+	}
+
 	dev_info(&pdev->dev, "## PCIe ch %d ##\n", ch_num);
 
 	pci = devm_kzalloc(&pdev->dev, sizeof(*pci), GFP_KERNEL);
