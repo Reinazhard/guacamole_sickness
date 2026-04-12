@@ -50,7 +50,7 @@ struct exynos_coresight_info {
 	unsigned int dbgack_mask;
 	bool retention_enabled;
 	unsigned long **dbg_reg;
-	unsigned long bw_reg[DBG_BW_REG_MAX_SIZE];
+	unsigned long **bw_reg;
 };
 
 static struct exynos_coresight_info *ecs_info;
@@ -384,27 +384,27 @@ static int exynos_cs_suspend_cpu(unsigned int cpu)
 	base = ecs_info->dbg_base[cpu];
 
 	sys_os_lock();
-	SYS_READ(DBGBVR0_EL1, ecs_info->bw_reg[idx++]); /* DBGBVR */
-	SYS_READ(DBGBVR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBVR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBVR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBVR4_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBVR5_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBCR0_EL1, ecs_info->bw_reg[idx++]); /* DBGDCR */
-	SYS_READ(DBGBCR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBCR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBCR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBCR4_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGBCR5_EL1, ecs_info->bw_reg[idx++]);
+	SYS_READ(DBGBVR0_EL1, ecs_info->bw_reg[cpu][idx++]); /* DBGBVR */
+	SYS_READ(DBGBVR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBVR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBVR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBVR4_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBVR5_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBCR0_EL1, ecs_info->bw_reg[cpu][idx++]); /* DBGDCR */
+	SYS_READ(DBGBCR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBCR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBCR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBCR4_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGBCR5_EL1, ecs_info->bw_reg[cpu][idx++]);
 
-	SYS_READ(DBGWVR0_EL1, ecs_info->bw_reg[idx++]); /* DBGWVR */
-	SYS_READ(DBGWVR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGWVR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGWVR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGWCR0_EL1, ecs_info->bw_reg[idx++]); /* DBGDCR */
-	SYS_READ(DBGWCR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGWCR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_READ(DBGWCR3_EL1, ecs_info->bw_reg[idx++]);
+	SYS_READ(DBGWVR0_EL1, ecs_info->bw_reg[cpu][idx++]); /* DBGWVR */
+	SYS_READ(DBGWVR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGWVR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGWVR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGWCR0_EL1, ecs_info->bw_reg[cpu][idx++]); /* DBGDCR */
+	SYS_READ(DBGWCR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGWCR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_READ(DBGWCR3_EL1, ecs_info->bw_reg[cpu][idx++]);
 
 	idx = 0;
 	SYS_READ(MDSCR_EL1, ecs_info->dbg_reg[cpu][idx++]);
@@ -440,27 +440,27 @@ static int exynos_cs_resume_cpu(unsigned int cpu)
 	SYS_WRITE(DBGCLAIMSET_EL1, ecs_info->dbg_reg[cpu][idx++]);
 
 	idx = 0;
-	SYS_WRITE(DBGBVR0_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBVR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBVR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBVR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBVR4_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBVR5_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR0_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR4_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGBCR5_EL1, ecs_info->bw_reg[idx++]);
+	SYS_WRITE(DBGBVR0_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBVR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBVR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBVR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBVR4_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBVR5_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR0_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR4_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGBCR5_EL1, ecs_info->bw_reg[cpu][idx++]);
 
-	SYS_WRITE(DBGWVR0_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWVR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWVR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWVR3_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWCR0_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWCR1_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWCR2_EL1, ecs_info->bw_reg[idx++]);
-	SYS_WRITE(DBGWCR3_EL1, ecs_info->bw_reg[idx++]);
+	SYS_WRITE(DBGWVR0_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWVR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWVR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWVR3_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWCR0_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWCR1_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWCR2_EL1, ecs_info->bw_reg[cpu][idx++]);
+	SYS_WRITE(DBGWCR3_EL1, ecs_info->bw_reg[cpu][idx++]);
 
 	sys_os_unlock();
 
@@ -640,10 +640,20 @@ static int exynos_coresight_probe(struct platform_device *pdev)
 	if (!ecs_info->dbg_reg)
 		return -ENOMEM;
 
+	ecs_info->bw_reg = devm_kcalloc(&pdev->dev, num_possible_cpus(),
+			sizeof(unsigned long *), GFP_KERNEL);
+	if (!ecs_info->bw_reg)
+		return -ENOMEM;
+
 	for_each_possible_cpu(cpu) {
 		ecs_info->dbg_reg[cpu] = devm_kcalloc(&pdev->dev, DBG_REG_MAX_SIZE,
 				sizeof(unsigned long), GFP_KERNEL);
 		if (!ecs_info->dbg_reg[cpu])
+			return -ENOMEM;
+
+		ecs_info->bw_reg[cpu] = devm_kcalloc(&pdev->dev, DBG_BW_REG_MAX_SIZE,
+				sizeof(unsigned long), GFP_KERNEL);
+		if (!ecs_info->bw_reg[cpu])
 			return -ENOMEM;
 	}
 
