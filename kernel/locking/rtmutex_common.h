@@ -103,7 +103,7 @@ static inline int rt_mutex_has_waiters(struct rt_mutex_base *lock)
 static inline bool rt_mutex_waiter_is_top_waiter(struct rt_mutex_base *lock,
 						 struct rt_mutex_waiter *waiter)
 {
-	struct rb_node *leftmost = rb_first_cached(&lock->waiters);
+	struct rb_node *leftmost = data_race(lock->waiters.rb_leftmost);
 
 	return rb_entry(leftmost, struct rt_mutex_waiter, tree_entry) == waiter;
 }
