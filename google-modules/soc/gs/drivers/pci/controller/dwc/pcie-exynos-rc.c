@@ -5537,6 +5537,12 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (ch_num >= MAX_RC_NUM) {
+		dev_err(&pdev->dev, "Invalid channel number %d (max %d)\n",
+			ch_num, MAX_RC_NUM);
+		return -EINVAL;
+	}
+
 	if (!is_vhook_registered) {
 		ret = 0; //register_trace_android_rvh_pci_d3_sleep(exynos_d3_sleep_hook,
 			 //				      NULL);
