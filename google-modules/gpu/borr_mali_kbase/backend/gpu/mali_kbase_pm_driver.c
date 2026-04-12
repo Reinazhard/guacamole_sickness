@@ -3304,7 +3304,7 @@ struct kbasep_reset_timeout_data {
 void kbase_pm_reset_done(struct kbase_device *kbdev)
 {
 	KBASE_DEBUG_ASSERT(kbdev != NULL);
-	kbdev->pm.backend.reset_done = true;
+	WRITE_ONCE(kbdev->pm.backend.reset_done, true);
 	wake_up(&kbdev->pm.backend.reset_done_wait);
 }
 
@@ -3319,8 +3319,8 @@ static void kbase_pm_wait_for_reset(struct kbase_device *kbdev)
 {
 	lockdep_assert_held(&kbdev->pm.lock);
 
-	wait_event(kbdev->pm.backend.reset_done_wait, (kbdev->pm.backend.reset_done));
-	kbdev->pm.backend.reset_done = false;
+	wait_event(kbdev->pm.backend.reset_done_wait, (READ_ONCE(kbdev->pm.backend.reset_done)));
+	WRITE_ONCE(kbdev->pm.backend.reset_done, false);
 }
 
 KBASE_EXPORT_TEST_API(kbase_pm_reset_done);
