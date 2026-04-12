@@ -21992,7 +21992,7 @@ wl_flush_fw_log_buffer(struct net_device *dev, uint32 logset_mask)
 	memset(&set_param, 0, sizeof(set_param));
 	set_param.size = WLC_IOCTL_SMLEN;
 
-	for (i = 0; i < dhd->event_log_max_sets; i++)
+	for (i = 0; i < dhd->event_log_max_sets && i < 32; i++)
 	{
 		if ((0x01u << i) & logset_mask) {
 			set_param.set = i;
