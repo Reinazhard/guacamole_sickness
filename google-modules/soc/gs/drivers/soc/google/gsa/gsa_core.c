@@ -319,7 +319,7 @@ static int send_kdn_cmd(struct gsa_dev_state *s, u32 cmd,
 		return -EINVAL;
 	}
 
-	if (cb) {
+	if (cb && dst_buf) {
 		/* copy data to destination buffer */
 		memcpy(dst_buf, s->bb_va, cb);
 	}
@@ -461,7 +461,7 @@ static int send_sjtag_data_cmd(struct gsa_dev_state *s, u32 cmd,
 		return -EINVAL;
 	}
 
-	if (cb) {
+	if (cb && dst_buf) {
 		/* copy data to destination buffer */
 		memcpy(dst_buf, s->bb_va, cb);
 	}
