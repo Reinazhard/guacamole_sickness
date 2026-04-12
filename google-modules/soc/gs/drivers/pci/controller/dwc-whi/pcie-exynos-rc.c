@@ -5760,6 +5760,7 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 	spin_lock_init(&exynos_pcie->pcie_l1_exit_lock);
 	spin_lock_init(&exynos_pcie->conf_lock);
 	spin_lock_init(&exynos_pcie->power_stats_lock);
+	spin_lock_init(&exynos_pcie->link_duration_lock);
 	spin_lock_init(&exynos_pcie->reg_lock);
 	spin_lock_init(&exynos_pcie->s2mpu_refcnt_lock);
 
