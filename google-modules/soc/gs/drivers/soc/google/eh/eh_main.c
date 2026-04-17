@@ -837,16 +837,19 @@ free_comp_irq:
 	return ret;
 }
 
+#define EH_BUF_ALLOC_ORDER 4
+#define EH_PAGES_PER_CHUNK (1 << EH_BUF_ALLOC_ORDER)
+
 /* cleanup compression related stuff */
 static void eh_deinit_compression(struct eh_device *eh_dev)
 {
 	if (eh_dev->compr_buffers) {
 		int i;
 
-		for (i = 0; i < eh_dev->fifo_size; i++) {
+		for (i = 0; i < eh_dev->fifo_size; i += EH_PAGES_PER_CHUNK) {
 			if (eh_dev->compr_buffers[i]) {
-				free_pages((unsigned long)eh_dev->compr_buffers[i], 0);
-				eh_dev->compr_buffers[i] = NULL;
+				free_pages((unsigned long)eh_dev->compr_buffers[i],
+					   EH_BUF_ALLOC_ORDER);
 			}
 		}
 		kfree(eh_dev->compr_buffers);
@@ -867,7 +870,7 @@ static void eh_deinit_compression(struct eh_device *eh_dev)
 /* initialize compression fifo and related stuff */
 static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_size)
 {
-	int i, ret = 0;
+	int i, j, ret = 0;
 	unsigned int desc_size = EH_COMPRESS_DESC_SIZE;
 
 	spin_lock_init(&eh_dev->fifo_prod_lock);
@@ -899,13 +902,17 @@ static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_siz
 		goto out_cleanup;
 	}
 
-	for (i = 0; i < fifo_size; i++) {
-		void *buf = (void *)__get_free_pages(GFP_KERNEL, 0);
-		if (!buf) {
+	for (i = 0; i < fifo_size; i += EH_PAGES_PER_CHUNK) {
+		void *chunk = (void *)__get_free_pages(GFP_KERNEL, EH_BUF_ALLOC_ORDER);
+
+		if (!chunk) {
 			ret = -ENOMEM;
 			goto out_cleanup;
 		}
-		eh_dev->compr_buffers[i] = buf;
+
+		for (j = 0; j < EH_PAGES_PER_CHUNK && (i + j) < fifo_size; j++) {
+			eh_dev->compr_buffers[i + j] = chunk + (j * PAGE_SIZE);
+		}
 	}
 
 	init_compression_descriptor(eh_dev);
@@ -924,7 +931,7 @@ static void eh_deinit_decompression(struct eh_device *eh_dev)
 	for_each_possible_cpu(cpu) {
 		buf = *per_cpu_ptr(eh_dev->bounce_buffer, cpu);
 		if (buf) {
-			free_pages(buf, 0);
+			free_pages(buf, EH_BUF_ALLOC_ORDER);
 			*per_cpu_ptr(eh_dev->bounce_buffer, cpu) = 0;
 		}
 	}
@@ -941,7 +948,7 @@ static int eh_init_decompression(struct eh_device *eh_dev)
 		return -ENOMEM;
 
 	for_each_possible_cpu(cpu) {
-		unsigned long buf = __get_free_pages(GFP_KERNEL, 0);
+		unsigned long buf = __get_free_pages(GFP_KERNEL, EH_BUF_ALLOC_ORDER);
 		if (!buf) {
 			ret = -ENOMEM;
 			goto out_cleanup;
