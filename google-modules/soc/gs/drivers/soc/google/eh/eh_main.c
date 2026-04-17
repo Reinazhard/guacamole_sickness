@@ -1129,6 +1129,7 @@ int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 	 */
 	if (!sw_fifo_empty(&eh_dev->sw_fifo))
 		goto req_to_sw_fifo;
+
 	/*
 	 * If it fail to add the request into hw fifo, fallback it to
 	 * sw fifo.
@@ -1345,29 +1346,14 @@ static int eh_suspend(struct device *dev)
 	unsigned long data;
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
 
-	/* wait for pending work to finish */
+	/* wait for pending hardware and software work to finish */
 	if (wait_event_timeout(eh_dev->comp_wq,
-			       atomic_read(&eh_dev->nr_request) == 0,
+			       atomic_read(&eh_dev->nr_request) == 0 &&
+			       sw_fifo_empty(&eh_dev->sw_fifo),
 			       msecs_to_jiffies(500)) == 0) {
 		pr_warn("block suspend (compression pending after 500ms)\n");
 		return -EBUSY;
 	}
-
-	/* disable all interrupts */
-	eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, ~0UL);
-	eh_write_register(eh_dev, EH_REG_INTRP_MASK_DCMP, ~0UL);
-
-	/* disable compression FIFO */
-	data = eh_read_register(eh_dev, EH_REG_CDESC_CTRL);
-	data &= ~(1UL << EH_CDESC_CTRL_COMPRESS_ENABLE_SHIFT);
-	eh_write_register(eh_dev, EH_REG_CDESC_CTRL, data);
-
-	/* disable EH clock */
-	clk_disable_unprepare(eh_dev->clk);
-	dev_dbg(dev, "EH suspended\n");
-
-	return 0;
-}
 
 	/* disable all interrupts */
 	eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, ~0UL);
