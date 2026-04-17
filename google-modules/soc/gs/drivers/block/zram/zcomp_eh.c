@@ -68,7 +68,7 @@ static bool refill_zcomp_cookie(struct zcomp_eh *zcomp_eh)
 	LIST_HEAD(local_list);
 
 	for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_ATOMIC);
+		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_KERNEL);
 		if (!cookie)
 			break;
 		list_add(&cookie->list, &local_list);
