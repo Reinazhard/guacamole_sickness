@@ -723,15 +723,14 @@ static void eh_abort_incomplete_descriptors(struct eh_device *eh_dev)
 	}
 }
 
-static int __noreturn eh_comp_thread(void *data)
+static int eh_comp_thread(void *data)
 {
 	struct eh_device *eh_dev = data;
 
 	sched_set_fifo_low(current);
 	current->flags |= PF_MEMALLOC;
-	set_freezable();
 
-	while (1) {
+	while (!kthread_should_stop()) {
 		int ret;
 
 #ifdef CONFIG_SOC_ZUMA
@@ -748,9 +747,11 @@ static int __noreturn eh_comp_thread(void *data)
 #endif
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req,
 					       PM_QOS_DEFAULT_VALUE);
-		wait_event_freezable(eh_dev->comp_wq,
-			atomic_read(&eh_dev->nr_request) ||
-			!sw_fifo_empty(&eh_dev->sw_fifo));
+		wait_event(eh_dev->comp_wq,
+			   atomic_read(&eh_dev->nr_request) ||
+			   !sw_fifo_empty(&eh_dev->sw_fifo) ||
+			   kthread_should_stop());
+
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req, 100);
 #ifdef CONFIG_SOC_ZUMA
 		exynos_update_ip_idle_status(eh_dev->ip_index, 0);
@@ -779,6 +780,7 @@ static int __noreturn eh_comp_thread(void *data)
 #ifdef CONFIG_SOC_ZUMA
 	exynos_update_ip_idle_status(eh_dev->ip_index, 1);
 #endif
+	return 0;
 }
 
 /* Initialize SW related stuff */
@@ -1336,11 +1338,29 @@ static int eh_suspend(struct device *dev)
 	unsigned long data;
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
 
-	/* check pending work */
-	if (atomic_read(&eh_dev->nr_request) > 0) {
-		pr_warn("block suspend (compression pending)\n");
+	/* wait for pending work to finish */
+	if (wait_event_timeout(eh_dev->comp_wq,
+			       atomic_read(&eh_dev->nr_request) == 0,
+			       msecs_to_jiffies(500)) == 0) {
+		pr_warn("block suspend (compression pending after 500ms)\n");
 		return -EBUSY;
 	}
+
+	/* disable all interrupts */
+	eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, ~0UL);
+	eh_write_register(eh_dev, EH_REG_INTRP_MASK_DCMP, ~0UL);
+
+	/* disable compression FIFO */
+	data = eh_read_register(eh_dev, EH_REG_CDESC_CTRL);
+	data &= ~(1UL << EH_CDESC_CTRL_COMPRESS_ENABLE_SHIFT);
+	eh_write_register(eh_dev, EH_REG_CDESC_CTRL, data);
+
+	/* disable EH clock */
+	clk_disable_unprepare(eh_dev->clk);
+	dev_dbg(dev, "EH suspended\n");
+
+	return 0;
+}
 
 	/* disable all interrupts */
 	eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, ~0UL);
