@@ -5923,6 +5923,20 @@ err_destroy:
 	return NULL;
 }
 
+static struct workqueue_struct *alloc_workqueue_va(const char *fmt,
+						   unsigned int flags,
+						   int max_active,
+						   va_list args)
+{
+	struct workqueue_struct *wq;
+
+	wq = __alloc_workqueue(fmt, flags, max_active, args);
+	if (wq)
+		wq_init_lockdep(wq);
+
+	return wq;
+}
+
 __printf(1, 4)
 struct workqueue_struct *alloc_workqueue(const char *fmt,
 					 unsigned int flags,
@@ -5932,12 +5946,8 @@ struct workqueue_struct *alloc_workqueue(const char *fmt,
 	va_list args;
 
 	va_start(args, max_active);
-	wq = __alloc_workqueue(fmt, flags, max_active, args);
+	wq = alloc_workqueue_va(fmt, flags, max_active, args);
 	va_end(args);
-	if (!wq)
-		return NULL;
-
-	wq_init_lockdep(wq);
 
 	return wq;
 }
