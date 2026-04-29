@@ -5937,6 +5937,7 @@ err_destroy:
 	return NULL;
 }
 
+__printf(1, 0)
 static struct workqueue_struct *alloc_workqueue_va(const char *fmt,
 						   unsigned int flags,
 						   int max_active,
