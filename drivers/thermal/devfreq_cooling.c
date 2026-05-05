@@ -322,6 +322,9 @@ static int devfreq_cooling_gen_tables(struct devfreq_cooling_device *dfc,
 	unsigned long freq;
 	int i;
 
+	if (num_opps <= 0)
+		return -EINVAL;
+
 	dfc->freq_table = kcalloc(num_opps, sizeof(*dfc->freq_table),
 			     GFP_KERNEL);
 	if (!dfc->freq_table)
