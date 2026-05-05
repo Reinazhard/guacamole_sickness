@@ -135,8 +135,7 @@ void snd_device_initialize(struct device *dev, struct snd_card *card)
 EXPORT_SYMBOL_GPL(snd_device_initialize);
 
 static int snd_card_init(struct snd_card *card, struct device *parent,
-			 int idx, const char *xid, struct module *module,
-			 size_t extra_size);
+			 int idx, const char *xid, struct module *module);
 static int snd_card_do_free(struct snd_card *card);
 static const struct attribute_group card_dev_attr_group;
 
@@ -176,8 +175,10 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	card = kzalloc(sizeof(*card) + extra_size, GFP_KERNEL);
 	if (!card)
 		return -ENOMEM;
+	if (extra_size > 0)
+		card->private_data = (char *)card + sizeof(*card);
 
-	err = snd_card_init(card, parent, idx, xid, module, extra_size);
+	err = snd_card_init(card, parent, idx, xid, module);
 	if (err < 0)
 		return err; /* card is freed by error handler */
 
@@ -228,8 +229,10 @@ int snd_devm_card_new(struct device *parent, int idx, const char *xid,
 			    GFP_KERNEL);
 	if (!card)
 		return -ENOMEM;
+	if (extra_size > 0)
+		card->private_data = (char *)card + sizeof(*card);
 	card->managed = true;
-	err = snd_card_init(card, parent, idx, xid, module, extra_size);
+	err = snd_card_init(card, parent, idx, xid, module);
 	if (err < 0) {
 		devres_free(card); /* in managed mode, we need to free manually */
 		return err;
@@ -266,16 +269,13 @@ int snd_card_free_on_error(struct device *dev, int ret)
 EXPORT_SYMBOL_GPL(snd_card_free_on_error);
 
 static int snd_card_init(struct snd_card *card, struct device *parent,
-			 int idx, const char *xid, struct module *module,
-			 size_t extra_size)
+			 int idx, const char *xid, struct module *module)
 {
 	int err;
 #ifdef CONFIG_SND_DEBUG
 	char name[8];
 #endif
 
-	if (extra_size > 0)
-		card->private_data = (char *)card + sizeof(struct snd_card);
 	if (xid)
 		strscpy(card->id, xid, sizeof(card->id));
 	err = 0;
