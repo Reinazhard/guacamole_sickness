@@ -260,6 +260,15 @@ static unsigned long clk_enable_lock(void)
 		}
 		spin_lock_irqsave(&enable_lock, flags);
 	}
+	/*
+	 * If enable_owner is not NULL but not current, it is stale state
+	 * left behind by a previous lock holder that exited or crashed
+	 * without calling clk_enable_unlock(). Reset it to clean state.
+	 */
+	if (enable_owner && enable_owner != current) {
+		enable_owner = NULL;
+		enable_refcnt = 0;
+	}
 	WARN_ON_ONCE(enable_owner != NULL);
 	WARN_ON_ONCE(enable_refcnt != 0);
 	enable_owner = current;
