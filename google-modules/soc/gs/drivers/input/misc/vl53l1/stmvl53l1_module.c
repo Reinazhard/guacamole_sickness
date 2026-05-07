@@ -4437,9 +4437,9 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 	data->miscdev.minor = MISC_DYNAMIC_MINOR;
 	/* multiple dev name use id in name but 1st */
 	if (data->id == 0)
-		strcpy(data->name, VL53L1_MISC_DEV_NAME);
+		strscpy(data->name, VL53L1_MISC_DEV_NAME, sizeof(data->name));
 	else
-		sprintf(data->name, "%s%d", VL53L1_MISC_DEV_NAME, data->id);
+		scnprintf(data->name, sizeof(data->name), "%s%d", VL53L1_MISC_DEV_NAME, data->id);
 
 	data->miscdev.name = data->name;
 	data->miscdev.fops = &stmvl53l1_ranging_fops;
