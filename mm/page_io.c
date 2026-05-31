@@ -179,8 +179,7 @@ bad_bmap:
 static bool swap_sched_async_compress(struct page *page)
 {
 	struct swap_info_struct *sis;
-	int nid = numa_node_id();
-	pg_data_t *pgdat = NODE_DATA(nid);
+	pg_data_t *pgdat = page_pgdat(page);
 
 	if (unlikely(!pgdat->kcompressd))
 		return false;
@@ -439,11 +438,21 @@ int kcompressd(void *p)
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(pgdat->kcompressd_wait,
-				!kfifo_is_empty(&pgdat->kcompress_fifo));
+				!kfifo_is_empty(&pgdat->kcompress_fifo) ||
+				kthread_should_stop());
 
-		while (!kfifo_is_empty(&pgdat->kcompress_fifo)) {
-			if (kfifo_out(&pgdat->kcompress_fifo, &page, sizeof(page)))
+		if (kthread_should_stop())
+			break;
+
+		if (!kfifo_is_empty(&pgdat->kcompress_fifo)) {
+			struct blk_plug plug;
+
+			blk_start_plug(&plug);
+			while (kfifo_out(&pgdat->kcompress_fifo, &page, sizeof(page))) {
 				__swap_writepage(page, &wbc);
+				cond_resched();
+			}
+			blk_finish_plug(&plug);
 		}
 	}
 	return 0;
