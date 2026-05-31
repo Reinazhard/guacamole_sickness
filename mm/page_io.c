@@ -436,12 +436,12 @@ int kcompressd(void *p)
 		.for_reclaim = 1,
 	};
 
-	while (!kthread_should_stop()) {
+	while (!kthread_should_stop() || !kfifo_is_empty(&pgdat->kcompress_fifo)) {
 		wait_event_interruptible(pgdat->kcompressd_wait,
 				!kfifo_is_empty(&pgdat->kcompress_fifo) ||
 				kthread_should_stop());
 
-		if (kthread_should_stop())
+		if (kthread_should_stop() && kfifo_is_empty(&pgdat->kcompress_fifo))
 			break;
 
 		if (!kfifo_is_empty(&pgdat->kcompress_fifo)) {
