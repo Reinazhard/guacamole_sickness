@@ -116,7 +116,7 @@ static DEFINE_SPINLOCK(eh_dev_list_lock);
 
 static unsigned int eh_default_fifo_size = 4096;
 
-static bool sw_fifo_empty(struct eh_sw_fifo *fifo)
+static __always_inline bool sw_fifo_empty(struct eh_sw_fifo *fifo)
 {
 	return !READ_ONCE(fifo->has_reqs);
 }
@@ -170,12 +170,12 @@ static void eh_dump_regs(struct eh_device *eh_dev)
 	pr_err("pending_compression %d\n", atomic_read(&eh_dev->nr_request));
 }
 
-static inline unsigned int fifo_write_index(struct eh_device *eh_dev)
+static __always_inline unsigned int fifo_write_index(struct eh_device *eh_dev)
 {
 	return eh_dev->write_index & eh_dev->fifo_index_mask;
 }
 
-static inline void update_fifo_write_index(struct eh_device *eh_dev)
+static __always_inline void update_fifo_write_index(struct eh_device *eh_dev)
 {
 	unsigned int next_write_idx = (eh_dev->write_index + 1) &
 				       eh_dev->fifo_color_mask;
@@ -184,31 +184,33 @@ static inline void update_fifo_write_index(struct eh_device *eh_dev)
 	eh_write_register(eh_dev, EH_REG_CDESC_WRIDX, next_write_idx);
 }
 
-static inline void update_fifo_complete_index(struct eh_device *eh_dev)
+static __always_inline void update_fifo_complete_index(
+		struct eh_device *eh_dev)
 {
 	eh_dev->complete_index = (eh_dev->complete_index + 1) &
 				  eh_dev->fifo_color_mask;
 }
 
-static bool fifo_full(struct eh_device *eh_dev)
+static __always_inline bool fifo_full(struct eh_device *eh_dev)
 {
 	return atomic_read(&eh_dev->nr_request) == eh_dev->fifo_size;
 }
 
 /* index of the next descriptor to be completed by hardware */
-static unsigned int fifo_next_complete_index(struct eh_device *eh_dev)
+static __always_inline unsigned int fifo_next_complete_index(
+		struct eh_device *eh_dev)
 {
 	return eh_read_register(eh_dev, EH_REG_CDESC_CTRL) &
 				EH_CDESC_CTRL_COMPLETE_IDX_MASK;
 }
 
-static struct eh_compress_desc *eh_descriptor(struct eh_device *eh_dev,
-						   unsigned int index)
+static __always_inline struct eh_compress_desc *eh_descriptor(
+		struct eh_device *eh_dev, unsigned int index)
 {
 	return eh_dev->fifo + index * EH_COMPRESS_DESC_SIZE;
 }
 
-static inline unsigned long eh_read_dcmd_status(struct eh_device *eh_dev,
+static __always_inline unsigned long eh_read_dcmd_status(struct eh_device *eh_dev,
 						int index)
 {
 	unsigned long status;
@@ -351,11 +353,11 @@ static int request_to_hw_fifo(struct eh_device *eh_dev,
 	struct eh_completion *compl;
 
 	/* Check if the fifo is full locklessly first, to elide the lock */
-	if (fifo_full(eh_dev))
+	if (unlikely(fifo_full(eh_dev)))
 		return -EBUSY;
 
 	spin_lock(&eh_dev->fifo_prod_lock);
-	if (fifo_full(eh_dev)) {
+	if (unlikely(fifo_full(eh_dev))) {
 		spin_unlock(&eh_dev->fifo_prod_lock);
 		return -EBUSY;
 	}
@@ -566,7 +568,7 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 		WARN_ON(1);
 		compr_result = 1;
 		break;
-	};
+	}
 
 	/*
 	 * Guard against use-after-free on spurious FIFO re-visits.
@@ -893,19 +895,15 @@ static void eh_deinit_compression(struct eh_device *eh_dev)
 					   EH_BUF_ALLOC_ORDER);
 			}
 		}
-		kfree(eh_dev->compr_buffers);
-		eh_dev->compr_buffers = NULL;
 	}
+	kfree(eh_dev->compr_buffers);
+	eh_dev->compr_buffers = NULL;
 
-	if (eh_dev->completions) {
-		kfree(eh_dev->completions);
-		eh_dev->completions = NULL;
-	}
+	kfree(eh_dev->completions);
+	eh_dev->completions = NULL;
 
-	if (eh_dev->fifo_alloc) {
-		kfree(eh_dev->fifo_alloc);
-		eh_dev->fifo_alloc = NULL;
-	}
+	kfree(eh_dev->fifo_alloc);
+	eh_dev->fifo_alloc = NULL;
 }
 
 /* initialize compression fifo and related stuff */
@@ -921,7 +919,7 @@ static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_siz
 	eh_dev->fifo_color_mask = (fifo_size << 1) - 1;
 	eh_dev->write_index = eh_dev->complete_index = 0;
 
-	eh_dev->completions = kzalloc(fifo_size * sizeof(struct eh_completion),
+	eh_dev->completions = kcalloc(fifo_size, sizeof(struct eh_completion),
 				      GFP_KERNEL);
 	if (!eh_dev->completions) {
 		return -ENOMEM;
@@ -936,7 +934,7 @@ static int eh_init_compression(struct eh_device *eh_dev, unsigned short fifo_siz
 	}
 
 	eh_dev->fifo = PTR_ALIGN(eh_dev->fifo_alloc, desc_size);
-	eh_dev->compr_buffers = kzalloc(fifo_size * sizeof(void *),
+	eh_dev->compr_buffers = kcalloc(fifo_size, sizeof(void *),
 					GFP_KERNEL);
 	if (!eh_dev->compr_buffers) {
 		ret = -ENOMEM;
@@ -1127,7 +1125,7 @@ static void eh_setup_dcmd(struct eh_device *eh_dev, unsigned int index,
 	 * 4096B aligned, max 4096B of data
 	 */
 	alignment = 1UL << __ffs((unsigned long)src);
-	if (alignment < 64 || slen > alignment) {
+	if (unlikely(alignment < 64 || slen > alignment)) {
 		src_vaddr = (void *)(*per_cpu_ptr(eh_dev->bounce_buffer, index));
 		memcpy(src_vaddr, src, slen);
 		src_paddr = virt_to_phys(src_vaddr);
@@ -1168,17 +1166,15 @@ int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 	 * If sw_fifo is not empty, it means hw fifo is already full so
 	 * don't bother to hw fifo.
 	 */
-	if (!sw_fifo_empty(&eh_dev->sw_fifo))
-		goto req_to_sw_fifo;
+	if (likely(sw_fifo_empty(&eh_dev->sw_fifo))) {
+		/*
+		 * If it fail to add the request into hw fifo, fallback it to
+		 * sw fifo.
+		 */
+		if (likely(!request_to_hw_fifo(eh_dev, priv, true)))
+			return 0;
+	}
 
-	/*
-	 * If it fail to add the request into hw fifo, fallback it to
-	 * sw fifo.
-	 */
-	if (!request_to_hw_fifo(eh_dev, priv, true))
-		return 0;
-
-req_to_sw_fifo:
 	request_to_sw_fifo(eh_dev, page, priv);
 	return 0;
 }
@@ -1214,7 +1210,7 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
 	timeout = jiffies + msecs_to_jiffies(EH_POLL_DELAY_MS);
 	do {
 		cpu_relax();
-		if (time_after(jiffies, timeout)) {
+		if (unlikely(time_after(jiffies, timeout))) {
 			pr_err("poll timeout on decompression\n");
 			eh_dump_regs(eh_dev);
 			ret = -ETIME;
@@ -1225,7 +1221,7 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
 
 	pr_devel("dcmd [%u] status = %lu\n", index, status);
 
-	if (status != EH_DCMD_DECOMPRESSED) {
+	if (unlikely(status != EH_DCMD_DECOMPRESSED)) {
 		pr_err("dcmd [%u] bad status %lu\n", index, status);
 		eh_dump_regs(eh_dev);
 		ret = -EIO;
@@ -1415,9 +1411,14 @@ static int eh_suspend(struct device *dev)
 static int eh_resume(struct device *dev)
 {
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
+	int ret;
 
 	/* re-enable EH clock */
-	clk_prepare_enable(eh_dev->clk);
+	ret = clk_prepare_enable(eh_dev->clk);
+	if (ret) {
+		dev_err(dev, "failed to enable EH clock on resume: %d\n", ret);
+		return ret;
+	}
 
 	/* re-enable compression FIFO */
 	eh_compr_fifo_init(eh_dev);
