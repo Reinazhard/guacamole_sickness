@@ -397,8 +397,12 @@ static void refill_hw_fifo(struct eh_device *eh_dev)
 	struct zcomp_cookie *c;
 	int ret;
 
+	if (sw_fifo_empty(fifo))
+		return;
+
 	spin_lock(&fifo->lock);
-	while ((c = list_first_entry_or_null(&fifo->head, typeof(*c), list))) {
+	while (!fifo_full(eh_dev) &&
+	       (c = list_first_entry_or_null(&fifo->head, typeof(*c), list))) {
 		/*
 		 * Take the cookie off the list since it can't be touched once
 		 * it's passed onto the compression thread.
@@ -417,7 +421,7 @@ static void refill_hw_fifo(struct eh_device *eh_dev)
 		}
 	}
 	if (!c)
-		fifo->has_reqs = false;
+		WRITE_ONCE(fifo->has_reqs, false);
 	spin_unlock(&fifo->lock);
 }
 
@@ -686,13 +690,13 @@ static int eh_process_compress(struct eh_device *eh_dev)
 			ret = eh_process_completed_descriptor(eh_dev, index);
 			if (ret)
 				return ret;
-			/*
-			 * Since we have available space in hw_fifo, put the
-			 * next compression request immediately from sw_fifo to
-			 * make EH busy.
-			 */
-			refill_hw_fifo(eh_dev);
 		} while ((i = (i + 1) & eh_dev->fifo_color_mask) != end);
+
+		/*
+		 * Since we have made available space in hw_fifo, refill it
+		 * from sw_fifo in a single batch to minimize spinlock contention.
+		 */
+		refill_hw_fifo(eh_dev);
 	} while (atomic_read(&eh_dev->nr_request));
 
 	return 0;

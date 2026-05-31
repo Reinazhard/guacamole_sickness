@@ -11,9 +11,16 @@ static int zcomp_flush(struct zcomp_eh *zcomp_eh)
 	int err = 0;
 	LIST_HEAD(req_list);
 
+	if (!READ_ONCE(zcomp_eh->pend_request))
+		return 0;
+
 	spin_lock(&zcomp_eh->request_lock);
+	if (!zcomp_eh->pend_request) {
+		spin_unlock(&zcomp_eh->request_lock);
+		return 0;
+	}
 	list_splice_init(&zcomp_eh->request_list, &req_list);
-	zcomp_eh->pend_request = 0;
+	WRITE_ONCE(zcomp_eh->pend_request, 0);
 	spin_unlock(&zcomp_eh->request_lock);
 
 	while (!list_empty(&req_list)) {
@@ -42,19 +49,13 @@ static void zcomp_append_request(struct zcomp_eh *zcomp_eh,
 {
 	spin_lock(&zcomp_eh->request_lock);
 	list_add(&cookie->list, &zcomp_eh->request_list);
-	zcomp_eh->pend_request++;
+	WRITE_ONCE(zcomp_eh->pend_request, zcomp_eh->pend_request + 1);
 	spin_unlock(&zcomp_eh->request_lock);
 }
 
 static unsigned long nr_pend_request(struct zcomp_eh *zcomp_eh)
 {
-	unsigned long ret;
-
-	spin_lock(&zcomp_eh->request_lock);
-	ret = zcomp_eh->pend_request;
-	spin_unlock(&zcomp_eh->request_lock);
-
-	return ret;
+	return READ_ONCE(zcomp_eh->pend_request);
 }
 
 /*
