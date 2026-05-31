@@ -520,15 +520,14 @@ static void set_zspage_mapping(struct zspage *zspage,
  * classes depending on its size. This function returns index of the
  * size class which has chunk size big enough to hold the given size.
  */
+static unsigned char size_class_lookup[PAGE_SIZE + 1] __read_mostly;
+
 static int get_size_class_index(int size)
 {
-	int idx = 0;
+	if (unlikely(size > PAGE_SIZE))
+		return ZS_SIZE_CLASSES - 1;
 
-	if (likely(size > ZS_MIN_ALLOC_SIZE))
-		idx = DIV_ROUND_UP(size - ZS_MIN_ALLOC_SIZE,
-				ZS_SIZE_CLASS_DELTA);
-
-	return min_t(int, ZS_SIZE_CLASSES - 1, idx);
+	return size_class_lookup[size];
 }
 
 /* type can be of enum type class_stat_type or fullness_group */
@@ -2340,6 +2339,16 @@ EXPORT_SYMBOL_GPL(zs_destroy_pool);
 static int __init zs_init(void)
 {
 	int ret;
+	int size;
+
+	for (size = 0; size <= PAGE_SIZE; size++) {
+		int idx = 0;
+
+		if (size > ZS_MIN_ALLOC_SIZE)
+			idx = DIV_ROUND_UP(size - ZS_MIN_ALLOC_SIZE, ZS_SIZE_CLASS_DELTA);
+
+		size_class_lookup[size] = min_t(int, ZS_SIZE_CLASSES - 1, idx);
+	}
 
 	ret = cpuhp_setup_state(CPUHP_MM_ZS_PREPARE, "mm/zsmalloc:prepare",
 				zs_cpu_prepare, zs_cpu_dead);
