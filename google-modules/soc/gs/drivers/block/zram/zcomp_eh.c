@@ -218,8 +218,18 @@ static int zcomp_eh_decompress(struct zcomp *comp, void *src,
 static void zcomp_eh_destroy(struct zcomp *comp)
 {
 	struct zcomp_eh *zcomp_eh = comp->private;
+	struct zcomp_cookie *cookie;
 
 	eh_destroy(zcomp_eh->eh_dev);
+
+	spin_lock(&zcomp_eh->request_lock);
+	while (!list_empty(&zcomp_eh->request_list)) {
+		cookie = list_first_entry(&zcomp_eh->request_list, struct zcomp_cookie, list);
+		list_del(&cookie->list);
+		kfree(cookie);
+	}
+	spin_unlock(&zcomp_eh->request_lock);
+
 	destroy_zcomp_cookie_pool(zcomp_eh);
 	kfree(zcomp_eh);
 	module_put(THIS_MODULE);
