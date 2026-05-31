@@ -193,7 +193,8 @@ static bool swap_sched_async_compress(struct page *page)
 
 	sis = page_swap_info(page);
 	if (data_race(sis->flags & SWP_SYNCHRONOUS_IO)) {
-		if (kfifo_put(&pgdat->kcompress_fifo, page)) {
+		if (kfifo_avail(&pgdat->kcompress_fifo) >= sizeof(struct page *) &&
+			kfifo_in(&pgdat->kcompress_fifo, &page, sizeof(struct page *))) {
 			wake_up_interruptible(&pgdat->kcompressd_wait);
 			return true;
 		}
@@ -448,7 +449,7 @@ int kcompressd(void *p)
 			struct blk_plug plug;
 
 			blk_start_plug(&plug);
-			while (kfifo_get(&pgdat->kcompress_fifo, &page)) {
+			while (kfifo_out(&pgdat->kcompress_fifo, &page, sizeof(struct page *))) {
 				__swap_writepage(page, &wbc);
 				cond_resched();
 			}
