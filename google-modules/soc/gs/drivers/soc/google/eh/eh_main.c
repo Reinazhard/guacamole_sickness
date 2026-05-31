@@ -711,9 +711,11 @@ static void eh_abort_incomplete_descriptors(struct eh_device *eh_dev)
 	     i = (i + 1) & eh_dev->fifo_index_mask) {
 		struct eh_completion *compl = &eh_dev->completions[i];
 
-		(*eh_dev->comp_callback)(EH_CDESC_ERROR_HALTED, NULL, 0,
-					  compl->priv);
-		compl->priv = NULL;
+		if (compl->priv) {
+			(*eh_dev->comp_callback)(EH_CDESC_ERROR_HALTED, NULL, 0,
+						  compl->priv);
+			compl->priv = NULL;
+		}
 	}
 }
 
@@ -1202,6 +1204,18 @@ EXPORT_SYMBOL(eh_create);
 
 void eh_destroy(struct eh_device *eh_dev)
 {
+	struct eh_sw_fifo *fifo = &eh_dev->sw_fifo;
+	struct zcomp_cookie *c;
+
+	spin_lock(&fifo->lock);
+	while ((c = list_first_entry_or_null(&fifo->head, typeof(*c), list))) {
+		list_del(&c->list);
+		if (eh_dev->comp_callback)
+			(*eh_dev->comp_callback)(EH_CDESC_ERROR_HALTED, NULL, 0, c);
+	}
+	WRITE_ONCE(fifo->has_reqs, false);
+	spin_unlock(&fifo->lock);
+
 	eh_dev->comp_callback = NULL;
 	spin_lock(&eh_dev_list_lock);
 	list_add(&eh_dev->eh_dev_list, &eh_dev_list);
