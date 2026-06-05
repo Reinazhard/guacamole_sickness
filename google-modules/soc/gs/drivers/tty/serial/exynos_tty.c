@@ -2823,6 +2823,8 @@ static int exynos_serial_probe(struct platform_device *pdev)
 	else
 		ourport->use_default_irq = 0;
 
+	spin_lock_init(&ourport->lock);
+
 	ret = exynos_serial_init_port(ourport, pdev);
 	if (ret < 0)
 		return ret;
