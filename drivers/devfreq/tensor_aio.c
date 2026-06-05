@@ -39,14 +39,27 @@
  * These are needed because with CONFIG_DEBUG_LOCK_ALLOC, rt_mutex_lock is a
  * macro that expands to rt_mutex_lock_nested, so we cannot take its address.
  */
-static void rt_mutex_lock_wrapper(void *lock)
+static unsigned long rt_mutex_lock_wrapper(void *lock)
 {
 	rt_mutex_lock((struct rt_mutex *)lock);
+	return 0;
 }
 
-static void rt_mutex_unlock_wrapper(void *lock)
+static void rt_mutex_unlock_wrapper(void *lock, unsigned long flags)
 {
 	rt_mutex_unlock((struct rt_mutex *)lock);
+}
+
+static unsigned long raw_spin_lock_wrapper(void *lock)
+{
+	unsigned long flags;
+	raw_spin_lock_irqsave((raw_spinlock_t *)lock, flags);
+	return flags;
+}
+
+static void raw_spin_unlock_wrapper(void *lock, unsigned long flags)
+{
+	raw_spin_unlock_irqrestore((raw_spinlock_t *)lock, flags);
 }
 
 /*
@@ -170,8 +183,8 @@ struct exynos_devfreq_data {
 	struct devfreq *df;
 	struct notifier_block min_nb;
 	struct notifier_block max_nb;
-	void (*nb_lock_fn)(void *);
-	void (*nb_unlock_fn)(void *);
+	unsigned long (*nb_lock_fn)(void *);
+	void (*nb_unlock_fn)(void *, unsigned long);
 	union nb_lock_type min_nb_lock;
 	union nb_lock_type max_nb_lock;
 	union nb_lock_type nb_lock;
@@ -1826,9 +1839,10 @@ static int __noreturn memperf_thread(void *data)
 static void exynos_qos_notify(struct exynos_devfreq_data *data)
 {
 	u32 freq;
+	unsigned long flags;
 
 	/* Set the frequency to the floor of the current limits */
-	data->nb_lock_fn(&data->nb_lock);
+	flags = data->nb_lock_fn(&data->nb_lock);
 	freq = min(data->min_freq, data->max_freq);
 	if (freq != data->cur_freq) {
 		/* Pairs with memperfd and exynos_df_get_cur_freq() */
@@ -1842,7 +1856,7 @@ static void exynos_qos_notify(struct exynos_devfreq_data *data)
 			update_qos_req(&bci->min_req, find_freq_c(bci, freq));
 #endif
 	}
-	data->nb_unlock_fn(&data->nb_lock);
+	data->nb_unlock_fn(&data->nb_lock, flags);
 }
 
 static int exynos_qos_min_notifier(struct notifier_block *nb,
@@ -1851,11 +1865,12 @@ static int exynos_qos_min_notifier(struct notifier_block *nb,
 	struct exynos_devfreq_data *data =
 		container_of(nb, typeof(*data), min_nb);
 	u32 freq = find_freq_l(data, value);
+	unsigned long flags;
 
-	data->nb_lock_fn(&data->min_nb_lock);
+	flags = data->nb_lock_fn(&data->min_nb_lock);
 	data->min_freq = freq;
 	exynos_qos_notify(data);
-	data->nb_unlock_fn(&data->min_nb_lock);
+	data->nb_unlock_fn(&data->min_nb_lock, flags);
 	return NOTIFY_OK;
 }
 
@@ -1865,11 +1880,12 @@ static int exynos_qos_max_notifier(struct notifier_block *nb,
 	struct exynos_devfreq_data *data =
 		container_of(nb, typeof(*data), max_nb);
 	u32 freq = find_freq_h(data, value);
+	unsigned long flags;
 
-	data->nb_lock_fn(&data->max_nb_lock);
+	flags = data->nb_lock_fn(&data->max_nb_lock);
 	data->max_freq = freq;
 	exynos_qos_notify(data);
-	data->nb_unlock_fn(&data->max_nb_lock);
+	data->nb_unlock_fn(&data->max_nb_lock, flags);
 	return NOTIFY_OK;
 }
 
@@ -1919,9 +1935,10 @@ static int exynos_devfreq_pm(struct device *dev, bool resume)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct exynos_devfreq_data *data = platform_get_drvdata(pdev);
+	unsigned long flags;
 	int ret = 0;
 
-	data->nb_lock_fn(&data->nb_lock);
+	flags = data->nb_lock_fn(&data->nb_lock);
 	if (data->use_acpm) {
 		ret = exynos_acpm_pm(data, resume);
 		if (WARN_ON(ret))
@@ -1940,7 +1957,7 @@ static int exynos_devfreq_pm(struct device *dev, bool resume)
 				 resume ? data->cur_freq : data->suspend_freq);
 	data->suspended = !resume;
 unlock:
-	data->nb_unlock_fn(&data->nb_lock);
+	data->nb_unlock_fn(&data->nb_lock, flags);
 	return ret;
 }
 
@@ -2181,8 +2198,8 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 		raw_spin_lock_init(&data->min_nb_lock.raw_spinlock);
 		raw_spin_lock_init(&data->max_nb_lock.raw_spinlock);
 		raw_spin_lock_init(&data->nb_lock.raw_spinlock);
-		data->nb_lock_fn = (void *)_raw_spin_lock;
-		data->nb_unlock_fn = (void *)_raw_spin_unlock;
+		data->nb_lock_fn = raw_spin_lock_wrapper;
+		data->nb_unlock_fn = raw_spin_unlock_wrapper;
 	} else {
 		rt_mutex_init(&data->min_nb_lock.rt_mutex);
 		rt_mutex_init(&data->max_nb_lock.rt_mutex);
