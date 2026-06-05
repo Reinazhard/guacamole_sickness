@@ -744,8 +744,9 @@ static int dhdpcie_pm_suspend(struct device *dev)
 	dhd_os_busbusy_wake(bus->dhd);
 	DHD_GENERAL_UNLOCK(bus->dhd, flags);
 
-	return ret;
+	pci_save_state(pdev);
 
+	return ret;
 }
 
 static int dhdpcie_pm_prepare(struct device *dev)
