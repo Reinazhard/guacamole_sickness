@@ -2004,10 +2004,7 @@ retry:
 			 * the same dirty folios again (with the reclaim
 			 * flag set).
 			 */
-			if (folio_is_file_lru(folio) &&
-			    (!current_is_kswapd() ||
-			     !folio_test_reclaim(folio) ||
-			     !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
+			if (folio_is_file_lru(folio)) {
 				/*
 				 * Immediately reclaim when written back.
 				 * Similar in principle to deactivate_page()
@@ -2016,7 +2013,8 @@ retry:
 				 */
 				node_stat_mod_folio(folio, NR_VMSCAN_IMMEDIATE,
 						nr_pages);
-				folio_set_reclaim(folio);
+				if (!folio_test_reclaim(folio))
+					folio_set_reclaim(folio);
 
 				goto activate_locked;
 			}
@@ -3491,6 +3489,7 @@ static void reset_bloom_filter(struct lruvec *lruvec, unsigned long seq)
  *                          mm_struct list
  ******************************************************************************/
 
+
 static struct lru_gen_mm_list *get_mm_list(struct mem_cgroup *memcg)
 {
 	static struct lru_gen_mm_list mm_list = {
@@ -3602,24 +3601,7 @@ void lru_gen_migrate_mm(struct mm_struct *mm)
 }
 #endif
 
-#else /* !CONFIG_LRU_GEN_WALKS_MMU */
 
-static struct lru_gen_mm_list *get_mm_list(struct mem_cgroup *memcg)
-{
-	return NULL;
-}
-
-static struct lru_gen_mm_state *get_mm_state(struct lruvec *lruvec)
-{
-	return NULL;
-}
-
-static struct mm_struct *get_next_mm(struct lru_gen_mm_walk *walk)
-{
-	return NULL;
-}
-
-#endif
 
 static void reset_mm_stats(struct lru_gen_mm_walk *walk, bool last)
 {
@@ -3657,7 +3639,7 @@ static bool should_skip_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
 
 	clear_bit(key, &mm->lru_gen.bitmap);
 
-	for (type = !walk->can_swap; type < ANON_AND_FILE; type++) {
+	for (type = !walk->swappiness; type < ANON_AND_FILE; type++) {
 		size += type ? get_mm_counter(mm, MM_FILEPAGES) :
 			       get_mm_counter(mm, MM_ANONPAGES) +
 			       get_mm_counter(mm, MM_SHMEMPAGES);
@@ -4766,7 +4748,7 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
 	DEFINE_MIN_SEQ(lruvec);
 
-	if (mem_cgroup_below_min(NULL, memcg))
+	if (mem_cgroup_below_min(memcg))
 		return false;
 
 	if (!lruvec_is_sizable(lruvec, sc))
@@ -5389,7 +5371,7 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
 	__count_memcg_events(memcg, PGREFILL, sorted);
 	__count_vm_events(PGSCAN_ANON + type, isolated);
 	trace_mm_vmscan_lru_isolate(sc->reclaim_idx, sc->order, nr_to_scan,
-				scanned, skipped, isolated,
+				scanned, skipped, isolated, 0,
 				type ? LRU_INACTIVE_FILE : LRU_INACTIVE_ANON);
 
 	*isolatedp = isolated;
@@ -5682,7 +5664,7 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		 * Root reclaim needs rotation when low on cold folio for better
 		 * fairness. Cgroup reclaim gets fairness from the iterator.
 		 */
-		if (root_reclaim(sc) && should_age)
+		if (global_reclaim(sc) && should_age)
 			break;
 
 		nr_to_scan -= delta;
@@ -6903,9 +6885,6 @@ again:
 		if (sc->nr.writeback && sc->nr.writeback == sc->nr.taken)
 			set_bit(PGDAT_WRITEBACK, &pgdat->flags);
 
-		/* Allow kswapd to start writing pages during reclaim.*/
-		if (sc->nr.unqueued_dirty == sc->nr.file_taken)
-			set_bit(PGDAT_DIRTY, &pgdat->flags);
 
 		/*
 		 * If kswapd scans pages marked for immediate
@@ -7626,7 +7605,6 @@ static void clear_pgdat_congested(pg_data_t *pgdat)
 	struct lruvec *lruvec = mem_cgroup_lruvec(NULL, pgdat);
 
 	clear_bit(LRUVEC_CONGESTED, &lruvec->flags);
-	clear_bit(PGDAT_DIRTY, &pgdat->flags);
 	clear_bit(PGDAT_WRITEBACK, &pgdat->flags);
 }
 

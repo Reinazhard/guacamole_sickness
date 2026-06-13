@@ -284,7 +284,9 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	max_seq = READ_ONCE(lrugen->max_seq);
 	max_seq &= (type ? EVICTION_MASK : EVICTION_MASK_ANON) >> LRU_REFS_WIDTH;
 
-	if (abs_diff(max_seq, token >> LRU_REFS_WIDTH) >= MAX_NR_GENS)
+	if ((max_seq > (token >> LRU_REFS_WIDTH) ?
+	     max_seq - (token >> LRU_REFS_WIDTH) :
+	     (token >> LRU_REFS_WIDTH) - max_seq) >= MAX_NR_GENS)
 		goto unlock;
 
 	hist = lru_hist_from_seq(READ_ONCE(lrugen->min_seq[type]));
