@@ -303,7 +303,7 @@ clear_pp_in_progress:
 	return ret;
 }
 
-int zram_ioctl(struct block_device *bdev, blk_mode_t mode,
+int zram_ioctl(struct block_device *bdev, fmode_t mode,
 	       unsigned int cmd, unsigned long arg)
 {
 	struct zram *zram = bdev->bd_disk->private_data;
