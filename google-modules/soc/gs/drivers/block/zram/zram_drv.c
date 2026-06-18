@@ -3487,16 +3487,19 @@ static ssize_t reset_store(struct device *dev,
 	return len;
 }
 
-static int zram_open(struct gendisk *disk, blk_mode_t mode)
+static int zram_open(struct block_device *bdev, fmode_t mode)
 {
-	struct zram *zram = disk->private_data;
+	int ret = 0;
+	struct zram *zram;
 
-	WARN_ON(!mutex_is_locked(&disk->open_mutex));
+	WARN_ON(!mutex_is_locked(&bdev->bd_disk->open_mutex));
 
+	zram = bdev->bd_disk->private_data;
 	/* zram was claimed to reset so open request fails */
 	if (zram->claim)
-		return -EBUSY;
-	return 0;
+		ret = -EBUSY;
+
+	return ret;
 }
 
 static const struct block_device_operations zram_devops = {
@@ -3747,8 +3750,8 @@ static int zram_remove(struct zram *zram)
  * creates a new un-initialized zram device and returns back this device's
  * device_id (or an error code if it fails to create a new device).
  */
-static ssize_t hot_add_show(const struct class *class,
-			const struct class_attribute *attr,
+static ssize_t hot_add_show(struct class *class,
+			struct class_attribute *attr,
 			char *buf)
 {
 	int ret;
@@ -3761,12 +3764,10 @@ static ssize_t hot_add_show(const struct class *class,
 		return ret;
 	return scnprintf(buf, PAGE_SIZE, "%d\n", ret);
 }
-/* This attribute must be set to 0400, so CLASS_ATTR_RO() can not be used */
-static struct class_attribute class_attr_hot_add =
-	__ATTR(hot_add, 0400, hot_add_show, NULL);
+static CLASS_ATTR_RO(hot_add);
 
-static ssize_t hot_remove_store(const struct class *class,
-			const struct class_attribute *attr,
+static ssize_t hot_remove_store(struct class *class,
+			struct class_attribute *attr,
 			const char *buf,
 			size_t count)
 {
