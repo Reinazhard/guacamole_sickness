@@ -196,13 +196,6 @@ static int zcomp_eh_compress(struct zcomp *comp, u32 index, struct page *page,
 	return eh_compress_page(zcomp_eh->eh_dev, page, cookie);
 }
 
-static void zcomp_eh_prepare_decompress(struct zcomp *comp)
-{
-	struct zcomp_eh *zcomp_eh = comp->private;
-
-	eh_prepare_decompress(zcomp_eh->eh_dev);
-}
-
 static int zcomp_eh_decompress(struct zcomp *comp, void *src,
 			unsigned int src_len, struct page *page)
 {
@@ -251,7 +244,6 @@ const struct zcomp_operation zcomp_eh_op = {
 	.create = zcomp_eh_create,
 	.destroy = zcomp_eh_destroy,
 	.compress_async = zcomp_eh_compress,
-	.prepare_decompress = zcomp_eh_prepare_decompress,
 	.decompress = zcomp_eh_decompress,
 };
 
