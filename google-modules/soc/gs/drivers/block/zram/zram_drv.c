@@ -831,87 +831,6 @@ static void zram_account_writeback_submit(struct zram *zram)
 		zram->bd_wb_limit -=  1UL << (PAGE_SHIFT - 12);
 }
 
-#if IS_ENABLED(CONFIG_ZRAM_GS_SLOWPATH_COMP)
-static unsigned int zram_calc_prio(struct zram *zram)
-{
-	unsigned int prio = ZRAM_PRIMARY_COMP;
-
-	if (unlikely(zram->algo_interleave)) {
-		if (zram->comp_algs[ZRAM_SLOWPATH_COMP]) {
-			prio = zram->slowpath_comp ? ZRAM_PRIMARY_COMP : ZRAM_SLOWPATH_COMP;
-			zram->slowpath_comp = !zram->slowpath_comp;
-		}
-	} else {
-		unsigned long free_pages = nr_free_pages();
-
-		if (zram->comp_algs[ZRAM_SLOWPATH_COMP] &&
-		    (((u64)free_pages << PAGE_SHIFT) > zram->free_mem_threshold))
-			prio = ZRAM_SLOWPATH_COMP;
-	}
-
-	return prio;
-}
-
-static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
-{
-	atomic64_inc(&zram->stats.pages_stored);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_inc(&zram->stats.slowpath_pages_stored);
-}
-
-static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
-{
-	atomic64_dec(&zram->stats.pages_stored);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_dec(&zram->stats.slowpath_pages_stored);
-}
-
-static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_add(comp_len, &zram->stats.compr_data_size);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_add(comp_len,
-			     &zram->stats.slowpath_compr_data_size);
-}
-
-static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_sub(comp_len, &zram->stats.compr_data_size);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_sub(comp_len,
-			     &zram->stats.slowpath_compr_data_size);
-}
-#else
-static unsigned int zram_calc_prio(struct zram *zram)
-{
-	return ZRAM_PRIMARY_COMP;
-}
-
-static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
-{
-	atomic64_inc(&zram->stats.pages_stored);
-}
-
-static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
-{
-	atomic64_dec(&zram->stats.pages_stored);
-}
-
-static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_add(comp_len, &zram->stats.compr_data_size);
-}
-
-static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_sub(comp_len, &zram->stats.compr_data_size);
-}
-#endif
-
 static int zram_writeback_complete(struct zram *zram, struct zram_wb_req *req)
 {
 	u32 index = req->pps->index;
@@ -1864,6 +1783,87 @@ static int read_from_bdev(struct zram *zram, struct page *page, u32 index,
 
 static void zram_release_bdev_block(struct zram *zram, unsigned long blk_idx)
 {
+}
+#endif
+
+#if IS_ENABLED(CONFIG_ZRAM_GS_SLOWPATH_COMP)
+static unsigned int zram_calc_prio(struct zram *zram)
+{
+	unsigned int prio = ZRAM_PRIMARY_COMP;
+
+	if (unlikely(zram->algo_interleave)) {
+		if (zram->comp_algs[ZRAM_SLOWPATH_COMP]) {
+			prio = zram->slowpath_comp ? ZRAM_PRIMARY_COMP : ZRAM_SLOWPATH_COMP;
+			zram->slowpath_comp = !zram->slowpath_comp;
+		}
+	} else {
+		unsigned long free_pages = nr_free_pages();
+
+		if (zram->comp_algs[ZRAM_SLOWPATH_COMP] &&
+		    (((u64)free_pages << PAGE_SHIFT) > zram->free_mem_threshold))
+			prio = ZRAM_SLOWPATH_COMP;
+	}
+
+	return prio;
+}
+
+static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
+{
+	atomic64_inc(&zram->stats.pages_stored);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_inc(&zram->stats.slowpath_pages_stored);
+}
+
+static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
+{
+	atomic64_dec(&zram->stats.pages_stored);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_dec(&zram->stats.slowpath_pages_stored);
+}
+
+static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_add(comp_len, &zram->stats.compr_data_size);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_add(comp_len,
+			     &zram->stats.slowpath_compr_data_size);
+}
+
+static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_sub(comp_len, &zram->stats.compr_data_size);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_sub(comp_len,
+			     &zram->stats.slowpath_compr_data_size);
+}
+#else
+static unsigned int zram_calc_prio(struct zram *zram)
+{
+	return ZRAM_PRIMARY_COMP;
+}
+
+static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
+{
+	atomic64_inc(&zram->stats.pages_stored);
+}
+
+static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
+{
+	atomic64_dec(&zram->stats.pages_stored);
+}
+
+static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_add(comp_len, &zram->stats.compr_data_size);
+}
+
+static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_sub(comp_len, &zram->stats.compr_data_size);
 }
 #endif
 
