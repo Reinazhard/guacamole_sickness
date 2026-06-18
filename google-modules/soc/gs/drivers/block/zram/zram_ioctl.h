@@ -4,10 +4,10 @@
 #define _ZRAM_IOCTL_H_
 
 #if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
-int zram_ioctl(struct block_device *bdev, blk_mode_t mode,
+int zram_ioctl(struct block_device *bdev, fmode_t mode,
 	       unsigned int cmd, unsigned long arg);
 #else
-inline int zram_ioctl(struct block_device *bdev, blk_mode_t mode,
+inline int zram_ioctl(struct block_device *bdev, fmode_t mode,
 		      unsigned int cmd, unsigned long arg)
 {
 	return -EINVAL;
