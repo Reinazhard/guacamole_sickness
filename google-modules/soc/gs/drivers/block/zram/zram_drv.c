@@ -2532,6 +2532,7 @@ void zram_slot_update(struct zram *zram, u32 index,
 		zram_set_obj_size(zram, index, comp_len);
 	}
 	zram_set_priority(zram, index, prio);
+	zram_accessed(zram, index);
 	zram_slot_unlock(zram, index);
 	if (comp_len) {
 		zram_stat_compr_data_inc(zram, prio, comp_len);
@@ -2706,6 +2707,7 @@ int zram_read_page(struct zram *zram, struct page *page, u32 index,
 	if (!zram_test_flag(zram, index, ZRAM_WB)) {
 		/* Slot should be locked through out the function call */
 		ret = read_from_zspool(zram, page, index);
+		zram_accessed(zram, index);
 		zram_slot_unlock(zram, index);
 	} else {
 		unsigned long blk_idx = zram_get_handle(zram, index);
@@ -2714,6 +2716,7 @@ int zram_read_page(struct zram *zram, struct page *page, u32 index,
 		 * The slot should be unlocked before reading from the backing
 		 * device.
 		 */
+		zram_accessed(zram, index);
 		zram_slot_unlock(zram, index);
 
 		if (!parent)
@@ -3250,10 +3253,6 @@ static void zram_bio_read(struct zram *zram, struct bio *bio)
 		}
 		flush_dcache_page(bv.bv_page);
 
-		zram_slot_lock(zram, index);
-		zram_accessed(zram, index);
-		zram_slot_unlock(zram, index);
-
 		bio_advance_iter_single(bio, &iter, bv.bv_len);
 	} while (iter.bi_size);
 
@@ -3278,10 +3277,6 @@ static void zram_bio_write(struct zram *zram, struct bio *bio)
 			bio->bi_status = BLK_STS_IOERR;
 			break;
 		}
-
-		zram_slot_lock(zram, index);
-		zram_accessed(zram, index);
-		zram_slot_unlock(zram, index);
 
 		bio_advance_iter_single(bio, &iter, bv.bv_len);
 	} while (iter.bi_size);
