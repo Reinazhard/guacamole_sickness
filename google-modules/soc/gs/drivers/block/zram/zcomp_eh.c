@@ -117,6 +117,9 @@ out:
 
 static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *cookie)
 {
+	LIST_HEAD(free_list);
+	int do_free = 0;
+
 	spin_lock(&zcomp_eh->cookie_pool.lock);
 	list_add(&cookie->list, &zcomp_eh->cookie_pool.head);
 	zcomp_eh->cookie_pool.count++;
@@ -128,11 +131,22 @@ static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *co
 			cookie = list_last_entry(&zcomp_eh->cookie_pool.head,
 						struct zcomp_cookie, list);
 			list_del(&cookie->list);
-			kmem_cache_free(zcomp_cookie_cachep, cookie);
+			list_add(&cookie->list, &free_list);
 			zcomp_eh->cookie_pool.count--;
 		}
+		do_free = 1;
 	}
 	spin_unlock(&zcomp_eh->cookie_pool.lock);
+
+	/* Free cookies outside the spinlock to reduce lock hold time */
+	if (do_free) {
+		struct zcomp_cookie *tmp;
+
+		list_for_each_entry_safe(cookie, tmp, &free_list, list) {
+			list_del(&cookie->list);
+			kmem_cache_free(zcomp_cookie_cachep, cookie);
+		}
+	}
 }
 
 static void init_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
