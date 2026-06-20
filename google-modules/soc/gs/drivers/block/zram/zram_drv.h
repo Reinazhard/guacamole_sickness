@@ -70,7 +70,7 @@ struct zram_table_entry {
 		unsigned long handle;
 		unsigned long element;
 	};
-	unsigned int flags;
+	unsigned long flags;
 	spinlock_t lock;
 #ifdef CONFIG_ZRAM_GS_TRACK_ENTRY_ACTIME
 	ktime_t ac_time;
