@@ -1431,14 +1431,18 @@ static int gs_pi_controller(struct gs_tmu_data *data, int control_temp)
 	if (data->hardlimit_enable && data->is_hardlimited)
 		state = max(state, data->max_cdev);
 
-	// TODO: refactor locking
+	/*
+	 * Update thermal zone and cooling device under framework locks.
+	 * Follow the upstream power_allocator pattern: hold tz->lock,
+	 * set instance->target, acquire cdev->lock, call
+	 * __thermal_cdev_update() directly (no cdev->updated flag dance).
+	 */
 	mutex_unlock(&data->lock);
 	mutex_lock(&tz->lock);
 	instance->target = state;
 	mutex_lock(&cdev->lock);
-	cdev->updated = false;
+	__thermal_cdev_update(cdev);
 	mutex_unlock(&cdev->lock);
-	thermal_cdev_update(cdev);
 	mutex_unlock(&tz->lock);
 	mutex_lock(&data->lock);
 	data->max_cdev = state;
@@ -1818,13 +1822,16 @@ static void gs_throttle_hard_limit(struct kthread_work *work)
 			data->max_cdev = state;
 			mutex_unlock(&data->lock);
 
-			// TODO: refactor locking
+			/*
+			 * Update thermal zone and cooling device under
+			 * framework locks. Use __thermal_cdev_update()
+			 * directly under cdev->lock per upstream pattern.
+			 */
 			mutex_lock(&tz->lock);
-			mutex_lock(&cdev->lock);
-			cdev->updated = false;
-			mutex_unlock(&cdev->lock);
 			instance->target = state;
-			thermal_cdev_update(cdev);
+			mutex_lock(&cdev->lock);
+			__thermal_cdev_update(cdev);
+			mutex_unlock(&cdev->lock);
 			mutex_unlock(&tz->lock);
 
 			mutex_lock(&data->lock);
@@ -1851,13 +1858,16 @@ static void gs_throttle_hard_limit(struct kthread_work *work)
 			data->max_cdev = state;
 			mutex_unlock(&data->lock);
 
-			// TODO: refactor locking
+			/*
+			 * Update thermal zone and cooling device under
+			 * framework locks. Use __thermal_cdev_update()
+			 * directly under cdev->lock per upstream pattern.
+			 */
 			mutex_lock(&tz->lock);
-			mutex_lock(&cdev->lock);
-			cdev->updated = false;
-			mutex_unlock(&cdev->lock);
 			instance->target = state;
-			thermal_cdev_update(cdev);
+			mutex_lock(&cdev->lock);
+			__thermal_cdev_update(cdev);
+			mutex_unlock(&cdev->lock);
 			mutex_unlock(&tz->lock);
 
 			mutex_lock(&data->lock);
