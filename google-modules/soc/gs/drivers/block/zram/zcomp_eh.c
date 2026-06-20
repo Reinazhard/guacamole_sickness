@@ -62,20 +62,26 @@ static unsigned long nr_pend_request(struct zcomp_eh *zcomp_eh)
  */
 static bool refill_zcomp_cookie(struct zcomp_eh *zcomp_eh)
 {
-	int i;
+	int i, allocated = 0;
 	struct zcomp_cookie *cookie;
-
-	WARN_ON(zcomp_eh->cookie_pool.count != 0);
+	LIST_HEAD(local_list);
 
 	for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
 		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_ATOMIC);
 		if (!cookie)
 			break;
-		list_add(&cookie->list, &zcomp_eh->cookie_pool.head);
-		zcomp_eh->cookie_pool.count++;
+		list_add(&cookie->list, &local_list);
+		allocated++;
 	}
 
-	return !zcomp_eh->cookie_pool.count;
+	if (allocated) {
+		spin_lock(&zcomp_eh->cookie_pool.lock);
+		list_splice(&local_list, &zcomp_eh->cookie_pool.head);
+		zcomp_eh->cookie_pool.count += allocated;
+		spin_unlock(&zcomp_eh->cookie_pool.lock);
+	}
+
+	return allocated == 0;
 }
 
 static struct zcomp_cookie *alloc_zcomp_cookie(struct zcomp_eh *zcomp_eh)
@@ -86,9 +92,14 @@ static struct zcomp_cookie *alloc_zcomp_cookie(struct zcomp_eh *zcomp_eh)
 
 	spin_lock(&zcomp_eh->cookie_pool.lock);
 	if (list_empty(&zcomp_eh->cookie_pool.head)) {
+		spin_unlock(&zcomp_eh->cookie_pool.lock);
 		if (refill_zcomp_cookie(zcomp_eh))
-			goto out;
+			return NULL;
+		spin_lock(&zcomp_eh->cookie_pool.lock);
 	}
+
+	if (unlikely(list_empty(&zcomp_eh->cookie_pool.head)))
+		goto out;
 
 	cookie = list_first_entry(&zcomp_eh->cookie_pool.head,
 					struct zcomp_cookie, list);
