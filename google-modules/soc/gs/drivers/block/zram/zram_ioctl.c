@@ -42,7 +42,7 @@ static inline bool can_do_file_pageout(struct vm_area_struct *vma)
 	 * otherwise we'd be including shared non-exclusive mappings, which
 	 * opens a side channel.
 	 */
-	return inode_owner_or_capable(&nop_mnt_idmap,
+	return inode_owner_or_capable(&init_user_ns,
 				      file_inode(vma->vm_file)) ||
 			file_permission(vma->vm_file, MAY_WRITE) == 0;
 }
@@ -145,7 +145,7 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 
 	if (cmd == ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK) {
 		start_addr = (unsigned long)prwb->start_addr;
-		nr_remaining_pages = DIV_ROUND_UP_POW2(prwb->size, PAGE_SIZE);
+		nr_remaining_pages = DIV_ROUND_UP_ULL(prwb->size, PAGE_SIZE);
 	}
 
 	if (!nr_remaining_pages)
