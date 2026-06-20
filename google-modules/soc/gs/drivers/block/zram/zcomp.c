@@ -108,21 +108,19 @@ static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 	unsigned int pos;
 	unsigned long *mem;
 	unsigned long val;
-	bool ret = true;
 
 	mem = kmap_local_page(page);
 	val = mem[0];
 	for (pos = 1; pos < PAGE_SIZE / sizeof(*mem); pos++) {
 		if (val != mem[pos]) {
-			ret = false;
-			goto out;
+			kunmap_local(mem);
+			return false;
 		}
 	}
 
 	*element = val;
-out:
 	kunmap_local(mem);
-	return ret;
+	return true;
 }
 
 bool zcomp_available_algorithm(const char *algo_name)
@@ -164,25 +162,20 @@ ssize_t zcomp_available_show(const char *comp, char *buf)
 	return sz;
 }
 
-static inline bool zcomp_async(struct zcomp *comp)
-{
-	return comp->op->compress_async ? true : false;
-}
-
 int zcomp_compress(struct zcomp *comp, u32 index, struct page *page,
 			struct bio *bio)
 {
 	unsigned long element;
 
-	if (zcomp_page_same_pattern(page, &element)) {
+	if (unlikely(zcomp_page_same_pattern(page, &element))) {
 		zram_slot_update(comp->zram, index, element, 0, comp->prio);
 		return 0;
 	}
 
-	if (!zcomp_async(comp))
-		return comp->op->compress(comp, index, page, bio);
-	else
+	if (comp->op->compress_async)
 		return comp->op->compress_async(comp, index, page, bio);
+
+	return comp->op->compress(comp, index, page, bio);
 }
 
 void zcomp_prepare_decompress(struct zcomp *comp)
@@ -210,9 +203,10 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 	unsigned int src_len;
 	unsigned long handle;
 	struct zram *zram = comp->zram;
+	struct zram_table_entry *entry = &zram->table[index];
 
-	handle = zram_get_handle(zram, index);
-	src_len = zram_get_obj_size(zram, index);
+	handle = entry->handle;
+	src_len = entry->flags & (BIT(ZRAM_FLAG_SHIFT) - 1);
 	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
 
 	ret = zcomp_decompress_buf(comp, index, src, src_len, page);
@@ -304,6 +298,11 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 	void *dst_addr;
 	unsigned long handle;
 
+	if (unlikely(comp_len == 0)) {
+		zram_slot_update(zram, index, 0, 0, prio);
+		return 0;
+	}
+
 	if (comp_len >= huge_class_size)
 		comp_len = PAGE_SIZE;
 
@@ -313,9 +312,8 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 			__GFP_HIGHMEM |
 			__GFP_MOVABLE |
 			__GFP_CMA);
-	if (IS_ERR((void *)handle)) {
+	if (unlikely(IS_ERR_VALUE(handle)))
 		return PTR_ERR((void *)handle);
-	}
 
 	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
 	if (comp_len == PAGE_SIZE) {
