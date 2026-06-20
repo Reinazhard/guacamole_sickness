@@ -131,16 +131,18 @@ size_t zram_get_obj_size(struct zram *zram, u32 index)
 static void zram_set_obj_size(struct zram *zram,
 					u32 index, size_t size)
 {
-	unsigned long flags = zram->table[index].flags >> ZRAM_FLAG_SHIFT;
+	unsigned long flags = zram->table[index].flags;
 
-	zram->table[index].flags = (flags << ZRAM_FLAG_SHIFT) | size;
+	zram->table[index].flags = (flags & ~(BIT(ZRAM_FLAG_SHIFT) - 1)) | size;
 }
 
 static inline bool zram_allocated(struct zram *zram, u32 index)
 {
-	return zram_get_obj_size(zram, index) ||
-			zram_test_flag(zram, index, ZRAM_SAME) ||
-			zram_test_flag(zram, index, ZRAM_WB);
+	unsigned long flags = zram->table[index].flags;
+
+	return (flags & (BIT(ZRAM_FLAG_SHIFT) - 1)) ||
+	       (flags & BIT(ZRAM_SAME)) ||
+	       (flags & BIT(ZRAM_WB));
 }
 
 static inline void zram_set_priority(struct zram *zram, u32 index, u32 prio)
@@ -2521,7 +2523,7 @@ void zram_slot_update(struct zram *zram, u32 index,
 		zram_set_element(zram, index, handle);
 		atomic64_inc(&zram->stats.same_pages);
 	} else {
-		if (comp_len == PAGE_SIZE) {
+		if (unlikely(comp_len == PAGE_SIZE)) {
 			zram_set_flag(zram, index, ZRAM_HUGE);
 			atomic64_inc(&zram->stats.huge_pages);
 			atomic64_inc(&zram->stats.huge_pages_since);
@@ -2564,12 +2566,13 @@ void zram_recompress_slot_update(struct zram *zram, u32 index,
  */
 static void zram_free_page(struct zram *zram, size_t index)
 {
+	struct zram_table_entry *entry = &zram->table[index];
 	unsigned long handle;
 	int prio;
 
 	prio = zram_get_priority(zram, index);
 #ifdef CONFIG_ZRAM_GS_TRACK_ENTRY_ACTIME
-	zram->table[index].ac_time = 0;
+	entry->ac_time = 0;
 #endif
 
 	zram_clear_flag(zram, index, ZRAM_IDLE);
@@ -2592,7 +2595,7 @@ static void zram_free_page(struct zram *zram, size_t index)
 		zram_proc_wb_stat_dec(zram, index);
 #endif
 		zram_clear_flag(zram, index, ZRAM_WB);
-		zram_release_bdev_block(zram, zram_get_handle(zram, index));
+		zram_release_bdev_block(zram, entry->element);
 		goto out;
 	}
 
@@ -2606,12 +2609,12 @@ static void zram_free_page(struct zram *zram, size_t index)
 		goto out;
 	}
 
-	handle = zram_get_handle(zram, index);
+	handle = entry->handle;
 	if (!handle)
 		return;
 
 	zs_free(zram->mem_pool, handle);
-	zram_stat_compr_data_dec(zram, prio, zram_get_obj_size(zram, index));
+	zram_stat_compr_data_dec(zram, prio, entry->flags & (BIT(ZRAM_FLAG_SHIFT) - 1));
 out:
 	zram_stat_page_stored_dec(zram, prio);
 	zram_set_handle(zram, index, 0);
@@ -2737,8 +2740,8 @@ static int zram_write_page(struct zram *zram, struct page *page,
 {
 	unsigned int prio;
 
-	if (zram->limit_pages &&
-			zs_get_total_pages(zram->mem_pool) > zram->limit_pages)
+	if (unlikely(zram->limit_pages &&
+		     zs_get_total_pages(zram->mem_pool) > zram->limit_pages))
 		return -ENOMEM;
 
 	prio = zram_calc_prio(zram);
