@@ -2,9 +2,12 @@
 
 #include <linux/module.h>
 #include <linux/blkdev.h>
+#include <linux/slab.h>
 
 #include "zram_drv.h"
 #include "zcomp_eh.h"
+
+static struct kmem_cache *zcomp_cookie_cachep;
 
 static int zcomp_flush(struct zcomp_eh *zcomp_eh)
 {
@@ -68,7 +71,7 @@ static bool refill_zcomp_cookie(struct zcomp_eh *zcomp_eh)
 	LIST_HEAD(local_list);
 
 	for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_KERNEL);
+		cookie = kmem_cache_alloc(zcomp_cookie_cachep, GFP_KERNEL);
 		if (!cookie)
 			break;
 		list_add(&cookie->list, &local_list);
@@ -125,7 +128,7 @@ static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *co
 			cookie = list_last_entry(&zcomp_eh->cookie_pool.head,
 						struct zcomp_cookie, list);
 			list_del(&cookie->list);
-			kfree(cookie);
+			kmem_cache_free(zcomp_cookie_cachep, cookie);
 			zcomp_eh->cookie_pool.count--;
 		}
 	}
@@ -148,7 +151,7 @@ static void destroy_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
 		cookie = list_first_entry(&zcomp_eh->cookie_pool.head,
 					struct zcomp_cookie, list);
 		list_del(&cookie->list);
-		kfree(cookie);
+		kmem_cache_free(zcomp_cookie_cachep, cookie);
 		zcomp_eh->cookie_pool.count--;
 	}
 	spin_unlock(&zcomp_eh->cookie_pool.lock);
@@ -227,7 +230,7 @@ static void zcomp_eh_destroy(struct zcomp *comp)
 	while (!list_empty(&zcomp_eh->request_list)) {
 		cookie = list_first_entry(&zcomp_eh->request_list, struct zcomp_cookie, list);
 		list_del(&cookie->list);
-		kfree(cookie);
+		kmem_cache_free(zcomp_cookie_cachep, cookie);
 	}
 	spin_unlock(&zcomp_eh->request_lock);
 
@@ -271,12 +274,19 @@ const struct zcomp_operation zcomp_eh_op = {
 
 static int __init zcomp_eh_init(void)
 {
+	zcomp_cookie_cachep = kmem_cache_create("zcomp_cookie",
+						sizeof(struct zcomp_cookie),
+						0, 0, NULL);
+	if (!zcomp_cookie_cachep)
+		return -ENOMEM;
+
 	return zcomp_register("lz77eh", &zcomp_eh_op);
 }
 
 static void __exit zcomp_eh_exit(void)
 {
 	zcomp_unregister("lz77eh");
+	kmem_cache_destroy(zcomp_cookie_cachep);
 }
 
 module_init(zcomp_eh_init);
