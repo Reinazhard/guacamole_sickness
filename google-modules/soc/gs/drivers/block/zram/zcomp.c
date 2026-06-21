@@ -205,13 +205,20 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 	struct zram *zram = comp->zram;
 	struct zram_table_entry *entry = &zram->table[index];
 
+	void *local_copy;
+
+	local_copy = kmalloc(PAGE_SIZE, GFP_NOIO);
+	if (!local_copy)
+		return -ENOMEM;
+
 	handle = entry->handle;
 	src_len = entry->flags & (BIT(ZRAM_FLAG_SHIFT) - 1);
-	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
+	src = zs_obj_read_begin(zram->mem_pool, handle, src_len, local_copy);
 
 	ret = zcomp_decompress_buf(comp, index, src, src_len, page);
 
-	zs_unmap_object(zram->mem_pool, handle);
+	zs_obj_read_end(zram->mem_pool, handle, src_len, src);
+	kfree(local_copy);
 	return ret;
 }
 
@@ -295,7 +302,7 @@ struct zcomp *zcomp_create(const char *algo_name, struct zcomp_params *params,
 int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 		      struct page *page, u32 index, u32 prio)
 {
-	void *dst_addr;
+
 	unsigned long handle;
 
 	if (unlikely(comp_len == 0)) {
@@ -316,16 +323,14 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 	if (unlikely(IS_ERR_VALUE(handle)))
 		return PTR_ERR((void *)handle);
 
-	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
 	if (comp_len == PAGE_SIZE) {
 		void *src = kmap_local_page(page);
 
-		memcpy(dst_addr, src, comp_len);
+		zs_obj_write(zram->mem_pool, handle, src, comp_len);
 		kunmap_local(src);
 	} else {
-		memcpy(dst_addr, buffer, comp_len);
+		zs_obj_write(zram->mem_pool, handle, buffer, comp_len);
 	}
-	zs_unmap_object(zram->mem_pool, handle);
 	zram_slot_update(zram, index, handle, comp_len, prio);
 
 	return 0;
@@ -358,7 +363,7 @@ int zcomp_recompress_copy_buffer(void *buffer, int comp_len_new,
 	unsigned int class_index_old;
 	unsigned int class_index_new;
 	unsigned long handle_new;
-	void *dst;
+
 
 	comp_len_old = zram_get_obj_size(zram, index);
 	class_index_old = zs_lookup_class_index(zram->mem_pool, comp_len_old);
@@ -385,9 +390,7 @@ int zcomp_recompress_copy_buffer(void *buffer, int comp_len_new,
 	if (IS_ERR_VALUE(handle_new))
 		return PTR_ERR((void *)handle_new);
 
-	dst = zs_map_object(zram->mem_pool, handle_new, ZS_MM_WO);
-	memcpy(dst, buffer, comp_len_new);
-	zs_unmap_object(zram->mem_pool, handle_new);
+	zs_obj_write(zram->mem_pool, handle_new, buffer, comp_len_new);
 
 	zram_recompress_slot_update(zram, index, handle_new, comp_len_new,
 				    prio);
