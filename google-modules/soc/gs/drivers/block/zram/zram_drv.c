@@ -1059,7 +1059,7 @@ static bool zram_can_store_page(struct zram *zram)
 static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 {
 	unsigned long handle;
-	void *src, *dst;
+	void *src;
 	u32 size;
 	int err;
 	unsigned long blk_idx;
@@ -1094,9 +1094,7 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 	}
 
 	src = kmap_local_page(page);
-	dst = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
-	memcpy(dst, src, size);
-	zs_unmap_object(zram->mem_pool, handle);
+	zs_obj_write(zram->mem_pool, handle, src, size);
 	kunmap_local(src);
 
 	/*
@@ -2534,11 +2532,11 @@ static int read_incompressible_page(struct zram *zram, struct page *page,
 	void *src, *dst;
 
 	handle = zram_get_handle(zram, index);
-	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
+	src = zs_obj_read_begin(zram->mem_pool, handle, PAGE_SIZE, NULL);
 	dst = kmap_local_page(page);
 	copy_page(dst, src);
 	kunmap_local(dst);
-	zs_unmap_object(zram->mem_pool, handle);
+	zs_obj_read_end(zram->mem_pool, handle, PAGE_SIZE, src);
 
 	return 0;
 }
@@ -2564,9 +2562,16 @@ static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
 	/*
 	 * No decompression takes place here, as we read raw compressed data.
 	 */
-	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
+	void *local_copy;
+
+	local_copy = kmalloc(PAGE_SIZE, GFP_NOIO);
+	if (!local_copy)
+		return -ENOMEM;
+
+	src = zs_obj_read_begin(zram->mem_pool, handle, size, local_copy);
 	memcpy_to_page(page, 0, src, size);
-	zs_unmap_object(zram->mem_pool, handle);
+	zs_obj_read_end(zram->mem_pool, handle, size, src);
+	kfree(local_copy);
 
 	memzero_page(page, size, PAGE_SIZE - size);
 
