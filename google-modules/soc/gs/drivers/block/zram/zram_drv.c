@@ -1080,7 +1080,8 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 
 	handle = zs_malloc(zram->mem_pool, size,
 			   GFP_NOWAIT | __GFP_HIGHMEM |
-			   __GFP_MOVABLE | __GFP_CMA);
+			   __GFP_MOVABLE | __GFP_CMA,
+			   NUMA_NO_NODE);
 	if (IS_ERR_VALUE(handle)) {
 		zram_slot_unlock(zram, index);
 		return PTR_ERR((void *)handle);
