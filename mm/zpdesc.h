@@ -160,7 +160,7 @@ static inline void __zpdesc_set_movable(struct zpdesc *zpdesc,
 
 static inline void __zpdesc_set_zsmalloc(struct zpdesc *zpdesc)
 {
-	__SetPageZsmalloc(zpdesc_page(zpdesc));
+	/* PageZsmalloc not available in 6.1; no-op */
 }
 
 static inline struct zone *zpdesc_zone(struct zpdesc *zpdesc)
