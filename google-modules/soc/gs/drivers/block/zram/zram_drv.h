@@ -200,7 +200,7 @@ struct zram_wb_ctl {
 
 struct zram_wb_ctl *init_wb_ctl(struct zram *zram);
 void release_wb_ctl(struct zram_wb_ctl *wb_ctl);
-int scan_slots_for_writeback(struct zram *zram, u32 mode,
+void scan_slots_for_writeback(struct zram *zram, u32 mode,
 			     unsigned long lo, unsigned long hi,
 			     struct zram_pp_ctl *ctl);
 int zram_writeback_slots(struct zram *zram,

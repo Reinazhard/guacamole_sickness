@@ -1462,7 +1462,7 @@ void scan_slots_for_writeback(struct zram *zram, u32 mode,
 		if (!pps)
 			pps = kmalloc(sizeof(*pps), GFP_KERNEL);
 		if (!pps)
-			return -ENOMEM;
+			return;
 
 		INIT_LIST_HEAD(&pps->entry);
 
@@ -1754,7 +1754,7 @@ static int read_from_bdev_async(struct zram *zram, struct page *page,
 		if (!req->bounce_page) {
 			kfree(req);
 			bio_put(bio);
-			return;
+			return -ENOMEM;
 		}
 	}
 
