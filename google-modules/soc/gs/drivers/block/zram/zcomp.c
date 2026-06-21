@@ -311,7 +311,8 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 			__GFP_NOWARN |
 			__GFP_HIGHMEM |
 			__GFP_MOVABLE |
-			__GFP_CMA);
+			__GFP_CMA,
+			NUMA_NO_NODE);
 	if (unlikely(IS_ERR_VALUE(handle)))
 		return PTR_ERR((void *)handle);
 
@@ -379,7 +380,8 @@ int zcomp_recompress_copy_buffer(void *buffer, int comp_len_new,
 			       __GFP_KSWAPD_RECLAIM |
 			       __GFP_NOWARN |
 			       __GFP_HIGHMEM |
-			       __GFP_MOVABLE);
+			       __GFP_MOVABLE,
+			       NUMA_NO_NODE);
 	if (IS_ERR_VALUE(handle_new))
 		return PTR_ERR((void *)handle_new);
 
