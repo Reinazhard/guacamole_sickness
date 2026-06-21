@@ -40,6 +40,7 @@
 #include <linux/zpool.h>
 #include <linux/fs.h>
 #include <linux/workqueue.h>
+#include <linux/cpuhotplug.h>
 #include "zpdesc.h"
 
 #define ZSPAGE_MAGIC	0x58
