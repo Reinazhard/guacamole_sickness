@@ -1420,7 +1420,7 @@ int zram_writeback_slots(struct zram *zram,
 
 		if (signal_pending(current)) {
 			ret = -ERESTARTSYS;
-			break;
+			goto release_req;
 		}
 
 		while (!req) {
@@ -1428,8 +1428,12 @@ int zram_writeback_slots(struct zram *zram,
 			if (req)
 				break;
 
-			wait_event(wb_ctl->done_wait,
+			err = wait_event_interruptible(wb_ctl->done_wait,
 				   !list_empty(&wb_ctl->done_reqs));
+			if (err) {
+				ret = err;
+				goto release_req;
+			}
 
 			err = zram_complete_done_reqs(zram, wb_ctl);
 			/*
@@ -1510,6 +1514,7 @@ next:
 		release_pp_slot(zram, pps);
 	}
 
+release_req:
 	/*
 	 * Selected idle req, but never submitted it due to some error or
 	 * wb limit.
