@@ -179,6 +179,11 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 	for_each_vma(vmi, vma) {
 		unsigned long start = max(vma->vm_start, start_addr);
 
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			break;
+		}
+
 		if (!vma_is_anonymous(vma) && (!can_do_file_pageout(vma) &&
 					       (vma->vm_flags & VM_MAYSHARE)))
 			continue;
