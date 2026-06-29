@@ -1356,6 +1356,11 @@ int zram_prefetch_slots(struct zram *zram, struct zram_pp_ctl *ctl)
 	init_waitqueue_head(&pf_ctl.done_wait);
 
 	while ((pps = select_pp_slot(ctl))) {
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			break;
+		}
+
 		index = pps->index;
 		zram_slot_lock(zram, index);
 
@@ -1410,6 +1415,11 @@ int zram_writeback_slots(struct zram *zram,
 	while ((pps = select_pp_slot(ctl))) {
 		if (zram->wb_limit_enable && !zram->bd_wb_limit) {
 			ret = -EIO;
+			break;
+		}
+
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
 			break;
 		}
 
@@ -1621,6 +1631,9 @@ void scan_slots_for_writeback(struct zram *zram, u32 mode,
 	struct zram_pp_slot *pps = NULL;
 
 	while (index < hi) {
+		if (signal_pending(current))
+			break;
+
 		if (!pps)
 			pps = kmalloc(sizeof(*pps), GFP_KERNEL);
 		if (!pps)
@@ -1652,6 +1665,7 @@ void scan_slots_for_writeback(struct zram *zram, u32 mode,
 next:
 		zram_slot_unlock(zram, index);
 		index++;
+		cond_resched();
 	}
 	kfree(pps);
 }
