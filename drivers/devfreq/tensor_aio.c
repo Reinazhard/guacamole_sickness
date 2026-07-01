@@ -1064,10 +1064,10 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 		if (sfd->const_cyc >= cpu_min_sample_cntpct) {
 			struct cpufreq_policy *pol = &per_cpu(cached_pol, cpu);
 			u64 freq, max_freq = pol->cpuinfo.max_freq;
-			u64 ns = cntpct_to_ns(sfd->const_cyc);
 
 			/* Report the measured frequency and reset the stats */
-			freq = min(max_freq, USEC_PER_SEC * sfd->cpu_cyc / ns);
+			freq = cyc_per_cntpct_to_hz(sfd->cpu_cyc, sfd->const_cyc) / 1000;
+			freq = min(max_freq, freq);
 			per_cpu(arch_freq_scale, cpu) =
 				SCHED_CAPACITY_SCALE * freq / max_freq;
 			reset_sfd_data(sfd);
