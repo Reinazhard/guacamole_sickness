@@ -1,0 +1,24 @@
+build:
+  image: archlinux:base-devel
+  tags:
+    - self-host
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+      variables:
+        RELEASE: "0"
+        TELEGRAM_CHAT_ID: "-1001493260868"
+    - if: $CI_COMMIT_BRANCH == "86hm"
+      variables:
+        RELEASE: "1"
+        TELEGRAM_CHAT_ID: "-1001403511595"
+  variables:
+    CI: "1"
+    TELEGRAM_TOKEN: $TELEGRAM_TOKEN
+    CHATID: $TELEGRAM_CHAT_ID
+  script:
+    - pacman-key --init
+    - pacman -Syu --noconfirm git make curl unzip zip xz zstd jre-openjdk base-devel flex bison bc python rsync cpio
+    - git config --global url."https://github.com/".insteadOf "git@github.com:"
+    - curl -fsSLO https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/raviole/build.sh
+    - KSU=0 bash build.sh
+    - KSU=1 bash build.sh
