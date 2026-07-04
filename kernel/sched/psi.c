@@ -554,12 +554,8 @@ static u64 update_triggers(struct psi_group *group, u64 now)
 		trace_android_vh_psi_event(t);
 
 		/* Generate an event */
-		if (cmpxchg(&t->event, 0, 1) == 0) {
-			if (t->ext_wq)
-				wake_up_interruptible(t->ext_wq);
-			else
+		if (cmpxchg(&t->event, 0, 1) == 0)
 			wake_up_interruptible(&t->event_wait);
-		}
 		t->last_event_time = now;
 		/* Reset threshold breach flag once event got generated */
 		t->pending_event = false;
@@ -1295,7 +1291,6 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group,
 	t->event = 0;
 	t->last_event_time = 0;
 	init_waitqueue_head(&t->event_wait);
-	t->ext_wq = NULL;
 	t->pending_event = false;
 
 	mutex_lock(&group->trigger_lock);
@@ -1324,6 +1319,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group,
 
 	return t;
 }
+EXPORT_SYMBOL_GPL(psi_trigger_create);
 
 void psi_trigger_set_waitq(struct psi_trigger *t, wait_queue_head_t *wq)
 {
@@ -1399,6 +1395,7 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	}
 	kfree(t);
 }
+EXPORT_SYMBOL_GPL(psi_trigger_destroy);
 
 __poll_t psi_trigger_poll(void **trigger_ptr,
 				struct file *file, poll_table *wait)
