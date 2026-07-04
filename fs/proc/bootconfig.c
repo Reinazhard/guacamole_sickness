@@ -12,8 +12,22 @@
 
 static char *saved_boot_config;
 
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+extern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;
+extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
+#endif
+
 static int boot_config_proc_show(struct seq_file *m, void *v)
 {
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	if (static_branch_likely(
+		    &susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {
+		if (saved_boot_config) {
+			susfs_spoof_cmdline_or_bootconfig(m);
+			return 0;
+		}
+	}
+#endif
 	if (saved_boot_config)
 		seq_puts(m, saved_boot_config);
 	return 0;
@@ -50,6 +64,19 @@ static int __init copy_xbc_key_value_list(char *dst, size_t size)
 			     XBC_KEYLEN_MAX))
 			continue;
 #endif
+
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+		/* - System props like 'ro.boot.verifiedbooterror' and 'ro.boot.verifyerrorpart' will be set
+		 *   if 'androidboot.verifiedbooterror' and 'androidboot.verifyerrorpart' are set in /proc/bootconfig,
+		 *   so here we can prevent them from being added to /proc/bootconfig and system props.
+		 *
+		 * - More sus key can be added below to prevent it from being added to /proc/bootconfig
+		 */
+		if (!strcmp(key, "androidboot.verifiedbooterror") ||
+		    !strcmp(key, "androidboot.verifyerrorpart")) {
+			continue;
+		}
+#endif
 		ret = snprintf(dst, rest(dst, end), "%s = ", key);
 		if (ret < 0)
 			break;
@@ -61,8 +88,34 @@ static int __init copy_xbc_key_value_list(char *dst, size_t size)
 					q = '\'';
 				else
 					q = '"';
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+				/* More sus value can be spoofed below for a specific key, but it is device specific */
+				if (!strcmp(key,
+					    "androidboot.vbmeta.device_state")) {
+					ret = snprintf(
+						dst, rest(dst, end), "%c%s%c%s",
+						q, "locked", q,
+						xbc_node_is_array(vnode) ?
+							", " :
+							"\n");
+					goto bypass_orig_flow;
+				}
+				if (!strcmp(key,
+					    "androidboot.verifiedbootstate")) {
+					ret = snprintf(
+						dst, rest(dst, end), "%c%s%c%s",
+						q, "green", q,
+						xbc_node_is_array(vnode) ?
+							", " :
+							"\n");
+					goto bypass_orig_flow;
+				}
+#endif
 				ret = snprintf(dst, rest(dst, end), "%c%s%c%s",
 					q, val, q, xbc_node_is_array(vnode) ? ", " : "\n");
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+bypass_orig_flow:
+#endif
 				if (ret < 0)
 					goto out;
 				dst += ret;
