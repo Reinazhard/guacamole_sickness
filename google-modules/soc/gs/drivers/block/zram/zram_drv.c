@@ -2801,7 +2801,7 @@ static void scan_slots_for_recompress(struct zram *zram, u32 mode, u32 prio_max,
 		if (!pps)
 			pps = kmalloc(sizeof(*pps), GFP_KERNEL);
 		if (!pps)
-			return -ENOMEM;
+			return;
 
 		INIT_LIST_HEAD(&pps->entry);
 
