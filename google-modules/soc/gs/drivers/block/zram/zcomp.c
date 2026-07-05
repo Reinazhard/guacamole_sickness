@@ -207,7 +207,7 @@ int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 
 	void *local_copy;
 
-	local_copy = kmalloc(PAGE_SIZE, GFP_NOIO);
+	local_copy = kmalloc(PAGE_SIZE, GFP_ATOMIC);
 	if (!local_copy)
 		return -ENOMEM;
 
