@@ -2692,7 +2692,7 @@ static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
 	 */
 	void *local_copy;
 
-	local_copy = kmalloc(PAGE_SIZE, GFP_NOIO);
+	local_copy = kmalloc(PAGE_SIZE, GFP_ATOMIC);
 	if (!local_copy)
 		return -ENOMEM;
 
