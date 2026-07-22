@@ -453,7 +453,7 @@
 	};
 
 	pixel-reboot {
-		compatible = "google,pixel-reboot";
+		compatible = "google,pixel-reboot-v1";
 		syscon = <&pmu_system_controller>;
 		pshold-control-offset = <0x3E9C>;
 		pshold-control-trigger = <0x100>;
