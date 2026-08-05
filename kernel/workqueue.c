@@ -6977,7 +6977,7 @@ int workqueue_online_cpu(unsigned int cpu)
 	list_for_each_entry(wq, &workqueues, list) {
 		struct workqueue_attrs *attrs = wq->unbound_attrs;
 
-		if (attrs) {
+		if (wq->flags & WQ_UNBOUND) {
 			const struct wq_pod_type *pt = wqattrs_pod_type(attrs);
 			int tcpu;
 
@@ -7012,7 +7012,7 @@ int workqueue_offline_cpu(unsigned int cpu)
 	list_for_each_entry(wq, &workqueues, list) {
 		struct workqueue_attrs *attrs = wq->unbound_attrs;
 
-		if (attrs) {
+		if (wq->flags & WQ_UNBOUND) {
 			const struct wq_pod_type *pt = wqattrs_pod_type(attrs);
 			int tcpu;
 
