@@ -108,7 +108,7 @@ static unsigned long get_time_decayed_pages(struct task_struct *tsk, struct mm_s
 	if (tsk->signal->oom_score_adj < tier_min_adj[0] || !cache_time)
 		return (anon_pages >> 2) + swap_pages;
 
-	/* 
+	/*
 	 * Calculate decay based on time spent in background.
 	 */
 	unsigned long age_jiffies = jiffies - cache_time;
@@ -449,7 +449,7 @@ static int simple_lmk_reclaim_thread(void *data)
 		 * during the scan) is not lost.
 		 */
 		atomic_set(&needs_reclaim, 0);
-		
+
 		/* Acquire the lock before scanning */
 		if (!test_and_set_bit(0, &lmk_lock)) {
 			scan_and_kill();
@@ -492,7 +492,7 @@ static struct mm_struct *next_reap_victim(void)
 		 */
 		if (!test_bit(MMF_OOM_SKIP, &mm->flags))
 			break;
-			
+
 		mmap_read_unlock(mm);
 		mmput(mm);
 	}
@@ -728,7 +728,6 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 		if (WARN_ON(IS_ERR(thread)))
 			return PTR_ERR(thread);
 
-		
 		WARN_ON(register_oom_notifier(&simple_lmk_oom_nb));
 
 		complete(&psi_init_done);
