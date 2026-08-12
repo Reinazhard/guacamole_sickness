@@ -5692,21 +5692,23 @@ out_unlock:
 
 static int alloc_and_link_percpu_pwqs(struct workqueue_struct *wq)
 {
+	struct pool_workqueue *pwq;
 	int cpu;
 
 	for_each_possible_cpu(cpu) {
-		struct pool_workqueue **pwq_p = per_cpu_ptr(wq->cpu_pwq, cpu);
 		struct worker_pool *pool = get_percpu_pool(wq, cpu);
 
-		*pwq_p = kmem_cache_alloc_node(pwq_cache, GFP_KERNEL, pool->node);
-		if (!*pwq_p)
+		pwq = kmem_cache_alloc_node(pwq_cache, GFP_KERNEL, pool->node);
+		if (!pwq)
 			return -ENOMEM;
 
-		init_pwq(*pwq_p, wq, pool);
+		init_pwq(pwq, wq, pool);
 
 		mutex_lock(&wq->mutex);
-		link_pwq(*pwq_p);
+		link_pwq(pwq);
 		mutex_unlock(&wq->mutex);
+
+		rcu_assign_pointer(*per_cpu_ptr(wq->cpu_pwq, cpu), pwq);
 	}
 
 	return 0;
@@ -5720,7 +5722,7 @@ static int alloc_and_link_pwqs(struct workqueue_struct *wq)
 
 	lockdep_assert_held(&wq_pool_mutex);
 
-	wq->cpu_pwq = alloc_percpu(struct pool_workqueue *);
+	wq->cpu_pwq = alloc_percpu(struct pool_workqueue __rcu *);
 	if (!wq->cpu_pwq)
 		goto enomem;
 
@@ -5747,8 +5749,11 @@ oem_skip:
 enomem:
 	if (wq->cpu_pwq) {
 		for_each_possible_cpu(cpu) {
-			struct pool_workqueue *pwq = *per_cpu_ptr(wq->cpu_pwq, cpu);
+			struct pool_workqueue __rcu **slot;
+			struct pool_workqueue *pwq;
 
+			slot = per_cpu_ptr(wq->cpu_pwq, cpu);
+			pwq = rcu_access_pointer(*slot);
 			if (pwq) {
 				/*
 				 * Unlink pwq from wq->pwqs since link_pwq()
