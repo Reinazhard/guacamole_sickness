@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2014 Sergey Senozhatsky.
- */
 
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -15,8 +12,6 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/zram.h>
-
-#include "zcomp.h"
 
 /*
  * Pages that compress to sizes equals or greater than this are stored
@@ -34,7 +29,7 @@ static LIST_HEAD(zcomp_list);
 static DECLARE_RWSEM(zcomp_rwsem);
 
 /* caller should hold a zcomp_rwsem under semaphore */
-struct zcomp *find_zcomp(const char *algo_name)
+static struct zcomp *find_zcomp(const char *algo_name)
 {
 	struct zcomp *cursor, *ret = NULL;
 
@@ -108,13 +103,6 @@ int zcomp_unregister(const char *algo_name)
 }
 EXPORT_SYMBOL(zcomp_unregister);
 
-static void zcomp_fill_page(void *ptr, unsigned long len,
-					unsigned long value)
-{
-	WARN_ON_ONCE(!IS_ALIGNED(len, sizeof(unsigned long)));
-	memset_l(ptr, value, len / sizeof(unsigned long));
-}
-
 static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 {
 	unsigned int pos;
@@ -122,7 +110,7 @@ static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 	unsigned long val;
 	bool ret = true;
 
-	mem = kmap_atomic(page);
+	mem = kmap_local_page(page);
 	val = mem[0];
 	for (pos = 1; pos < PAGE_SIZE / sizeof(*mem); pos++) {
 		if (val != mem[pos]) {
@@ -133,7 +121,7 @@ static bool zcomp_page_same_pattern(struct page *page, unsigned long *element)
 
 	*element = val;
 out:
-	kunmap_atomic(mem);
+	kunmap_local(mem);
 	return ret;
 }
 
@@ -187,7 +175,7 @@ int zcomp_compress(struct zcomp *comp, u32 index, struct page *page,
 	unsigned long element;
 
 	if (zcomp_page_same_pattern(page, &element)) {
-		zram_slot_update(comp->zram, index, element, 0);
+		zram_slot_update(comp->zram, index, element, 0, comp->prio);
 		return 0;
 	}
 
@@ -199,45 +187,60 @@ int zcomp_compress(struct zcomp *comp, u32 index, struct page *page,
 
 void zcomp_prepare_decompress(struct zcomp *comp)
 {
-	if (comp->op->prepare_decompress)
+	if (comp && comp->op->prepare_decompress)
 		comp->op->prepare_decompress(comp);
+}
+
+int zcomp_decompress_buf(struct zcomp *comp, u32 index, void *src,
+			 unsigned int size, struct page *page)
+{
+	int ret;
+
+	trace_zcomp_decompress_start(page, index);
+	ret = comp->op->decompress(comp, src, size, page);
+	trace_zcomp_decompress_end(page, index);
+
+	return ret;
 }
 
 int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 {
-	int ret = 0;
-	void *dst, *src;
+	int ret;
+	void *src;
 	unsigned int src_len;
 	unsigned long handle;
 	struct zram *zram = comp->zram;
 
 	handle = zram_get_handle(zram, index);
-	if (!handle || zram_test_flag(zram, index, ZRAM_SAME)) {
-		unsigned long val = handle ? zram_get_element(zram, index) : 0;
-
-		dst = kmap_atomic(page);
-		zcomp_fill_page(dst, PAGE_SIZE, val);
-		kunmap_atomic(dst);
-		goto out;
-	}
-
 	src_len = zram_get_obj_size(zram, index);
-	if (src_len == PAGE_SIZE) {
-		src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
-		dst = kmap_atomic(page);
-		memcpy(dst, src, PAGE_SIZE);
-		kunmap_atomic(dst);
-		zs_unmap_object(zram->mem_pool, handle);
-		goto out;
-	}
-
 	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
-	trace_zcomp_decompress_start(page, index);
-	ret = comp->op->decompress(comp, src, src_len, page);
-	trace_zcomp_decompress_end(page, index);
+
+	ret = zcomp_decompress_buf(comp, index, src, src_len, page);
+
 	zs_unmap_object(zram->mem_pool, handle);
-out:
 	return ret;
+}
+
+bool zcomp_has_recompress(const char *algo_name)
+{
+	struct zcomp *zcomp;
+	bool ret = false;
+
+	down_read(&zcomp_rwsem);
+	zcomp = find_zcomp(algo_name);
+	ret = zcomp && zcomp->op->recompress;
+	up_read(&zcomp_rwsem);
+
+	return ret;
+}
+
+int zcomp_recompress(struct zcomp *comp, u32 index, struct page *page,
+		     u32 prio, u32 threshold)
+{
+	if (!comp->op->recompress)
+		return -ENOSYS;
+
+	return comp->op->recompress(comp, index, page, prio, threshold);
 }
 
 void zcomp_destroy(struct zcomp *comp)
@@ -253,7 +256,8 @@ void zcomp_destroy(struct zcomp *comp)
  * case of allocation error, or any other error potentially
  * returned by zcomp_create().
  */
-struct zcomp *zcomp_create(const char *algo_name, struct zram *zram)
+struct zcomp *zcomp_create(const char *algo_name, struct zcomp_params *params,
+			   struct zram *zram, u32 prio)
 {
 	struct zcomp *comp;
 	int error;
@@ -264,6 +268,10 @@ struct zcomp *zcomp_create(const char *algo_name, struct zram *zram)
 		up_read(&zcomp_rwsem);
 		return ERR_PTR(-EINVAL);
 	}
+
+	/* assign the params before comp->op->create */
+	comp->params = params;
+	comp->prio = prio;
 
 	error = comp->op->create(comp, algo_name);
 	if (error) {
@@ -291,7 +299,7 @@ struct zcomp *zcomp_create(const char *algo_name, struct zram *zram)
  * @index: swap slot index
  */
 int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
-		      struct page *page, u32 index)
+		      struct page *page, u32 index, u32 prio)
 {
 	void *dst_addr;
 	unsigned long handle;
@@ -311,16 +319,84 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 
 	dst_addr = zs_map_object(zram->mem_pool, handle, ZS_MM_WO);
 	if (comp_len == PAGE_SIZE) {
-		void *src = kmap_atomic(page);
+		void *src = kmap_local_page(page);
 
 		memcpy(dst_addr, src, comp_len);
-		kunmap_atomic(src);
+		kunmap_local(src);
 	} else {
 		memcpy(dst_addr, buffer, comp_len);
 	}
 	zs_unmap_object(zram->mem_pool, handle);
-	zram_slot_update(zram, index, handle, comp_len);
+	zram_slot_update(zram, index, handle, comp_len, prio);
 
 	return 0;
 }
 EXPORT_SYMBOL(zcomp_copy_buffer);
+
+/*
+ * Similar to zcomp_copy_buffer. The index was already locked during the
+ * recompress process.
+ *
+ * Once zcomp instance finishes the recompression, it need to copy the
+ * new compressed buffer to zram's memory space.
+ * There are two differences:
+ * 1. If the recompressed size is not smaller than original size, or not
+ * smaller than the threshold, we won't copy the data.
+ * 2. No direct reclaim in the recompression path.
+ *
+ * @buffer: memory address compressed objecd is stored
+ * @comp_len_new: the recompressed object size
+ * @zram: zram instance
+ * @index: swap slot index
+ * @prio: the recompress algorithm index
+ * @threshold: the max recompressed object size we accept.
+ */
+int zcomp_recompress_copy_buffer(void *buffer, int comp_len_new,
+				 struct zram *zram, u32 index,
+				 u32 prio, u32 threshold)
+{
+	unsigned int comp_len_old;
+	unsigned int class_index_old;
+	unsigned int class_index_new;
+	unsigned long handle_new;
+	void *dst;
+
+	comp_len_old = zram_get_obj_size(zram, index);
+	class_index_old = zs_lookup_class_index(zram->mem_pool, comp_len_old);
+	class_index_new = zs_lookup_class_index(zram->mem_pool, comp_len_new);
+
+	/* Try next prio until we make progress */
+	if (class_index_new >= class_index_old ||
+	    (threshold && comp_len_new >= threshold))
+		return -EAGAIN;
+
+	/*
+	 * No direct reclaim (slow path) for handle allocation and no
+	 * re-compression attempt (unlike in zram_write_bvec()) since
+	 * we already have stored that object in zsmalloc. If we cannot
+	 * alloc memory for recompressed object then we bail out and
+	 * simply keep the old (existing) object in zsmalloc.
+	 */
+	handle_new = zs_malloc(zram->mem_pool, comp_len_new,
+			       __GFP_KSWAPD_RECLAIM |
+			       __GFP_NOWARN |
+			       __GFP_HIGHMEM |
+			       __GFP_MOVABLE);
+	if (IS_ERR_VALUE(handle_new))
+		return PTR_ERR((void *)handle_new);
+
+	dst = zs_map_object(zram->mem_pool, handle_new, ZS_MM_WO);
+	memcpy(dst, buffer, comp_len_new);
+	zs_unmap_object(zram->mem_pool, handle_new);
+
+	zram_recompress_slot_update(zram, index, handle_new, comp_len_new,
+				    prio);
+
+	return 0;
+}
+EXPORT_SYMBOL(zcomp_recompress_copy_buffer);
+
+size_t get_huge_class_size(void)
+{
+	return huge_class_size;
+}
