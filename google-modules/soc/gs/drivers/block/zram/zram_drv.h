@@ -18,6 +18,7 @@
 #include <linux/rwsem.h>
 #include <linux/zsmalloc.h>
 #include <linux/crypto.h>
+#include <linux/rcupdate.h>
 
 #if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
 #include <linux/xarray.h>
@@ -55,6 +56,7 @@ enum zram_pageflags {
 	ZRAM_HUGE,	/* Incompressible page */
 	ZRAM_IDLE,	/* not accessed page since last idle marking */
 	ZRAM_INCOMPRESSIBLE, /* none of the algorithms could compress it */
+	ZRAM_PROC_WB,	/* page is stored on backing_device by per-process wb */
 
 	ZRAM_COMP_PRIORITY_BIT1, /* First bit of comp priority index */
 	ZRAM_COMP_PRIORITY_BIT2, /* Second bit of comp priority index */
@@ -97,6 +99,12 @@ struct zram_stats {
 	atomic64_t bd_count;		/* no. of pages in backing device */
 	atomic64_t bd_reads;		/* no. of reads from backing device */
 	atomic64_t bd_writes;		/* no. of writes from backing device */
+#endif
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+	atomic64_t proc_wb_stored_size;
+	atomic64_t proc_wb_max_stored_size;
+	atomic64_t proc_wb_compr_size;
+	atomic64_t proc_wb_max_compr_size;
 #endif
 };
 
@@ -195,6 +203,8 @@ struct zram_wb_ctl {
 	spinlock_t done_lock;
 	atomic_t num_inflight;
 	u64 processed_bytes;
+	struct rcu_head rcu;
+	bool proc_wb_enabled;
 };
 
 struct zram_wb_ctl *init_wb_ctl(struct zram *zram);
