@@ -272,6 +272,55 @@ static inline void update_used_max(struct zram *zram,
 					  &cur_max, pages));
 }
 
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+static inline void update_proc_wb_max_stored(struct zram *zram, u64 size)
+{
+	u64 cur_max = atomic64_read(&zram->stats.proc_wb_max_stored_size);
+
+	do {
+		if (cur_max >= size)
+			return;
+	} while (!atomic64_try_cmpxchg(&zram->stats.proc_wb_max_stored_size,
+				       &cur_max, size));
+}
+
+static inline void update_proc_wb_max_compr(struct zram *zram, u64 size)
+{
+	u64 cur_max = atomic64_read(&zram->stats.proc_wb_max_compr_size);
+
+	do {
+		if (cur_max >= size)
+			return;
+	} while (!atomic64_try_cmpxchg(&zram->stats.proc_wb_max_compr_size,
+				       &cur_max, size));
+}
+
+static void zram_proc_wb_stat_inc(struct zram *zram, u32 index)
+{
+	unsigned long obj_size = zram_get_obj_size(zram, index);
+	u64 cur_stored, cur_compr;
+
+	zram_set_flag(zram, index, ZRAM_PROC_WB);
+	cur_stored = atomic64_add_return(PAGE_SIZE,
+					 &zram->stats.proc_wb_stored_size);
+	cur_compr = atomic64_add_return(obj_size,
+					&zram->stats.proc_wb_compr_size);
+
+	update_proc_wb_max_stored(zram, cur_stored);
+	update_proc_wb_max_compr(zram, cur_compr);
+}
+
+static void zram_proc_wb_stat_dec(struct zram *zram, u32 index)
+{
+	if (zram_test_flag(zram, index, ZRAM_PROC_WB)) {
+		atomic64_sub(PAGE_SIZE, &zram->stats.proc_wb_stored_size);
+		atomic64_sub(zram_get_obj_size(zram, index),
+			     &zram->stats.proc_wb_compr_size);
+		zram_clear_flag(zram, index, ZRAM_PROC_WB);
+	}
+}
+#endif
+
 static ssize_t initstate_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -408,6 +457,87 @@ out:
 	return rv;
 }
 
+#if IS_ENABLED(CONFIG_ZRAM_GS_SLOWPATH_COMP)
+static unsigned int zram_calc_prio(struct zram *zram)
+{
+	unsigned int prio = ZRAM_PRIMARY_COMP;
+
+	if (unlikely(zram->algo_interleave)) {
+		if (zram->comp_algs[ZRAM_SLOWPATH_COMP]) {
+			prio = zram->slowpath_comp ? ZRAM_PRIMARY_COMP : ZRAM_SLOWPATH_COMP;
+			zram->slowpath_comp = !zram->slowpath_comp;
+		}
+	} else {
+		unsigned long free_pages = nr_free_pages();
+
+		if (zram->comp_algs[ZRAM_SLOWPATH_COMP] &&
+		    (((u64)free_pages << PAGE_SHIFT) > zram->free_mem_threshold))
+			prio = ZRAM_SLOWPATH_COMP;
+	}
+
+	return prio;
+}
+
+static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
+{
+	atomic64_inc(&zram->stats.pages_stored);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_inc(&zram->stats.slowpath_pages_stored);
+}
+
+static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
+{
+	atomic64_dec(&zram->stats.pages_stored);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_dec(&zram->stats.slowpath_pages_stored);
+}
+
+static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_add(comp_len, &zram->stats.compr_data_size);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_add(comp_len,
+			     &zram->stats.slowpath_compr_data_size);
+}
+
+static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_sub(comp_len, &zram->stats.compr_data_size);
+	if (prio == ZRAM_SLOWPATH_COMP)
+		atomic64_sub(comp_len,
+			     &zram->stats.slowpath_compr_data_size);
+}
+#else
+static unsigned int zram_calc_prio(struct zram *zram)
+{
+	return ZRAM_PRIMARY_COMP;
+}
+
+static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
+{
+	atomic64_inc(&zram->stats.pages_stored);
+}
+
+static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
+{
+	atomic64_dec(&zram->stats.pages_stored);
+}
+
+static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_add(comp_len, &zram->stats.compr_data_size);
+}
+
+static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
+				     unsigned int comp_len)
+{
+	atomic64_sub(comp_len, &zram->stats.compr_data_size);
+}
+#endif
+
 #ifdef CONFIG_ZRAM_GS_WRITEBACK
 #define INVALID_BDEV_BLOCK		(~0UL)
 
@@ -425,6 +555,11 @@ struct zram_wb_req {
 	struct list_head entry;
 };
 
+struct zram_prefetch_ctl {
+	atomic_t num_inflight;
+	wait_queue_head_t done_wait;
+};
+
 struct zram_rb_req {
 	struct work_struct work;
 	struct zram *zram;
@@ -440,6 +575,7 @@ struct zram_rb_req {
 		int error;
 	};
 	u32 index;
+	struct zram_prefetch_ctl *pf_ctl;
 };
 
 static ssize_t compressed_writeback_store(struct device *dev,
@@ -762,7 +898,7 @@ void release_wb_ctl(struct zram_wb_ctl *wb_ctl)
 		release_wb_req(req);
 	}
 
-	kfree(wb_ctl);
+	kfree_rcu(wb_ctl, rcu);
 }
 
 struct zram_wb_ctl *init_wb_ctl(struct zram *zram)
@@ -831,87 +967,6 @@ static void zram_account_writeback_submit(struct zram *zram)
 		zram->bd_wb_limit -=  1UL << (PAGE_SHIFT - 12);
 }
 
-#if IS_ENABLED(CONFIG_ZRAM_GS_SLOWPATH_COMP)
-static unsigned int zram_calc_prio(struct zram *zram)
-{
-	unsigned int prio = ZRAM_PRIMARY_COMP;
-
-	if (unlikely(zram->algo_interleave)) {
-		if (zram->comp_algs[ZRAM_SLOWPATH_COMP]) {
-			prio = zram->slowpath_comp ? ZRAM_PRIMARY_COMP : ZRAM_SLOWPATH_COMP;
-			zram->slowpath_comp = !zram->slowpath_comp;
-		}
-	} else {
-		unsigned long free_pages = nr_free_pages();
-
-		if (zram->comp_algs[ZRAM_SLOWPATH_COMP] &&
-		    (((u64)free_pages << PAGE_SHIFT) > zram->free_mem_threshold))
-			prio = ZRAM_SLOWPATH_COMP;
-	}
-
-	return prio;
-}
-
-static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
-{
-	atomic64_inc(&zram->stats.pages_stored);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_inc(&zram->stats.slowpath_pages_stored);
-}
-
-static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
-{
-	atomic64_dec(&zram->stats.pages_stored);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_dec(&zram->stats.slowpath_pages_stored);
-}
-
-static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_add(comp_len, &zram->stats.compr_data_size);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_add(comp_len,
-			     &zram->stats.slowpath_compr_data_size);
-}
-
-static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_sub(comp_len, &zram->stats.compr_data_size);
-	if (prio == ZRAM_SLOWPATH_COMP)
-		atomic64_sub(comp_len,
-			     &zram->stats.slowpath_compr_data_size);
-}
-#else
-static unsigned int zram_calc_prio(struct zram *zram)
-{
-	return ZRAM_PRIMARY_COMP;
-}
-
-static void zram_stat_page_stored_inc(struct zram *zram, unsigned int prio)
-{
-	atomic64_inc(&zram->stats.pages_stored);
-}
-
-static void zram_stat_page_stored_dec(struct zram *zram, unsigned int prio)
-{
-	atomic64_dec(&zram->stats.pages_stored);
-}
-
-static void zram_stat_compr_data_inc(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_add(comp_len, &zram->stats.compr_data_size);
-}
-
-static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
-				     unsigned int comp_len)
-{
-	atomic64_sub(comp_len, &zram->stats.compr_data_size);
-}
-#endif
-
 static int zram_writeback_complete(struct zram *zram, struct zram_wb_req *req)
 {
 	u32 index = req->pps->index;
@@ -950,6 +1005,14 @@ static int zram_writeback_complete(struct zram *zram, struct zram_wb_req *req)
 	zs_free(zram->mem_pool, zram_get_handle(zram, index));
 	zram_set_handle(zram, index, req->blk_idx);
 	zram_set_flag(zram, index, ZRAM_WB);
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+	{
+		struct zram_wb_ctl *wb_ctl = req->bio.bi_private;
+
+		if (wb_ctl->proc_wb_enabled)
+			zram_proc_wb_stat_inc(zram, index);
+	}
+#endif
 
 	/* Non-compressed writeback will decompress to PAGE_SIZE. */
 	if (!zram->compressed_wb) {
@@ -968,11 +1031,13 @@ static void zram_writeback_endio(struct bio *bio)
 	struct zram_wb_ctl *wb_ctl = bio->bi_private;
 	unsigned long flags;
 
+	rcu_read_lock();
 	spin_lock_irqsave(&wb_ctl->done_lock, flags);
 	list_add(&req->entry, &wb_ctl->done_reqs);
 	spin_unlock_irqrestore(&wb_ctl->done_lock, flags);
 
 	wake_up(&wb_ctl->done_wait);
+	rcu_read_unlock();
 }
 
 static void zram_submit_wb_request(struct zram *zram,
@@ -1105,6 +1170,8 @@ int zram_prefetch_cache_reuse(struct zram *zram, u32 index)
 	zram_set_handle(zram, index, blk_idx);
 	zram_set_flag(zram, index, ZRAM_WB);
 
+	zram_proc_wb_stat_inc(zram, index);
+
 	return 0;
 }
 
@@ -1186,6 +1253,7 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 		zram_release_bdev_block(zram, blk_idx);
 	}
 
+	zram_proc_wb_stat_dec(zram, index);
 	zram_clear_flag(zram, index, ZRAM_WB);
 	zram_set_handle(zram, index, handle);
 	atomic64_add(size, &zram->stats.compr_data_size);
@@ -1194,6 +1262,12 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 	zram_slot_unlock(zram, index);
 
 	return 0;
+}
+
+static inline void zram_prefetch_dec_and_wake(struct zram_prefetch_ctl *pf_ctl)
+{
+	if (atomic_dec_and_test(&pf_ctl->num_inflight))
+		wake_up(&pf_ctl->done_wait);
 }
 
 static void zram_deferred_prefetch(struct work_struct *w)
@@ -1207,6 +1281,7 @@ static void zram_deferred_prefetch(struct work_struct *w)
 
 	__free_page(page);
 	bio_put(req->bio);
+	zram_prefetch_dec_and_wake(req->pf_ctl);
 	kfree(req);
 }
 
@@ -1216,6 +1291,7 @@ static void zram_prefetch_read_endio(struct bio *bio)
 	struct page *page = bio_first_page_all(bio);
 
 	if (bio->bi_status) {
+		zram_prefetch_dec_and_wake(req->pf_ctl);
 		__free_page(page);
 		bio_put(bio);
 		kfree(req);
@@ -1231,7 +1307,8 @@ static void zram_prefetch_read_endio(struct bio *bio)
 }
 
 static int zram_prefetch_from_bdev(struct zram *zram, struct page *page,
-				   u32 index, unsigned long blk_idx)
+				   u32 index, unsigned long blk_idx,
+				   struct zram_prefetch_ctl *pf_ctl)
 {
 	struct zram_rb_req *req;
 	struct bio *bio;
@@ -1252,12 +1329,14 @@ static int zram_prefetch_from_bdev(struct zram *zram, struct page *page,
 	req->index = index;
 	req->blk_idx = blk_idx;
 	req->bio = bio;
+	req->pf_ctl = pf_ctl;
 
 	bio->bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
 	bio->bi_private = req;
 	bio->bi_end_io = zram_prefetch_read_endio;
 
 	__bio_add_page(bio, page, PAGE_SIZE, 0);
+	atomic_inc(&pf_ctl->num_inflight);
 	submit_bio(bio);
 
 	return 0;
@@ -1266,10 +1345,14 @@ static int zram_prefetch_from_bdev(struct zram *zram, struct page *page,
 int zram_prefetch_slots(struct zram *zram, struct zram_pp_ctl *ctl)
 {
 	struct zram_pp_slot *pps;
+	struct zram_prefetch_ctl pf_ctl;
 	int ret = 0;
 	u32 index = 0;
 	unsigned long blk_idx;
 	struct page *page = NULL;
+
+	atomic_set(&pf_ctl.num_inflight, 0);
+	init_waitqueue_head(&pf_ctl.done_wait);
 
 	while ((pps = select_pp_slot(ctl))) {
 		index = pps->index;
@@ -1290,7 +1373,8 @@ int zram_prefetch_slots(struct zram *zram, struct zram_pp_ctl *ctl)
 		}
 
 		/* Read the page from backing device and restore to zram */
-		ret = zram_prefetch_from_bdev(zram, page, index, blk_idx);
+		ret = zram_prefetch_from_bdev(zram, page, index, blk_idx,
+					      &pf_ctl);
 		if (ret)
 			break;
 
@@ -1306,6 +1390,8 @@ unlock_next:
 
 	if (page)
 		__free_page(page);
+
+	wait_event(pf_ctl.done_wait, atomic_read(&pf_ctl.num_inflight) == 0);
 	return ret;
 }
 
@@ -2326,6 +2412,27 @@ static ssize_t bd_stat_show(struct device *dev,
 }
 #endif
 
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+static ssize_t proc_wb_stat_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct zram *zram = dev_to_zram(dev);
+	ssize_t ret;
+
+	down_read(&zram->init_lock);
+	ret = scnprintf(buf, PAGE_SIZE, "%8llu %8llu %8llu %8llu\n",
+			(u64)atomic64_read(&zram->stats.proc_wb_stored_size),
+			(u64)atomic64_read(
+					&zram->stats.proc_wb_max_stored_size),
+			(u64)atomic64_read(&zram->stats.proc_wb_compr_size),
+			(u64)atomic64_read(
+					&zram->stats.proc_wb_max_compr_size));
+	up_read(&zram->init_lock);
+
+	return ret;
+}
+#endif
+
 static ssize_t debug_stat_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -2348,6 +2455,9 @@ static DEVICE_ATTR_RO(io_stat);
 static DEVICE_ATTR_RO(mm_stat);
 #ifdef CONFIG_ZRAM_GS_WRITEBACK
 static DEVICE_ATTR_RO(bd_stat);
+#endif
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+static DEVICE_ATTR_RO(proc_wb_stat);
 #endif
 static DEVICE_ATTR_RO(debug_stat);
 
@@ -2478,6 +2588,9 @@ static void zram_free_page(struct zram *zram, size_t index)
 	}
 
 	if (zram_test_flag(zram, index, ZRAM_WB)) {
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+		zram_proc_wb_stat_dec(zram, index);
+#endif
 		zram_clear_flag(zram, index, ZRAM_WB);
 		zram_release_bdev_block(zram, zram_get_handle(zram, index));
 		goto out;
@@ -3468,6 +3581,9 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_mm_stat.attr,
 #ifdef CONFIG_ZRAM_GS_WRITEBACK
 	&dev_attr_bd_stat.attr,
+#endif
+#if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
+	&dev_attr_proc_wb_stat.attr,
 #endif
 	&dev_attr_debug_stat.attr,
 #ifdef CONFIG_ZRAM_GS_MULTI_COMP
