@@ -1170,10 +1170,8 @@ void susfs_get_enabled_features(void __user **user_info) {
 	char *buf_ptr = NULL;
 	size_t copied_size = 0;
 
-	if (!info) {
-		info->err = -ENOMEM;
-		goto out_copy_to_user;
-	}
+	if (!info)
+		return;
 
 	if (copy_from_user(info, (struct st_susfs_enabled_features __user*)*user_info, sizeof(struct st_susfs_enabled_features))) {
 		info->err = -EFAULT;
