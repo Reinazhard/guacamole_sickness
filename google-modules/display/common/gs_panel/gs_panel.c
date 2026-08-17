@@ -1544,7 +1544,7 @@ int gs_panel_set_fake_color_data(struct gs_panel *ctx, u32 *options, int count)
 
 	mutex_lock(&ctx->mode_lock);
 	ctx->color_data.ready = true; // Fake color data always ready for read
-	while (option_idx < count && buf_idx < ctx->color_data.size) {
+	while (option_idx < count && buf_idx + 1 < ctx->color_data.size) {
 		ctx->color_data.data[buf_idx++] = (options[option_idx] >> 8) & 0xFF;
 		ctx->color_data.data[buf_idx++] = options[option_idx] & 0xFF;
 		option_idx++;
