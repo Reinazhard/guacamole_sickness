@@ -110,11 +110,17 @@ static void copy_with_wrap(struct edgetpu_telemetry_header *header, void *dest,
 	u32 remaining = 0;
 	u32 head = header->head & (wrap_bit - 1);
 
-	if (head + length < size) {
+	/* Validate length doesn't exceed buffer size */
+	if (length == 0 || length > size)
+		return;
+
+	if (head + length < size && head + length >= head) {
 		memcpy(dest, start + head, length);
 		header->head += length;
 	} else {
 		remaining = size - head;
+		if (remaining > length)
+			remaining = length;
 		memcpy(dest, start + head, remaining);
 		memcpy(dest + remaining, start, length - remaining);
 		header->head = (header->head & wrap_bit) ^ wrap_bit;
