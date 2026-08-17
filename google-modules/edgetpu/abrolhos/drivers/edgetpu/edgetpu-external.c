@@ -93,10 +93,15 @@ static int edgetpu_external_mailbox_alloc(struct device *edgetpu_dev,
 	group = edgetpu_device_group_get(client->group);
 	mutex_unlock(&client->group_lock);
 
-	if (copy_from_user(&req.attr, (void __user *)client_info->attr, sizeof(req.attr))) {
-		if (!client_info->attr)
-			etdev_dbg(client->etdev,
-				  "Using VII mailbox attrs for external mailbox\n");
+	if (client_info->attr) {
+		if (copy_from_user(&req.attr, (void __user *)client_info->attr,
+				   sizeof(req.attr))) {
+			ret = -EFAULT;
+			goto error_put_group;
+		}
+	} else {
+		etdev_dbg(client->etdev,
+			  "Using VII mailbox attrs for external mailbox\n");
 		req.attr = group->mbox_attr;
 	}
 
