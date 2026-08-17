@@ -52,9 +52,10 @@ static void clear_mapping(struct edgetpu_dev *etdev,
 static void mobile_firmware_clear_mappings(struct edgetpu_dev *etdev,
 					   struct mobile_image_config *image_config)
 {
+	u32 count = min_t(u32, image_config->num_iommu_mapping, MAX_IOMMU_MAPPINGS);
 	int i;
 
-	for (i = 0; i < image_config->num_iommu_mapping; i++)
+	for (i = 0; i < count; i++)
 		clear_mapping(etdev, image_config, i);
 }
 
@@ -65,6 +66,12 @@ static int mobile_firmware_setup_mappings(struct edgetpu_dev *etdev,
 	tpu_addr_t tpu_addr;
 	size_t size;
 	phys_addr_t phys_addr;
+
+	if (image_config->num_iommu_mapping > MAX_IOMMU_MAPPINGS) {
+		etdev_err(etdev, "num_iommu_mapping %u exceeds max %u\n",
+			  image_config->num_iommu_mapping, MAX_IOMMU_MAPPINGS);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < image_config->num_iommu_mapping; i++) {
 		tpu_addr = image_config->mappings[i].virt_address;
