@@ -632,6 +632,9 @@ static ssize_t aocc_write(struct file *file, const char __user *buf,
 	if (!private)
 		return -ENODEV;
 
+	if (count > SIZE_MAX - sizeof(int))
+		return -EINVAL;
+
 	buffer = kmalloc(count + sizeof(int), GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
