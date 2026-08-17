@@ -242,6 +242,12 @@ static int cp_shmem_check_mem_map_on_cp(struct device *dev)
 
 	mif_info("secure_size:0x%08x ns_size:0x%08x count:%d\n",
 			map.secure_size, map.ns_size, map.ns_map_count);
+
+	if (map.ns_map_count > MAX_MAP_ON_CP) {
+		mif_err("Invalid ns_map_count:%d\n", map.ns_map_count);
+		return -EINVAL;
+	}
+
 	_cp_shmem[cp_num][SHMEM_CP].size = map.secure_size;
 
 	for (i = 0; i < map.ns_map_count; i++) {
