@@ -18952,11 +18952,11 @@ dhd_dbg_state_read(struct file *file, char __user *ubuf,
 	/* Basically enforce aligned 4 byte reads. It's up to the user to work out the details */
 	tmp = dhd_readregl(g_dbgfs.dhdp->bus, file->f_pos & (~3));
 
-	ret = copy_to_user(ubuf, &tmp, 4);
-	if (ret == count)
+	ret = copy_to_user(ubuf, &tmp, min_t(size_t, count, sizeof(tmp)));
+	if (ret)
 		return -EFAULT;
 
-	count -= ret;
+	count = min_t(size_t, count, sizeof(tmp));
 	*ppos = pos + count;
 	rval = count;
 
@@ -18977,8 +18977,8 @@ dhd_debugfs_write(struct file *file, const char __user *ubuf, size_t count, loff
 	if (count > g_dbgfs.size - pos)
 		count = g_dbgfs.size - pos;
 
-	ret = copy_from_user(&buf, ubuf, sizeof(uint32));
-	if (ret == count)
+	ret = copy_from_user(&buf, ubuf, min_t(size_t, count, sizeof(buf)));
+	if (ret)
 		return -EFAULT;
 
 	/* XXX: The user can request any length they want, but they are getting 4 bytes */
