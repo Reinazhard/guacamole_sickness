@@ -118,9 +118,11 @@ static void clear_ns_mapping(struct edgetpu_dev *etdev,
 static void mobile_firmware_clear_ns_mappings(struct edgetpu_dev *etdev,
 					      struct mobile_image_config *image_config)
 {
+	u32 count = min_t(u32, image_config->num_ns_iommu_mappings,
+			  MAX_NS_IOMMU_MAPPINGS);
 	int i;
 
-	for (i = 0; i < image_config->num_ns_iommu_mappings; i++)
+	for (i = 0; i < count; i++)
 		clear_ns_mapping(etdev, image_config, i);
 }
 
@@ -132,6 +134,13 @@ static int mobile_firmware_setup_ns_mappings(struct edgetpu_dev *etdev,
 	int ret = 0, i;
 	struct edgetpu_mobile_platform_dev *etmdev = to_mobile_dev(etdev);
 	phys_addr_t phys_addr = etmdev->fw_ctx_paddr;
+
+	if (image_config->num_ns_iommu_mappings > MAX_NS_IOMMU_MAPPINGS) {
+		etdev_err(etdev, "num_ns_iommu_mappings %u exceeds max %u\n",
+			  image_config->num_ns_iommu_mappings,
+			  MAX_NS_IOMMU_MAPPINGS);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < image_config->num_ns_iommu_mappings; i++)
 		size += CONFIG_TO_MBSIZE(image_config->ns_iommu_mappings[i]);
@@ -183,9 +192,10 @@ static void mobile_firmware_before_destroy(struct edgetpu_firmware *et_fw)
 
 	image_config = mobile_firmware_get_image_config(etdev);
 
-	mobile_firmware_clear_ns_mappings(etdev, image_config);
-	if (image_config->privilege_level == FW_PRIV_LEVEL_NS)
+	if (image_config->privilege_level == FW_PRIV_LEVEL_NS) {
+		mobile_firmware_clear_ns_mappings(etdev, image_config);
 		mobile_firmware_clear_mappings(etdev, image_config);
+	}
 	edgetpu_firmware_set_data(et_fw, NULL);
 	kfree(image_config);
 }
@@ -425,18 +435,21 @@ static int mobile_firmware_setup_buffer(struct edgetpu_firmware *et_fw,
 		goto out;
 
 	/* clear last image mappings */
-	if (last_image_config->privilege_level == FW_PRIV_LEVEL_NS)
+	if (last_image_config->privilege_level == FW_PRIV_LEVEL_NS) {
 		mobile_firmware_clear_mappings(etdev, last_image_config);
+		mobile_firmware_clear_ns_mappings(etdev, last_image_config);
+	}
 
-	if (image_config->privilege_level == FW_PRIV_LEVEL_NS)
+	if (image_config->privilege_level == FW_PRIV_LEVEL_NS) {
 		ret = mobile_firmware_setup_mappings(etdev, image_config);
-	if (ret)
-		goto out;
-	mobile_firmware_clear_ns_mappings(etdev, last_image_config);
-	ret = mobile_firmware_setup_ns_mappings(etdev, image_config);
-	if (ret) {
-		mobile_firmware_clear_mappings(etdev, image_config);
-		goto out;
+		if (ret)
+			goto out;
+		ret = mobile_firmware_setup_ns_mappings(etdev, image_config);
+		if (ret) {
+			mobile_firmware_clear_mappings(etdev, image_config);
+			mobile_firmware_clear_ns_mappings(etdev, image_config);
+			goto out;
+		}
 	}
 	mobile_firmware_save_image_config(etdev, image_config);
 out:
