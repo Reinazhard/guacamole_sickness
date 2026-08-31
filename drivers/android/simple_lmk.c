@@ -523,10 +523,10 @@ static struct mm_struct *next_reap_victim(bool force)
 	}
 
 	if (!mm) {
-		if (should_retry)
+		if (should_retry) {
 			/* Return ERR_PTR(-EAGAIN) to try reaping again later */
 			mm = ERR_PTR(-EAGAIN);
-		else
+		} else {
 			/*
 			 * Nothing left to reap. Clear reclaim_active so
 			 * simple_lmk_mm_freed() stops searching the victims
@@ -535,9 +535,16 @@ static struct mm_struct *next_reap_victim(bool force)
 			 * scan_and_kill() to ensure all prior victim mm
 			 * pointers are visible as NULL before we declare
 			 * reclaim inactive.
+			 *
+			 * This must stay inside the else: clearing the flag
+			 * while we are handing back -EAGAIN lets a concurrent
+			 * scan_and_kill() overwrite the victims array that
+			 * next_reap_victim() and simple_lmk_mm_freed() are
+			 * still walking.
 			 */
 			smp_mb();
 			WRITE_ONCE(reclaim_active, false);
+		}
 	}
 
 	return mm;
