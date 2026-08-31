@@ -34,6 +34,13 @@ struct victim_info {
 	struct mm_struct *mm;
 	unsigned long size;
 	unsigned long score;
+	/*
+	 * Resident anonymous pages credited against the memory deficit for
+	 * this victim. Zero until the kill is actually dispatched, so that
+	 * candidates that were selected but never killed are not counted as
+	 * memory already on its way to being freed.
+	 */
+	unsigned long pending;
 };
 
 static struct victim_info victims[MAX_VICTIMS] __cacheline_aligned_in_smp;
@@ -52,9 +59,44 @@ static atomic_t needs_reclaim = ATOMIC_INIT(0);
 static atomic_t needs_reap = ATOMIC_INIT(0);
 static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
 
+/*
+ * Anonymous pages belonging to victims that have been killed but whose memory
+ * has not yet been reaped or released by exit. nr_free_pages() still counts
+ * these against us, even though they are already committed to being freed.
+ *
+ * Derived by summing the victims array rather than maintained as a counter:
+ * a victim's memory can stop pending by any of three paths -- a successful
+ * __oom_reap_task_mm(), exit_mmap() via simple_lmk_mm_freed(), or the
+ * force-give-up path in next_reap_victim() -- and any of them can race.
+ * Summing current state cannot double-subtract or leak the way an
+ * event-driven counter can.
+ *
+ * This is the same invariant Sultan's synchronous design obtained by waiting
+ * for each victim's memory to be freed before proceeding to kill more,
+ * expressed as accounting so the kill path stays asynchronous and needs no
+ * artificial cooldown.
+ */
+static unsigned long pages_pending_free(void)
+{
+	unsigned long total = 0;
+	int i;
+
+	for (i = 0; i < READ_ONCE(nr_victims); i++) {
+		struct mm_struct *mm = READ_ONCE(victims[i].mm);
+
+		/* No victim, or its memory has already been accounted as free */
+		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags))
+			continue;
+
+		total += victims[i].pending;
+	}
+
+	return total;
+}
+
 static unsigned long get_target_free_pages(void)
 {
-	unsigned long deficit;
+	unsigned long deficit, pending;
 
 	if (nr_free_pages() >= totalreserve_pages)
 		return 0;
@@ -62,7 +104,20 @@ static unsigned long get_target_free_pages(void)
 	deficit = totalreserve_pages - nr_free_pages();
 	deficit += (deficit >> 3); /* 12.5% margin */
 
-	return deficit;
+	/*
+	 * Do not charge this cycle for memory that earlier kills have already
+	 * committed to freeing. Without this, the deficit is charged for the
+	 * same pages on every cycle until the victim's memory actually lands:
+	 * a cycle then sees a deficit that is already being resolved, finds no
+	 * victims left at the current tier, and escalates -- which is how the
+	 * driver reaches the most aggressive tier and kills far more than the
+	 * deficit ever required.
+	 */
+	pending = pages_pending_free();
+	if (pending >= deficit)
+		return 0;
+
+	return deficit - pending;
 }
 
 static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
@@ -221,9 +276,11 @@ static unsigned long find_victims(int *vindex)
 			task_unlock(vtsk);
 			rcu_read_unlock();
 
-			victims[*vindex].tsk = vtsk;
-			victims[*vindex].mm = vtsk->mm;
-			victims[*vindex].size = pages;
+		victims[*vindex].tsk = vtsk;
+		victims[*vindex].mm = vtsk->mm;
+		victims[*vindex].size = pages;
+		/* Not killed yet, so nothing is pending on its account */
+		victims[*vindex].pending = 0;
 
 			pages_found += pages;
 
@@ -420,6 +477,13 @@ static void scan_and_kill(void)
 			victim->score = get_mm_counter(mm, MM_ANONPAGES);
 		else
 			victim->score = 0;
+
+		/*
+		 * The kill is dispatched below, so this victim's resident
+		 * anonymous pages are now guaranteed to be freed even though
+		 * nr_free_pages() will not reflect that for some time.
+		 */
+		victim->pending = victim->score;
 
 		/* We don't need the task_struct anymore */
 		put_task_struct(vtsk);
