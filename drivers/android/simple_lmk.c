@@ -434,6 +434,22 @@ static void scan_and_kill(void)
 		struct task_struct *t, *vtsk = victim->tsk;
 		struct mm_struct *mm = victim->mm;
 
+		/*
+		 * Released above rather than killed: its memory was already
+		 * gone before we selected it, so there is nothing here to
+		 * reclaim. Killing it anyway would only emit a
+		 * "Killing ... to free N KiB" line for memory that will never
+		 * be freed, and inflate the kill count for anyone reading the
+		 * log to judge whether the driver is over-killing.
+		 */
+		if (!mm) {
+			victim->score = 0;
+			victim->pending = 0;
+			put_task_struct(vtsk);
+			victim->tsk = NULL;
+			continue;
+		}
+
 		pr_info("Killing %s with adj %d to free %lu KiB\n", vtsk->comm,
 			vtsk->signal->oom_score_adj,
 			victim->size << (PAGE_SHIFT - 10));
@@ -449,8 +465,7 @@ static void scan_and_kill(void)
 		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
 
-		if (mm)
-			set_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags);
+		set_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags);
 
 		/*
 		 * Drop the victim's oom_score_adj to OOM_SCORE_ADJ_MIN.
@@ -473,10 +488,7 @@ static void scan_and_kill(void)
 		set_cpus_allowed_ptr(vtsk, cpu_all_mask);
 
 		/* Store the number of anon pages to sort victims for reaping */
-		if (mm)
-			victim->score = get_mm_counter(mm, MM_ANONPAGES);
-		else
-			victim->score = 0;
+		victim->score = get_mm_counter(mm, MM_ANONPAGES);
 
 		/*
 		 * The kill is dispatched below, so this victim's resident
