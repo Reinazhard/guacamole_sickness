@@ -686,14 +686,21 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 		return;
 
 	/*
-	 * Fast path: if reclaim is not active, the victims array is not live
-	 * and there is nothing to search. reclaim_active stays true from
-	 * scan_and_kill() until the reaper confirms all victims are reaped,
-	 * so a late mm_freed for a dying victim will always find it true.
+	 * No fast path on reclaim_active here, and that is deliberate.
+	 *
+	 * reclaim_active is cleared by next_reap_victim() once *reaping* is
+	 * done, but a victim that was reaped successfully has not *exited*
+	 * yet -- and this function runs from __mmput() after exit_mmap(). For
+	 * such a victim this is the only place its mmgrab() reference is
+	 * released, so skipping the search strands it: __mmput() then drops
+	 * its own reference at the end without ours ever being dropped,
+	 * mm_count never reaches zero, and the mm_struct is leaked outright.
+	 *
+	 * Scanning is bounded by MAX_VICTIMS against a cacheline-aligned
+	 * array and runs once per process exit, so the search is not worth a
+	 * correctness hazard. Every path that drops a victim's reference
+	 * clears its slot first, so stale entries cannot be matched.
 	 */
-	if (!READ_ONCE(reclaim_active))
-		return;
-
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
 		if (READ_ONCE(victims[i].mm) == mm) {
 			if (cmpxchg(&victims[i].mm, mm, NULL) == mm) {
