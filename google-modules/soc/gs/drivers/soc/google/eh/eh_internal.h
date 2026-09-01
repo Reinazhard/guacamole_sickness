@@ -112,6 +112,15 @@ struct eh_device {
 	atomic_t nr_inflight;
 	wait_queue_head_t idle_wq;
 
+	/*
+	 * Called by eh_suspend() to flush requests the upper layer is still
+	 * holding. Required because cookies batched on a block plug are
+	 * released only when the owning task unplugs, and a task the freezer
+	 * has already stopped will never unplug.
+	 */
+	eh_drain_fn drain_cb;
+	void *drain_priv;
+
 	/* keep pending request */
 	struct eh_sw_fifo sw_fifo;
 #ifdef CONFIG_SOC_ZUMA
