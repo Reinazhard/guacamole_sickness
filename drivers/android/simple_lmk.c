@@ -152,30 +152,30 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
 	swap(*lhs, *rhs);
 }
 
-static unsigned long get_time_decayed_pages(struct task_struct *tsk, struct mm_struct *mm)
+/*
+ * Pages a task is holding that only killing it would release: resident
+ * anonymous memory, plus the swap slots its entries occupy. File pages are
+ * left out because the kernel can drop those without killing anything.
+ *
+ * Freeing the swap slots matters here specifically: this device runs zram
+ * near capacity, so reclaim cannot push further anon pages out until some
+ * slots are released.
+ *
+ * No attempt is made to weight these pages by how cold they are. Android
+ * already orders the cached tiers by recency, so oom_score_adj carries that
+ * information and find_victims() selects on it. Re-deriving coldness here
+ * from how long a task has been backgrounded double-counts the same signal,
+ * needs tunables to describe, and is not checkable -- MGLRU generations and
+ * workingset are authoritative, and a killer should not compete with them.
+ *
+ * This is also what makes the deficit arithmetic sound. get_target_free_pages()
+ * credits kills with the pages actually pending free, so victim sizes have to
+ * mean real pages; a discounted estimate would understate the credit and
+ * drive the driver to kill again.
+ */
+static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 {
-	unsigned long anon_pages = get_mm_counter(mm, MM_ANONPAGES);
-	unsigned long swap_pages = get_mm_counter(mm, MM_SWAPENTS);
-	unsigned long cache_time = tsk->simple_lmk_cache_time;
-
-	/* If not cached, or cache_time not set, it's hot (low weight) */
-	if (tsk->signal->oom_score_adj < tier_min_adj[0] || !cache_time)
-		return (anon_pages >> CONFIG_ANDROID_SIMPLE_LMK_DECAY_HOT_SHIFT) + swap_pages;
-
-	/*
-	 * Calculate decay based on time spent in background.
-	 */
-	unsigned long age_jiffies = jiffies - cache_time;
-	int shift;
-
-	if (age_jiffies > CONFIG_ANDROID_SIMPLE_LMK_DECAY_FULL_SEC * HZ)
-		shift = 0;	/* full weight */
-	else if (age_jiffies > CONFIG_ANDROID_SIMPLE_LMK_DECAY_HALF_SEC * HZ)
-		shift = 1;	/* 50% weight */
-	else
-		shift = CONFIG_ANDROID_SIMPLE_LMK_DECAY_HOT_SHIFT; /* hot weight */
-
-	return (anon_pages >> shift) + swap_pages;
+	return get_mm_counter(mm, MM_ANONPAGES) + get_mm_counter(mm, MM_SWAPENTS);
 }
 
 static unsigned long find_victims(int *vindex)
@@ -264,7 +264,7 @@ static unsigned long find_victims(int *vindex)
 				goto drop_ref;
 			}
 
-			pages = get_time_decayed_pages(tsk, vtsk->mm);
+			pages = get_reclaimable_pages(vtsk->mm);
 			if (!pages) {
 				task_unlock(vtsk);
 				rcu_read_unlock();
@@ -779,19 +779,13 @@ static int simple_lmk_psi_thread(void *data)
  *
  * This hook runs on every oom_score_adj write, and ActivityManager rewrites
  * adj for cached apps on many state changes. Stamping unconditionally made
- * cache_time mean "last written" rather than "entered the tier", while both
- * of its readers mean the latter:
+ * cache_time mean "last written" rather than "entered the tier", while its
+ * only reader -- the grace period in find_victims() -- means the latter: it
+ * drops any candidate stamped within GRACE_PERIOD_MS, so an app rewritten
+ * more often than that is never killable at Tier 0 at all.
  *
- *   - the grace period in find_victims() drops any candidate stamped within
- *     GRACE_PERIOD_MS, so an app rewritten more often than that is never
- *     killable at Tier 0 at all;
- *   - get_time_decayed_pages() weights a task as hot until it has aged past
- *     DECAY_HALF_SEC, so the same app has its anon pages permanently
- *     discounted and is deprioritised at every tier.
- *
- * Together those make a frequently reclassified cached app progressively
- * harder to kill, which is the under-killing counterpart to the over-killing
- * fixed by accounting for pages already pending free.
+ * That is the under-killing counterpart to the over-killing fixed by
+ * accounting for pages already pending free.
  *
  * Called before the new value is assigned, so task->signal->oom_score_adj
  * still holds the previous one and the transition is visible.
