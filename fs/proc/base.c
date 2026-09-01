@@ -1185,11 +1185,15 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		}
 	}
 
+	/*
+	 * Called before the assignment: simple_lmk records when a task
+	 * entered the cached tier, so it needs the previous value as well.
+	 */
+	simple_lmk_update_adj(task, oom_adj);
 	task->signal->oom_score_adj = oom_adj;
 	if (!legacy && has_capability_noaudit(current, CAP_SYS_RESOURCE))
 		task->signal->oom_score_adj_min = (short)oom_adj;
 	trace_oom_score_adj_update(task);
-	simple_lmk_update_adj(task);
 
 	if (mm) {
 		struct task_struct *p;
