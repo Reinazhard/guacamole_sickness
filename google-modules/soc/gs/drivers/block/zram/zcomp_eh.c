@@ -49,27 +49,28 @@ static void zcomp_eh_drain(void *priv)
 }
 
 /*
- * If the comp is plugged, append the cookie to request list and return true
- * otherwise, return false.
+ * If there is room in the batch, append the cookie to the request list and
+ * return true; otherwise return false.
+ *
+ * The limit is checked under the same lock that takes the cookie, rather
+ * than in a separate locked read beforehand. request_lock is shared by every
+ * CPU submitting to this device, so the old check-then-append pair paid for
+ * it twice on every page.
  */
-static void zcomp_append_request(struct zcomp_eh *zcomp_eh,
+static bool zcomp_append_request(struct zcomp_eh *zcomp_eh,
 				 struct zcomp_cookie *cookie)
 {
-	spin_lock(&zcomp_eh->request_lock);
-	list_add(&cookie->list, &zcomp_eh->request_list);
-	zcomp_eh->pend_request++;
-	spin_unlock(&zcomp_eh->request_lock);
-}
-
-static unsigned long nr_pend_request(struct zcomp_eh *zcomp_eh)
-{
-	unsigned long ret;
+	bool appended = false;
 
 	spin_lock(&zcomp_eh->request_lock);
-	ret = zcomp_eh->pend_request;
+	if (zcomp_eh->pend_request < ZCOMP_BLK_MAX_REQUEST_COUNT) {
+		list_add(&cookie->list, &zcomp_eh->request_list);
+		zcomp_eh->pend_request++;
+		appended = true;
+	}
 	spin_unlock(&zcomp_eh->request_lock);
 
-	return ret;
+	return appended;
 }
 
 /*
@@ -234,10 +235,8 @@ static int zcomp_eh_compress(struct zcomp *comp, u32 index, struct page *page,
 	bio_inc_remaining(bio);
 
 	if (blk_check_plugged(zcomp_unplug, zcomp_eh, sizeof(struct blk_plug_cb)) &&
-	    nr_pend_request(zcomp_eh) < ZCOMP_BLK_MAX_REQUEST_COUNT) {
-		zcomp_append_request(zcomp_eh, cookie);
+	    zcomp_append_request(zcomp_eh, cookie))
 		return 0;
-	}
 
 	zcomp_flush(zcomp_eh);
 	return eh_compress_page(zcomp_eh->eh_dev, page, cookie);
