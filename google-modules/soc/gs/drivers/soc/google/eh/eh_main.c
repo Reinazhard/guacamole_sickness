@@ -752,6 +752,15 @@ static void eh_abort_incomplete_descriptors(struct eh_device *eh_dev)
 	     i = (i + 1) & eh_dev->fifo_index_mask) {
 		struct eh_completion *compl = &eh_dev->completions[i];
 
+		/*
+		 * A slot whose request was already retired has nothing to
+		 * hand back. Calling the callback on it would be a
+		 * use-after-free on the upper layer's private data, which is
+		 * the same reason the completion path checks for it.
+		 */
+		if (!compl->priv)
+			continue;
+
 		(*eh_dev->comp_callback)(EH_CDESC_ERROR_HALTED, NULL, 0,
 					  compl->priv);
 		compl->priv = NULL;
@@ -1440,9 +1449,14 @@ static int eh_suspend(struct device *dev)
 static int eh_resume(struct device *dev)
 {
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
+	int ret;
 
 	/* re-enable EH clock */
-	clk_prepare_enable(eh_dev->clk);
+	ret = clk_prepare_enable(eh_dev->clk);
+	if (ret) {
+		dev_err(dev, "failed to enable clock: %d\n", ret);
+		return ret;
+	}
 
 	/* re-enable compression FIFO */
 	eh_compr_fifo_init(eh_dev);
