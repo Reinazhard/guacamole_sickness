@@ -6,6 +6,8 @@
 #include "zram_drv.h"
 #include "zcomp_eh.h"
 
+static struct kmem_cache *zcomp_cookie_cachep;
+
 static int zcomp_flush(struct zcomp_eh *zcomp_eh)
 {
 	int err = 0;
@@ -79,8 +81,14 @@ static bool refill_zcomp_cookie(struct zcomp_eh *zcomp_eh)
 	struct zcomp_cookie *cookie;
 	LIST_HEAD(local_list);
 
+	/*
+	 * Sleeping is fine here: alloc_zcomp_cookie() drops the pool lock
+	 * before calling in, and cannot be reached from interrupt context.
+	 * GFP_ATOMIC gave this a way to fail that would have propagated all
+	 * the way up as a failed swap-out, which reclaim only retries.
+	 */
 	for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-		cookie = kmalloc(sizeof(struct zcomp_cookie), GFP_ATOMIC);
+		cookie = kmem_cache_alloc(zcomp_cookie_cachep, GFP_KERNEL);
 		if (!cookie)
 			break;
 		list_add(&cookie->list, &local_list);
@@ -126,6 +134,9 @@ out:
 
 static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *cookie)
 {
+	LIST_HEAD(released);
+	struct zcomp_cookie *victim;
+
 	spin_lock(&zcomp_eh->cookie_pool.lock);
 	list_add(&cookie->list, &zcomp_eh->cookie_pool.head);
 	zcomp_eh->cookie_pool.count++;
@@ -133,15 +144,27 @@ static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *co
 	if (zcomp_eh->cookie_pool.count >= BATCH_ZCOMP_REQUEST * 2) {
 		int i;
 
+		/*
+		 * Take the surplus off the pool but free it after dropping
+		 * the lock. Freeing a whole batch with the lock held stalls
+		 * every other CPU trying to allocate or return a cookie, and
+		 * this runs on the compression thread's completion path.
+		 */
 		for (i = 0; i < BATCH_ZCOMP_REQUEST; i++) {
-			cookie = list_last_entry(&zcomp_eh->cookie_pool.head,
-						struct zcomp_cookie, list);
-			list_del(&cookie->list);
-			kfree(cookie);
+			victim = list_last_entry(&zcomp_eh->cookie_pool.head,
+						 struct zcomp_cookie, list);
+			list_del(&victim->list);
 			zcomp_eh->cookie_pool.count--;
+			list_add(&victim->list, &released);
 		}
 	}
 	spin_unlock(&zcomp_eh->cookie_pool.lock);
+
+	while ((victim = list_first_entry_or_null(&released,
+						  struct zcomp_cookie, list))) {
+		list_del(&victim->list);
+		kmem_cache_free(zcomp_cookie_cachep, victim);
+	}
 }
 
 static void init_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
@@ -160,7 +183,7 @@ static void destroy_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
 		cookie = list_first_entry(&zcomp_eh->cookie_pool.head,
 					struct zcomp_cookie, list);
 		list_del(&cookie->list);
-		kfree(cookie);
+		kmem_cache_free(zcomp_cookie_cachep, cookie);
 		zcomp_eh->cookie_pool.count--;
 	}
 	spin_unlock(&zcomp_eh->cookie_pool.lock);
@@ -274,12 +297,25 @@ const struct zcomp_operation zcomp_eh_op = {
 
 static int __init zcomp_eh_init(void)
 {
-	return zcomp_register("lz77eh", &zcomp_eh_op);
+	int ret;
+
+	zcomp_cookie_cachep = kmem_cache_create("zcomp_cookie",
+						sizeof(struct zcomp_cookie),
+						0, 0, NULL);
+	if (!zcomp_cookie_cachep)
+		return -ENOMEM;
+
+	ret = zcomp_register("lz77eh", &zcomp_eh_op);
+	if (ret)
+		kmem_cache_destroy(zcomp_cookie_cachep);
+
+	return ret;
 }
 
 static void __exit zcomp_eh_exit(void)
 {
 	zcomp_unregister("lz77eh");
+	kmem_cache_destroy(zcomp_cookie_cachep);
 }
 
 module_init(zcomp_eh_init);
