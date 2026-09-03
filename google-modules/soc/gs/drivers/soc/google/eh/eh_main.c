@@ -118,7 +118,22 @@ static unsigned int eh_default_fifo_size = 4096;
 
 static bool sw_fifo_empty(struct eh_sw_fifo *fifo)
 {
-	return !fifo->has_reqs;
+	return !READ_ONCE(fifo->has_reqs);
+}
+
+/*
+ * Release one request's slot in the in-flight count.
+ *
+ * Called only after the completion callback -- or the abort standing in for
+ * it -- has released the BIO. nr_inflight deliberately spans the callback
+ * window, because the upper layer's handler allocates and ends a BIO; letting
+ * the count reach zero before it returns would let suspend gate the clock
+ * with a request still in use.
+ */
+static void eh_request_done(struct eh_device *eh_dev)
+{
+	if (atomic_dec_and_test(&eh_dev->nr_inflight))
+		wake_up(&eh_dev->idle_wq);
 }
 
 /*
@@ -336,7 +351,7 @@ static void request_to_sw_fifo(struct eh_device *eh_dev, struct page *page,
 
 	spin_lock(&fifo->lock);
 	list_add_tail(&cookie->list, &fifo->head);
-	fifo->has_reqs = true;
+	WRITE_ONCE(fifo->has_reqs, true);
 	spin_unlock(&fifo->lock);
 
 	/* spin_unlock() provides a barrier before waitqueue_active() */
@@ -417,7 +432,7 @@ static void refill_hw_fifo(struct eh_device *eh_dev)
 		}
 	}
 	if (!c)
-		fifo->has_reqs = false;
+		WRITE_ONCE(fifo->has_reqs, false);
 	spin_unlock(&fifo->lock);
 }
 
@@ -822,7 +837,9 @@ static int eh_sw_init(struct eh_device *eh_dev, int error_irq, int comp_irq)
 	eh_dev->error_irq = error_irq;
 
 	atomic_set(&eh_dev->nr_request, 0);
+	atomic_set(&eh_dev->nr_inflight, 0);
 	init_waitqueue_head(&eh_dev->comp_wq);
+	init_waitqueue_head(&eh_dev->idle_wq);
 
 	eh_dev->pm_qos_req.type = PM_QOS_REQ_AFFINE_IRQ;
 	eh_dev->pm_qos_req.irq = eh_dev->comp_irq;
@@ -1127,6 +1144,20 @@ static void eh_setup_dcmd(struct eh_device *eh_dev, unsigned int index,
 
 int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 {
+	/*
+	 * Counted here, at the single point where a request enters the
+	 * driver, and released only once its completion callback has
+	 * returned. Everything between those two points -- hardware ring,
+	 * software FIFO, the callback itself -- is therefore covered by one
+	 * atomic, which is what lets eh_suspend() ask a question it can
+	 * actually rely on.
+	 *
+	 * Must be taken before the request can be observed anywhere, or the
+	 * drain in eh_suspend() could miss it and gate the clock with work
+	 * still outstanding.
+	 */
+	atomic_inc(&eh_dev->nr_inflight);
+
 	/*
 	 * If sw_fifo is not empty, it means hw fifo is already full so
 	 * don't bother to hw fifo.
