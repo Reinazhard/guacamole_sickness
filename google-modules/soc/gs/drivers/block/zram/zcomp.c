@@ -28,6 +28,50 @@ struct zcomp_backend {
 static LIST_HEAD(zcomp_list);
 static DECLARE_RWSEM(zcomp_rwsem);
 
+/*
+ * The read path stages each compressed object through a scratch page before
+ * handing it to the backend, so it needs one page per CPU to do that without
+ * allocating. zcomp is registered once per algorithm, so this is a handful of
+ * pages for the lifetime of the module.
+ */
+static void zcomp_free_scratch(struct zcomp *zcomp)
+{
+	int cpu;
+
+	if (!zcomp->scratch)
+		return;
+
+	for_each_possible_cpu(cpu) {
+		unsigned long buf = *per_cpu_ptr(zcomp->scratch, cpu);
+
+		if (buf)
+			free_pages(buf, 0);
+	}
+	free_percpu(zcomp->scratch);
+	zcomp->scratch = NULL;
+}
+
+static int zcomp_alloc_scratch(struct zcomp *zcomp)
+{
+	int cpu;
+
+	zcomp->scratch = alloc_percpu(unsigned long);
+	if (!zcomp->scratch)
+		return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		unsigned long buf = __get_free_pages(GFP_KERNEL, 0);
+
+		if (!buf) {
+			zcomp_free_scratch(zcomp);
+			return -ENOMEM;
+		}
+		*per_cpu_ptr(zcomp->scratch, cpu) = buf;
+	}
+
+	return 0;
+}
+
 /* caller should hold a zcomp_rwsem under semaphore */
 static struct zcomp *find_zcomp(const char *algo_name)
 {
@@ -62,6 +106,12 @@ int zcomp_register(const char *algo_name, const struct zcomp_operation *op)
 		goto out;
 	}
 
+	ret = zcomp_alloc_scratch(zcomp);
+	if (ret) {
+		kfree(zcomp);
+		goto out;
+	}
+
 	strncpy(zcomp->algo_name, algo_name, len);
 	zcomp->algo_name[len] = '\0';
 	zcomp->op = op;
@@ -69,6 +119,7 @@ int zcomp_register(const char *algo_name, const struct zcomp_operation *op)
 	down_write(&zcomp_rwsem);
 	if (find_zcomp(algo_name)) {
 		up_write(&zcomp_rwsem);
+		zcomp_free_scratch(zcomp);
 		kfree(zcomp);
 		ret = -EEXIST;
 		goto out;
@@ -92,6 +143,7 @@ int zcomp_unregister(const char *algo_name)
 			continue;
 
 		list_del(&cursor->list);
+		zcomp_free_scratch(cursor);
 		kfree(cursor);
 		ret = 0;
 		break;
@@ -198,27 +250,47 @@ int zcomp_decompress_buf(struct zcomp *comp, u32 index, void *src,
 
 int zcomp_decompress(struct zcomp *comp, u32 index, struct page *page)
 {
-	int ret;
-	void *src;
-	unsigned int src_len;
 	unsigned long handle;
+	unsigned int src_len;
 	struct zram *zram = comp->zram;
 	struct zram_table_entry *entry = &zram->table[index];
-
-	void *local_copy;
-
-	local_copy = kmalloc(PAGE_SIZE, GFP_ATOMIC);
-	if (!local_copy)
-		return -ENOMEM;
+	void *scratch, *src;
+	int ret;
 
 	handle = entry->handle;
 	src_len = entry->flags & (BIT(ZRAM_FLAG_SHIFT) - 1);
-	src = zs_obj_read_begin(zram->mem_pool, handle, src_len, local_copy);
 
-	ret = zcomp_decompress_buf(comp, index, src, src_len, page);
+	/*
+	 * Stage the object in the per-CPU scratch page and let go of zsmalloc
+	 * before calling the backend, rather than decompressing straight out
+	 * of the mapping.
+	 *
+	 * zs_obj_read_begin() holds the zspage read lock and a kmap until
+	 * zs_obj_read_end(). The EH backend reaches its result by polling
+	 * hardware, so decompressing in place pins both for the whole poll,
+	 * stalling compaction on that zspage and holding a kmap slot across
+	 * an arbitrary wait.
+	 *
+	 * The copy is not wasted work: a zsmalloc object is always at an
+	 * offset of 8 mod 16 (class sizes are multiples of 16, plus
+	 * ZS_HANDLE_SIZE), so the backend would bounce it through one of its
+	 * own buffers anyway. Scratch is page aligned, so handing it over
+	 * up front is one copy instead of two.
+	 *
+	 * Preemption stays off so the scratch page and the kmap below belong
+	 * to this CPU throughout.
+	 */
+	preempt_disable();
+	scratch = (void *)*this_cpu_ptr(comp->scratch);
 
+	src = zs_obj_read_begin(zram->mem_pool, handle, src_len, scratch);
+	if (src != scratch)
+		memcpy(scratch, src, src_len);
 	zs_obj_read_end(zram->mem_pool, handle, src_len, src);
-	kfree(local_copy);
+
+	ret = zcomp_decompress_buf(comp, index, scratch, src_len, page);
+	preempt_enable();
+
 	return ret;
 }
 
