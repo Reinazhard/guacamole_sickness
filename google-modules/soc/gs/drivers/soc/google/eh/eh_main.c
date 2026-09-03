@@ -110,6 +110,13 @@ enum eh_cdesc_status {
 #define EH_RESET_DELAY_US	10
 #define EH_RESET_MAX_TRIAL	100
 
+/*
+ * How long eh_suspend() waits for the pipeline to drain before refusing to
+ * suspend. Deliberately generous: the software FIFO is unbounded, so a deep
+ * queue has to be pushed through the hardware ring one ringful at a time.
+ */
+#define EH_SUSPEND_DRAIN_MS	1000
+
 /* list of all unclaimed EH devices */
 static LIST_HEAD(eh_dev_list);
 static DEFINE_SPINLOCK(eh_dev_list_lock);
@@ -1241,7 +1248,7 @@ out:
 }
 EXPORT_SYMBOL(eh_decompress_page);
 
-struct eh_device *eh_create(eh_cb_fn comp)
+struct eh_device *eh_create(eh_cb_fn comp, eh_drain_fn drain, void *drain_priv)
 {
 	struct eh_device *ret = ERR_PTR(-ENODEV);
 
@@ -1256,6 +1263,8 @@ struct eh_device *eh_create(eh_cb_fn comp)
 		return ret;
 
 	ret->comp_callback = comp;
+	ret->drain_cb = drain;
+	ret->drain_priv = drain_priv;
 
 	return ret;
 }
@@ -1264,6 +1273,9 @@ EXPORT_SYMBOL(eh_create);
 void eh_destroy(struct eh_device *eh_dev)
 {
 	eh_dev->comp_callback = NULL;
+	/* Don't leave suspend a way into a device that's been handed back */
+	eh_dev->drain_cb = NULL;
+	eh_dev->drain_priv = NULL;
 	spin_lock(&eh_dev_list_lock);
 	list_add(&eh_dev->eh_dev_list, &eh_dev_list);
 	spin_unlock(&eh_dev_list_lock);
@@ -1379,9 +1391,33 @@ static int eh_suspend(struct device *dev)
 	unsigned long data;
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
 
-	/* check pending work */
-	if (atomic_read(&eh_dev->nr_request) > 0) {
-		pr_warn("block suspend (compression pending)\n");
+	/*
+	 * Take back anything the upper layer is still holding. Requests
+	 * batched on a block plug are released only when the owning task
+	 * unplugs, and a task the freezer has already stopped will never
+	 * unplug -- so unless they are handed over here they sit there while
+	 * the clock is gated underneath them, and whoever submitted them
+	 * blocks forever on a BIO reference nothing will ever complete.
+	 */
+	if (eh_dev->drain_cb)
+		(*eh_dev->drain_cb)(eh_dev->drain_priv);
+
+	/*
+	 * Wait for every admitted request to retire, not merely for the
+	 * hardware ring to look empty.
+	 *
+	 * nr_request only ever counted the ring, so a request parked in the
+	 * software FIFO, or one still inside its completion callback, was
+	 * invisible here and had the clock pulled out from under it. The
+	 * software FIFO stays unbounded at runtime -- that overflow capacity
+	 * is the whole point of the device -- it simply has to be empty
+	 * before the clock can go away.
+	 */
+	if (!wait_event_timeout(eh_dev->idle_wq,
+				!atomic_read(&eh_dev->nr_inflight),
+				msecs_to_jiffies(EH_SUSPEND_DRAIN_MS))) {
+		pr_warn("block suspend (%d requests in flight)\n",
+			atomic_read(&eh_dev->nr_inflight));
 		return -EBUSY;
 	}
 
