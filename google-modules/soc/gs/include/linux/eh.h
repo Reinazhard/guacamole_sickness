@@ -33,7 +33,15 @@
 
 struct eh_device;
 
-typedef void (*eh_cb_fn)(int compr_result, void *data, unsigned int size,
+/*
+ * Returns true if the callee has taken over releasing the request, meaning
+ * eh_request_done() will be called once whatever it deferred has finished.
+ * Returns false to have it released immediately, as the callback returns.
+ *
+ * Deferring is only for work that no longer needs @data, which belongs to
+ * the descriptor ring slot the request just vacated.
+ */
+typedef bool (*eh_cb_fn)(int compr_result, void *data, unsigned int size,
 			 void *priv);
 
 /*
@@ -67,5 +75,12 @@ struct eh_device *eh_create(eh_cb_fn comp, eh_drain_fn drain,
 
 /* destroty eh_device */
 void eh_destroy(struct eh_device *eh_dev);
+
+/*
+ * Release one request's slot in the in-flight count. A completion callback
+ * that returned true takes responsibility for calling this, once the work it
+ * deferred has released the upper layer's resources.
+ */
+void eh_request_done(struct eh_device *eh_dev);
 
 #endif /* _EH_H_ */
