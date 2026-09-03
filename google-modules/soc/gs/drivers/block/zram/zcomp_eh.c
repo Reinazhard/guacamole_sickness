@@ -2,6 +2,7 @@
 
 #include <linux/module.h>
 #include <linux/blkdev.h>
+#include <linux/sched/mm.h>
 
 #include "zram_drv.h"
 #include "zcomp_eh.h"
@@ -190,7 +191,64 @@ static void destroy_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
 	spin_unlock(&zcomp_eh->cookie_pool.lock);
 }
 
-static void zcomp_eh_compress_done(int error, void *buffer,
+static struct zcomp_eh_done *zcomp_eh_get_done(struct zcomp_eh *zcomp_eh)
+{
+	struct zcomp_eh_done *done;
+
+	spin_lock(&zcomp_eh->done_lock);
+	done = list_first_entry_or_null(&zcomp_eh->done_free,
+					struct zcomp_eh_done, list);
+	if (done)
+		list_del(&done->list);
+	spin_unlock(&zcomp_eh->done_lock);
+
+	return done;
+}
+
+static void zcomp_eh_put_done(struct zcomp_eh *zcomp_eh,
+			      struct zcomp_eh_done *done)
+{
+	spin_lock(&zcomp_eh->done_lock);
+	list_add(&done->list, &zcomp_eh->done_free);
+	spin_unlock(&zcomp_eh->done_lock);
+}
+
+static void zcomp_eh_done_work(struct work_struct *work)
+{
+	struct zcomp_eh_done *done = container_of(work, struct zcomp_eh_done,
+						  work);
+	struct zcomp_eh *zcomp_eh = done->zcomp_eh;
+	unsigned int noreclaim;
+
+	/*
+	 * This work used to run on the compression thread, which holds
+	 * PF_MEMALLOC. Nothing in it allocates, but it is on the swap-out
+	 * completion path, where that guarantee is the difference between a
+	 * slow write and a failed one. Keep it.
+	 */
+	noreclaim = memalloc_noreclaim_save();
+
+	zcomp_publish_buffer(done->zram, done->index, done->handle, done->len,
+			     zcomp_eh->prio);
+	bio_endio(done->bio);
+	free_zcomp_cookie(zcomp_eh, done->cookie);
+	memalloc_noreclaim_restore(noreclaim);
+
+	/*
+	 * Last, so that a non-zero in-flight count still means the BIO is
+	 * outstanding even while it is being completed here. This is what
+	 * eh_suspend() waits on, so it must not be released before the BIO.
+	 */
+	eh_request_done(zcomp_eh->eh_dev);
+
+	/*
+	 * Returned after the request is released, so no second completion can
+	 * pick this item up and queue work that is still running.
+	 */
+	zcomp_eh_put_done(zcomp_eh, done);
+}
+
+static bool zcomp_eh_compress_done(int error, void *buffer,
 				   unsigned int size, void *priv)
 {
 	struct zcomp_cookie *cookie = priv;
@@ -199,30 +257,54 @@ static void zcomp_eh_compress_done(int error, void *buffer,
 	u32 index = cookie->index;
 	struct bio *bio = cookie->bio;
 	struct page *page = cookie->page;
-	bool is_write = bio_op(bio) == REQ_OP_WRITE;
-	unsigned long handle;
+	unsigned long handle = 0;
 	unsigned int len = 0;
+	struct zcomp_eh_done *done;
 
 	/*
-	 * The store has to happen here: @buffer belongs to the descriptor
-	 * ring slot this request just vacated, and is only valid until the
-	 * completion returns.
+	 * The store has to happen here. @buffer belongs to the descriptor
+	 * ring slot this request just vacated and may be overwritten as soon
+	 * as the completion returns, so nothing that reads it may be
+	 * deferred.
 	 */
 	if (!error)
 		error = zcomp_store_buffer(buffer, size, zram, page, &handle,
 					   &len);
 
 	if (unlikely(error)) {
-		if (is_write)
+		if (bio_op(bio) == REQ_OP_WRITE)
 			atomic64_inc(&zram->stats.failed_writes);
 		else
 			atomic64_inc(&zram->stats.failed_reads);
 		bio_io_error(bio);
-	} else {
+		free_zcomp_cookie(zcomp_eh, cookie);
+		return false;
+	}
+
+	done = zcomp_eh_get_done(zcomp_eh);
+	if (!done) {
+		/*
+		 * Pool exhausted. Finish inline rather than fail the write --
+		 * reclaim only retries the same page.
+		 */
 		zcomp_publish_buffer(zram, index, handle, len, zcomp_eh->prio);
 		bio_endio(bio);
+		free_zcomp_cookie(zcomp_eh, cookie);
+		return false;
 	}
-	free_zcomp_cookie(zcomp_eh, cookie);
+
+	done->zcomp_eh = zcomp_eh;
+	done->zram = zram;
+	done->cookie = cookie;
+	done->bio = bio;
+	done->handle = handle;
+	done->len = len;
+	done->index = index;
+
+	INIT_WORK(&done->work, zcomp_eh_done_work);
+	queue_work(zcomp_eh->done_wq, &done->work);
+
+	return true;
 }
 
 static int zcomp_eh_compress(struct zcomp *comp, u32 index, struct page *page,
@@ -263,10 +345,50 @@ static void zcomp_eh_destroy(struct zcomp *comp)
 {
 	struct zcomp_eh *zcomp_eh = comp->private;
 
+	/*
+	 * Drains, so every deferred completion has finished and returned its
+	 * item before the pool and the cookies behind it are freed.
+	 */
+	destroy_workqueue(zcomp_eh->done_wq);
 	eh_destroy(zcomp_eh->eh_dev);
 	destroy_zcomp_cookie_pool(zcomp_eh);
+	kfree(zcomp_eh->done_items);
 	kfree(zcomp_eh);
 	module_put(THIS_MODULE);
+}
+
+static int zcomp_eh_init_done(struct zcomp_eh *zcomp_eh)
+{
+	int nr_items = num_possible_cpus() * ZCOMP_EH_DONE_PER_CPU;
+	int i;
+
+	zcomp_eh->done_items = kcalloc(nr_items, sizeof(struct zcomp_eh_done),
+				       GFP_KERNEL);
+	if (!zcomp_eh->done_items)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&zcomp_eh->done_free);
+	spin_lock_init(&zcomp_eh->done_lock);
+	for (i = 0; i < nr_items; i++)
+		list_add(&zcomp_eh->done_items[i].list, &zcomp_eh->done_free);
+
+	/*
+	 * Unbound, because every completion is handed off from the single
+	 * compression thread -- a bound queue would run them all back on
+	 * that one CPU and defeat the point.
+	 *
+	 * Not WQ_FREEZABLE: the suspend path waits on the in-flight count
+	 * that these workers release, so freezing them there would deadlock.
+	 */
+	zcomp_eh->done_wq = alloc_workqueue("zcomp_eh_done",
+					    WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!zcomp_eh->done_wq) {
+		kfree(zcomp_eh->done_items);
+		zcomp_eh->done_items = NULL;
+		return -ENOMEM;
+	}
+
+	return 0;
 }
 
 static int zcomp_eh_create(struct zcomp *comp, const char *name)
@@ -282,10 +404,18 @@ static int zcomp_eh_create(struct zcomp *comp, const char *name)
 	spin_lock_init(&zcomp_eh->request_lock);
 	zcomp_eh->pend_request = 0;
 	zcomp_eh->prio = comp->prio;
+	zcomp_eh->done_items = NULL;
+
+	if (zcomp_eh_init_done(zcomp_eh)) {
+		kfree(zcomp_eh);
+		return -ENOMEM;
+	}
 
 	zcomp_eh->eh_dev = eh_create(zcomp_eh_compress_done, zcomp_eh_drain,
 				     zcomp_eh);
 	if (IS_ERR(zcomp_eh->eh_dev)) {
+		destroy_workqueue(zcomp_eh->done_wq);
+		kfree(zcomp_eh->done_items);
 		kfree(zcomp_eh);
 		return -ENODEV;
 	}
