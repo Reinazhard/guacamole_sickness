@@ -756,6 +756,9 @@ out_copy_to_user:
 void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 	unsigned seq;
 
+	if (!fake_cmdline_or_bootconfig)
+		return;
+
 	do {
 		seq = read_seqbegin(&susfs_fake_cmdline_or_bootconfig_seqlock);
 		seq_puts(m, fake_cmdline_or_bootconfig);
@@ -989,7 +992,7 @@ int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buf
 				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
 				return -ENAMETOOLONG;
 			}
-			if (copy_to_user(buffer, entry->info.redirected_pathname, strlen(entry->info.redirected_pathname))) {
+			if (copy_to_user(buffer, entry->info.redirected_pathname, strlen(entry->info.redirected_pathname) + 1)) {
 				SUSFS_LOGE("copy_to_user() failed\n");
 				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
 				return -EFAULT;
