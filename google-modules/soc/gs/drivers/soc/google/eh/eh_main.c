@@ -417,28 +417,44 @@ static void refill_hw_fifo(struct eh_device *eh_dev)
 {
 	struct eh_sw_fifo *fifo = &eh_dev->sw_fifo;
 	struct zcomp_cookie *c;
-	int ret;
+	LIST_HEAD(pending);
 
+	/*
+	 * Take the whole queue in one pass rather than one cookie at a time.
+	 *
+	 * The lock is shared with every CPU submitting into the software
+	 * FIFO, so the old loop made each of them queue behind a lock round
+	 * trip for every entry moved -- and a full refill moves a ring's
+	 * worth. has_reqs deliberately stays set until the queue is known to
+	 * be empty, so submitters keep queueing behind a backlog that is
+	 * still being handed to the hardware instead of overtaking it.
+	 */
 	spin_lock(&fifo->lock);
-	while ((c = list_first_entry_or_null(&fifo->head, typeof(*c), list))) {
-		/*
-		 * Take the cookie off the list since it can't be touched once
-		 * it's passed onto the compression thread.
-		 */
+	list_splice_init(&fifo->head, &pending);
+	spin_unlock(&fifo->lock);
+
+	while ((c = list_first_entry_or_null(&pending, typeof(*c), list))) {
 		list_del(&c->list);
-		spin_unlock(&fifo->lock);
 
 		/* Attempt to pass the cookie onto the hardware fifo */
-		ret = request_to_hw_fifo(eh_dev, c, false);
+		if (!request_to_hw_fifo(eh_dev, c, false))
+			continue;
 
+		/*
+		 * Ring is full. Put this cookie and everything behind it back
+		 * at the front, keeping their relative order, ahead of
+		 * anything that arrived while we were refilling.
+		 */
 		spin_lock(&fifo->lock);
-		if (ret) {
-			/* Add the cookie back to the front */
-			list_add(&c->list, &fifo->head);
-			break;
-		}
+		list_splice(&pending, &fifo->head);
+		list_add(&c->list, &fifo->head);
+		WRITE_ONCE(fifo->has_reqs, true);
+		spin_unlock(&fifo->lock);
+		return;
 	}
-	if (!c)
+
+	spin_lock(&fifo->lock);
+	if (list_empty(&fifo->head))
 		WRITE_ONCE(fifo->has_reqs, false);
 	spin_unlock(&fifo->lock);
 }
