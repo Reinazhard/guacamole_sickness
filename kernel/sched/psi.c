@@ -560,6 +560,8 @@ static u64 update_triggers(struct psi_group *group, u64 now)
 			t_ext = container_of(t, struct psi_trigger_ext, trigger);
 			if (t_ext->of)
 				kernfs_notify(t_ext->of->kn);
+			else if (t->ext_wq)
+				wake_up_interruptible(t->ext_wq);
 			else
 				wake_up_interruptible(&t->event_wait);
 		}
@@ -1303,6 +1305,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 	t_ext->of = of;
 	if (!of)
 		init_waitqueue_head(&t->event_wait);
+	t->ext_wq = NULL;
 	t->pending_event = false;
 
 	mutex_lock(&group->trigger_lock);
@@ -1331,6 +1334,12 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 
 	return t;
 }
+
+void psi_trigger_set_waitq(struct psi_trigger *t, wait_queue_head_t *wq)
+{
+	t->ext_wq = wq;
+}
+EXPORT_SYMBOL_GPL(psi_trigger_set_waitq);
 
 void psi_trigger_destroy(struct psi_trigger *t)
 {
