@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - staging
+      - 86hm
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    environment: TELEGRAM_TOKEN
+
+    env:
+      CI: "1"
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: "-1001493260868"
+      CHATID: "-1001493260868"
+
+    steps:
+      - name: Set branch variables (staging)
+        if: github.ref == 'refs/heads/staging'
+        run: |
+          echo "RELEASE=0" >> "$GITHUB_ENV"
+          echo "TELEGRAM_CHAT_ID=-1001493260868" >> "$GITHUB_ENV"
+          echo "CHATID=-1001493260868" >> "$GITHUB_ENV"
+
+      - name: Set branch variables (86hm)
+        if: github.ref == 'refs/heads/86hm'
+        run: |
+          echo "RELEASE=1" >> "$GITHUB_ENV"
+          echo "TELEGRAM_CHAT_ID=-1001403511595" >> "$GITHUB_ENV"
+          echo "CHATID=-1001403511595" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git make curl unzip zip xz-utils zstd default-jre \
+            build-essential flex bison bc python3 rsync cpio ca-certificates \
+            libssl-dev libelf-dev zlib1g-dev perl pahole dwarves lz4
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Configure git
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global --add safe.directory '*'
+
+      - name: Clone repository
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          git clone --depth 1 --branch "${REF}" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "$GITHUB_WORKSPACE"
+
+      - name: Download build script
+        working-directory: ${{ github.workspace }}
+        run: curl -fsSLO https://raw.githubusercontent.com/Reinazhard/scripts/refs/heads/main/raviole/build.sh
+
+      - name: Build (KSU=0)
+        working-directory: ${{ github.workspace }}
+        run: KSU=0 bash build.sh
+
+      - name: Build (KSU=1)
+        working-directory: ${{ github.workspace }}
+        run: KSU=1 bash build.sh
