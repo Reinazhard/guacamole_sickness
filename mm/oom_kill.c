@@ -330,7 +330,8 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 	 * any memory is quite low.
 	 */
 	if (!is_sysrq_oom(oc) && tsk_is_oom_victim(task)) {
-		if (test_bit(MMF_OOM_SKIP, &task->signal->oom_mm->flags))
+		if (task->signal->oom_mm &&
+		    test_bit(MMF_OOM_SKIP, &task->signal->oom_mm->flags))
 			goto next;
 		goto abort;
 	}
@@ -1139,10 +1140,6 @@ EXPORT_SYMBOL_GPL(unregister_oom_notifier);
 bool out_of_memory(struct oom_control *oc)
 {
 	unsigned long freed = 0;
-
-	/* Return true since Simple LMK automatically kills in the background */
-	if (IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK))
-		return true;
 
 	if (oom_killer_disabled)
 		return false;
