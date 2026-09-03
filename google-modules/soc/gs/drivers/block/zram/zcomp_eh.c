@@ -34,6 +34,19 @@ static void zcomp_unplug(struct blk_plug_cb *cb, bool from_schedule)
 }
 
 /*
+ * Hand every batched request to the device, whoever is holding it.
+ *
+ * The request list is shared, so this releases cookies still sitting on
+ * other tasks' plugs as well -- which is the point. eh_suspend() calls it,
+ * because a task the freezer has stopped will never unplug, and anything it
+ * is still holding would otherwise be stranded with the clock gated.
+ */
+static void zcomp_eh_drain(void *priv)
+{
+	zcomp_flush((struct zcomp_eh *)priv);
+}
+
+/*
  * If the comp is plugged, append the cookie to request list and return true
  * otherwise, return false.
  */
@@ -233,17 +246,18 @@ static int zcomp_eh_create(struct zcomp *comp, const char *name)
 	if (!zcomp_eh)
 		return -ENOMEM;
 
-	zcomp_eh->eh_dev = eh_create(zcomp_eh_compress_done);
-	if (IS_ERR(zcomp_eh->eh_dev)) {
-		kfree(zcomp_eh);
-		return -ENODEV;
-	}
-
 	init_zcomp_cookie_pool(zcomp_eh);
 	INIT_LIST_HEAD(&zcomp_eh->request_list);
 	spin_lock_init(&zcomp_eh->request_lock);
 	zcomp_eh->pend_request = 0;
 	zcomp_eh->prio = comp->prio;
+
+	zcomp_eh->eh_dev = eh_create(zcomp_eh_compress_done, zcomp_eh_drain,
+				     zcomp_eh);
+	if (IS_ERR(zcomp_eh->eh_dev)) {
+		kfree(zcomp_eh);
+		return -ENODEV;
+	}
 
 	comp->private = zcomp_eh;
 	__module_get(THIS_MODULE);
