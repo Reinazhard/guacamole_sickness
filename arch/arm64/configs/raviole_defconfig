@@ -100,7 +100,7 @@ CONFIG_COMPAT=y
 # CONFIG_ARM64_SVE is not set
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
-CONFIG_CMDLINE="console=ttynull stack_depot_disable=on cgroup_disable=pressure kasan.page_alloc.sample=10 kasan.stacktrace=off kvm-arm.mode=protected bootconfig ioremap_guard"
+CONFIG_CMDLINE="console=ttynull stack_depot_disable=on cgroup_disable=pressure kasan.page_alloc.sample=10 kvm-arm.mode=protected bootconfig ioremap_guard"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_EFI is not set
 CONFIG_PM_USERSPACE_AUTOSLEEP=y
