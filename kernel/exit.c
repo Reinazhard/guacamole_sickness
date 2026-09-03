@@ -573,12 +573,26 @@ static void exit_mm(void)
 	mm_update_next_owner(mm);
 	trace_android_vh_exit_mm(mm);
 	mmput(mm);
+	if (test_thread_flag(TIF_MEMDIE)) {
 #ifdef CONFIG_ANDROID_SIMPLE_LMK
-	clear_thread_flag(TIF_MEMDIE);
+		/*
+		 * Simple LMK sets TIF_MEMDIE on every thread of a victim
+		 * without taking an oom_victims reference, so only the thread
+		 * the core OOM killer marked (the one whose signal carries
+		 * oom_mm) may release one. The core killer sets oom_mm after
+		 * SIGKILL, so a group carrying oom_mm always has
+		 * SIGNAL_GROUP_EXIT set and Simple LMK never picks it.
+		 * Dropping the release entirely makes oom_victims monotonic
+		 * and every later oom_killer_disable() times out.
+		 */
+		if (current->signal->oom_mm)
+			exit_oom_victim();
+		else
+			clear_thread_flag(TIF_MEMDIE);
 #else
-	if (test_thread_flag(TIF_MEMDIE))
 		exit_oom_victim();
 #endif
+	}
 }
 
 static struct task_struct *find_alive_thread(struct task_struct *p)
