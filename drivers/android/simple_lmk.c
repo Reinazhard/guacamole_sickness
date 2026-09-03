@@ -34,6 +34,13 @@ struct victim_info {
 	struct mm_struct *mm;
 	unsigned long size;
 	unsigned long score;
+	/*
+	 * Resident anonymous pages credited against the memory deficit for
+	 * this victim. Zero until the kill is actually dispatched, so that
+	 * candidates that were selected but never killed are not counted as
+	 * memory already on its way to being freed.
+	 */
+	unsigned long pending;
 };
 
 static struct victim_info victims[MAX_VICTIMS] __cacheline_aligned_in_smp;
@@ -41,18 +48,6 @@ static struct task_struct *task_bucket[ADJ_MAX + 1] __cacheline_aligned;
 static DECLARE_WAIT_QUEUE_HEAD(oom_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 static DECLARE_COMPLETION(psi_init_done);
-
-static unsigned long get_target_free_pages(void)
-{
-	unsigned long deficit;
-
-	if (nr_free_pages() >= totalreserve_pages)
-		return 0;
-
-	deficit = totalreserve_pages - nr_free_pages();
-	/* ponytail: bump to >> 2 if underkill is observed */
-	return deficit + (deficit >> 3);
-}
 
 static int nr_victims;
 static bool reclaim_active;
@@ -63,6 +58,67 @@ static const short tier_min_adj[LMK_TIERS] = { 800, 200, 1 };
 static atomic_t needs_reclaim = ATOMIC_INIT(0);
 static atomic_t needs_reap = ATOMIC_INIT(0);
 static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
+
+/*
+ * Anonymous pages belonging to victims that have been killed but whose memory
+ * has not yet been reaped or released by exit. nr_free_pages() still counts
+ * these against us, even though they are already committed to being freed.
+ *
+ * Derived by summing the victims array rather than maintained as a counter:
+ * a victim's memory can stop pending by any of three paths -- a successful
+ * __oom_reap_task_mm(), exit_mmap() via simple_lmk_mm_freed(), or the
+ * force-give-up path in next_reap_victim() -- and any of them can race.
+ * Summing current state cannot double-subtract or leak the way an
+ * event-driven counter can.
+ *
+ * This is the same invariant Sultan's synchronous design obtained by waiting
+ * for each victim's memory to be freed before proceeding to kill more,
+ * expressed as accounting so the kill path stays asynchronous and needs no
+ * artificial cooldown.
+ */
+static unsigned long pages_pending_free(void)
+{
+	unsigned long total = 0;
+	int i;
+
+	for (i = 0; i < READ_ONCE(nr_victims); i++) {
+		struct mm_struct *mm = READ_ONCE(victims[i].mm);
+
+		/* No victim, or its memory has already been accounted as free */
+		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags))
+			continue;
+
+		total += victims[i].pending;
+	}
+
+	return total;
+}
+
+static unsigned long get_target_free_pages(void)
+{
+	unsigned long deficit, pending;
+
+	if (nr_free_pages() >= totalreserve_pages)
+		return 0;
+
+	deficit = totalreserve_pages - nr_free_pages();
+	deficit += (deficit >> 3); /* 12.5% margin */
+
+	/*
+	 * Do not charge this cycle for memory that earlier kills have already
+	 * committed to freeing. Without this, the deficit is charged for the
+	 * same pages on every cycle until the victim's memory actually lands:
+	 * a cycle then sees a deficit that is already being resolved, finds no
+	 * victims left at the current tier, and escalates -- which is how the
+	 * driver reaches the most aggressive tier and kills far more than the
+	 * deficit ever required.
+	 */
+	pending = pages_pending_free();
+	if (pending >= deficit)
+		return 0;
+
+	return deficit - pending;
+}
 
 static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
 {
@@ -200,9 +256,11 @@ static unsigned long find_victims(int *vindex)
 			task_unlock(vtsk);
 			rcu_read_unlock();
 
-			victims[*vindex].tsk = vtsk;
-			victims[*vindex].mm = vtsk->mm;
-			victims[*vindex].size = pages;
+		victims[*vindex].tsk = vtsk;
+		victims[*vindex].mm = vtsk->mm;
+		victims[*vindex].size = pages;
+		/* Not killed yet, so nothing is pending on its account */
+		victims[*vindex].pending = 0;
 
 			pages_found += pages;
 
@@ -400,6 +458,13 @@ static void scan_and_kill(void)
 		else
 			victim->score = 0;
 
+		/*
+		 * The kill is dispatched below, so this victim's resident
+		 * anonymous pages are now guaranteed to be freed even though
+		 * nr_free_pages() will not reflect that for some time.
+		 */
+		victim->pending = victim->score;
+
 		/* We don't need the task_struct anymore */
 		put_task_struct(vtsk);
 		victim->tsk = NULL;
@@ -502,10 +567,10 @@ static struct mm_struct *next_reap_victim(bool force)
 	}
 
 	if (!mm) {
-		if (should_retry)
+		if (should_retry) {
 			/* Return ERR_PTR(-EAGAIN) to try reaping again later */
 			mm = ERR_PTR(-EAGAIN);
-		else
+		} else {
 			/*
 			 * Nothing left to reap. Clear reclaim_active so
 			 * simple_lmk_mm_freed() stops searching the victims
@@ -514,9 +579,16 @@ static struct mm_struct *next_reap_victim(bool force)
 			 * scan_and_kill() to ensure all prior victim mm
 			 * pointers are visible as NULL before we declare
 			 * reclaim inactive.
+			 *
+			 * This must stay inside the else: clearing the flag
+			 * while we are handing back -EAGAIN lets a concurrent
+			 * scan_and_kill() overwrite the victims array that
+			 * next_reap_victim() and simple_lmk_mm_freed() are
+			 * still walking.
 			 */
 			smp_mb();
 			WRITE_ONCE(reclaim_active, false);
+		}
 	}
 
 	return mm;
@@ -594,14 +666,21 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 		return;
 
 	/*
-	 * Fast path: if reclaim is not active, the victims array is not live
-	 * and there is nothing to search. reclaim_active stays true from
-	 * scan_and_kill() until the reaper confirms all victims are reaped,
-	 * so a late mm_freed for a dying victim will always find it true.
+	 * No fast path on reclaim_active here, and that is deliberate.
+	 *
+	 * reclaim_active is cleared by next_reap_victim() once *reaping* is
+	 * done, but a victim that was reaped successfully has not *exited*
+	 * yet -- and this function runs from __mmput() after exit_mmap(). For
+	 * such a victim this is the only place its mmgrab() reference is
+	 * released, so skipping the search strands it: __mmput() then drops
+	 * its own reference at the end without ours ever being dropped,
+	 * mm_count never reaches zero, and the mm_struct is leaked outright.
+	 *
+	 * Scanning is bounded by MAX_VICTIMS against a cacheline-aligned
+	 * array and runs once per process exit, so the search is not worth a
+	 * correctness hazard. Every path that drops a victim's reference
+	 * clears its slot first, so stale entries cannot be matched.
 	 */
-	if (!READ_ONCE(reclaim_active))
-		return;
-
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
 		if (READ_ONCE(victims[i].mm) == mm) {
 			if (cmpxchg(&victims[i].mm, mm, NULL) == mm) {
