@@ -152,10 +152,30 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
 	swap(*lhs, *rhs);
 }
 
+/*
+ * Pages a task is holding that only killing it would release: resident
+ * anonymous memory, plus the swap slots its entries occupy. File pages are
+ * left out because the kernel can drop those without killing anything.
+ *
+ * Freeing the swap slots matters here specifically: this device runs zram
+ * near capacity, so reclaim cannot push further anon pages out until some
+ * slots are released.
+ *
+ * No attempt is made to weight these pages by how cold they are. Android
+ * already orders the cached tiers by recency, so oom_score_adj carries that
+ * information and find_victims() selects on it. Re-deriving coldness here
+ * from how long a task has been backgrounded double-counts the same signal,
+ * needs tunables to describe, and is not checkable -- MGLRU generations and
+ * workingset are authoritative, and a killer should not compete with them.
+ *
+ * This is also what makes the deficit arithmetic sound. get_target_free_pages()
+ * credits kills with the pages actually pending free, so victim sizes have to
+ * mean real pages; a discounted estimate would understate the credit and
+ * drive the driver to kill again.
+ */
 static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 {
-	return get_mm_counter(mm, MM_ANONPAGES) +
-	       get_mm_counter(mm, MM_SWAPENTS);
+	return get_mm_counter(mm, MM_ANONPAGES) + get_mm_counter(mm, MM_SWAPENTS);
 }
 
 static unsigned long find_victims(int *vindex)
@@ -231,7 +251,7 @@ static unsigned long find_victims(int *vindex)
 			 * (adj >= 800), it gets a 5-second grace period.
 			 * Only applies during mild Tier 0 pressure.
 			 */
-			if (limit_adj == tier_min_adj[0] && i >= tier_min_adj[0] &&
+			if (limit_adj == tier_min_adj[0] &&
 			    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
 				goto drop_ref;
 
@@ -346,7 +366,6 @@ static void scan_and_kill(void)
 {
 	static struct mm_struct *drop_mms[MAX_VICTIMS];
 	int i, nr_to_kill, nr_found = 0;
-	unsigned long pages_found;
 	int num_drop;
 
 	/*
@@ -388,7 +407,7 @@ static void scan_and_kill(void)
 	}
 
 	/* Populate the victims array with tasks sorted by adj and then size */
-	pages_found = find_victims(&nr_found);
+	find_victims(&nr_found);
 	if (unlikely(!nr_found)) {
 		/*
 		 * No victims at the current tier. If there's still a memory
@@ -402,12 +421,14 @@ static void scan_and_kill(void)
 			if (current_adj == tier_min_adj[0]) {
 				atomic_set(&target_min_adj, tier_min_adj[1]);
 				atomic_set(&needs_reclaim, 1);
+				pr_info_ratelimited("Escalating to adj %d, no victims at current tier\n",
+						    tier_min_adj[1]);
 			} else if (current_adj == tier_min_adj[1]) {
 				atomic_set(&target_min_adj, tier_min_adj[2]);
 				atomic_set(&needs_reclaim, 1);
+				pr_info_ratelimited("Escalating to adj %d, no victims at current tier\n",
+						    tier_min_adj[2]);
 			}
-			pr_info_ratelimited("Escalating to adj %d, no victims at current tier\n",
-					    atomic_read(&target_min_adj));
 		}
 		return;
 	}
