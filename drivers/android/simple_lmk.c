@@ -357,6 +357,36 @@ static void scan_and_kill(void)
 	if (READ_ONCE(reclaim_active))
 		return;
 
+	/*
+	 * Release whatever the previous cycle left behind before touching the
+	 * array.
+	 *
+	 * A victim that was reaped successfully keeps its slot until its task
+	 * exits, because simple_lmk_mm_freed() is the only thing that releases
+	 * its reference -- and reclaim_active is cleared once reaping is done,
+	 * not once every victim has exited. find_victims() then writes slots
+	 * unconditionally, so without this sweep a live reference gets
+	 * overwritten and lost: nothing ever calls mmdrop(), mm_count never
+	 * reaches zero, and the mm_struct leaks.
+	 *
+	 * Getting here at all means the reaper is finished with these, so
+	 * every remaining entry has either been reaped or is being released by
+	 * exit_mmap() right now. Either way the reference is ours to drop.
+	 * xchg against the cmpxchg in simple_lmk_mm_freed() so exactly one of
+	 * the two sees a non-NULL pointer and therefore exactly one drop
+	 * happens.
+	 *
+	 * nr_victims is zeroed first so that simple_lmk_mm_freed() stops
+	 * matching against an array we are about to refill.
+	 */
+	WRITE_ONCE(nr_victims, 0);
+	for (i = 0; i < MAX_VICTIMS; i++) {
+		struct mm_struct *mm = xchg(&victims[i].mm, NULL);
+
+		if (mm)
+			mmdrop(mm);
+	}
+
 	/* Populate the victims array with tasks sorted by adj and then size */
 	pages_found = find_victims(&nr_found);
 	if (unlikely(!nr_found)) {
