@@ -47,6 +47,15 @@ struct zcomp {
 	struct list_head list;
 
 	struct hlist_node node;
+
+	/*
+	 * One page per CPU, used to stage a compressed object on the read
+	 * path. Holds the buffer's address rather than a typed pointer so
+	 * that per_cpu_ptr() dereferences to something assignable -- the
+	 * same idiom the EH driver uses for its bounce buffers.
+	 */
+	unsigned long __percpu *scratch;
+
 	char algo_name[ZCOMP_ALGO_NAME_MAX];
 };
 
