@@ -94,6 +94,24 @@ struct eh_device {
 
 	eh_cb_fn comp_callback;
 
+	/*
+	 * Every request the device has accepted and not yet fully completed:
+	 * hardware ring + software FIFO + the in-callback window.
+	 *
+	 * nr_request covers only the ring, so it cannot answer "is the device
+	 * idle" on its own. A request parked in the software FIFO in
+	 * particular was invisible to eh_suspend() entirely, which is what let
+	 * the clock be gated with work still outstanding and stranded the
+	 * submitter's BIO reference forever.
+	 *
+	 * Incremented before the request becomes visible to the drain
+	 * decision, and decremented only after the completion callback has
+	 * released the BIO, so a non-zero value always means there is work
+	 * that must not be abandoned.
+	 */
+	atomic_t nr_inflight;
+	wait_queue_head_t idle_wq;
+
 	/* keep pending request */
 	struct eh_sw_fifo sw_fifo;
 #ifdef CONFIG_SOC_ZUMA
