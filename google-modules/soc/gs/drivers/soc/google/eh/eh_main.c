@@ -757,7 +757,18 @@ static int __noreturn eh_comp_thread(void *data)
 
 	sched_set_fifo_low(current);
 	current->flags |= PF_MEMALLOC;
-	set_freezable();
+	/*
+	 * This thread must stay runnable across suspend. Only it can retire
+	 * requests sitting in the hardware ring and only it can drain the
+	 * software FIFO into the ring, and the freezer runs before
+	 * dpm_suspend -- so a freezable thread here would already be parked
+	 * by the time eh_suspend() needs it, and the drain it waits on could
+	 * never make progress.
+	 *
+	 * That is safe because eh_suspend() refuses to suspend rather than
+	 * gate the clock on a drain that isn't finishing.
+	 */
+	current->flags |= PF_NOFREEZE;
 
 	while (1) {
 		int ret;
@@ -776,9 +787,9 @@ static int __noreturn eh_comp_thread(void *data)
 #endif
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req,
 					       PM_QOS_DEFAULT_VALUE);
-		wait_event_freezable(eh_dev->comp_wq,
-			atomic_read(&eh_dev->nr_request) ||
-			!sw_fifo_empty(&eh_dev->sw_fifo));
+		wait_event(eh_dev->comp_wq,
+			   atomic_read(&eh_dev->nr_request) ||
+			   !sw_fifo_empty(&eh_dev->sw_fifo));
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req, 100);
 #ifdef CONFIG_SOC_ZUMA
 		exynos_update_ip_idle_status(eh_dev->ip_index, 0);
