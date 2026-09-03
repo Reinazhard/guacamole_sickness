@@ -82,6 +82,12 @@ int zcomp_unregister(const char *algo_name);
 
 int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 		      struct page *page, u32 index, u32 prio);
+
+int zcomp_store_buffer(void *buffer, int comp_len, struct zram *zram,
+		       struct page *page, unsigned long *handlep,
+		       unsigned int *lenp);
+void zcomp_publish_buffer(struct zram *zram, u32 index, unsigned long handle,
+			  unsigned int comp_len, u32 prio);
 int zcomp_recompress_copy_buffer(void *buffer, int comp_len_new, struct zram *zram,
 				 u32 index, u32 prio, u32 threshold);
 size_t get_huge_class_size(void);
