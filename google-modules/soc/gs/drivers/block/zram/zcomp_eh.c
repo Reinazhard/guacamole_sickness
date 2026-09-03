@@ -200,10 +200,17 @@ static void zcomp_eh_compress_done(int error, void *buffer,
 	struct bio *bio = cookie->bio;
 	struct page *page = cookie->page;
 	bool is_write = bio_op(bio) == REQ_OP_WRITE;
+	unsigned long handle;
+	unsigned int len = 0;
 
+	/*
+	 * The store has to happen here: @buffer belongs to the descriptor
+	 * ring slot this request just vacated, and is only valid until the
+	 * completion returns.
+	 */
 	if (!error)
-		error = zcomp_copy_buffer(buffer, size, zram, page, index,
-					  zcomp_eh->prio);
+		error = zcomp_store_buffer(buffer, size, zram, page, &handle,
+					   &len);
 
 	if (unlikely(error)) {
 		if (is_write)
@@ -211,8 +218,10 @@ static void zcomp_eh_compress_done(int error, void *buffer,
 		else
 			atomic64_inc(&zram->stats.failed_reads);
 		bio_io_error(bio);
-	} else
+	} else {
+		zcomp_publish_buffer(zram, index, handle, len, zcomp_eh->prio);
 		bio_endio(bio);
+	}
 	free_zcomp_cookie(zcomp_eh, cookie);
 }
 
