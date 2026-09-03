@@ -485,6 +485,7 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	void *compr_data = NULL;
 	int ret = 0;
 	int compr_result = 0;
+	bool real_completion = false;
 	struct eh_completion *compl = &eh_dev->completions[fifo_index];
 
 	desc = eh_descriptor(eh_dev, fifo_index);
@@ -576,6 +577,7 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 		(*eh_dev->comp_callback)(compr_result, compr_data, compr_size,
 					 compl->priv);
 		compl->priv = NULL;
+		real_completion = true;
 	} else {
 		pr_err_ratelimited("descriptor 0x%x: priv already NULL, "
 				   "skipping callback (spurious re-visit)\n",
@@ -585,9 +587,26 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	/* set the descriptor back to IDLE */
 	desc->status = EH_CDESC_IDLE;
 
-	/* Ensure the fifo slot is all freed before decrementing nr_request */
-	smp_mb__before_atomic();
-	atomic_dec(&eh_dev->nr_request);
+	/*
+	 * Account only for completions that actually released a request. A
+	 * spurious re-visit was already accounted by the legitimate first
+	 * pass; decrementing again drives nr_request negative, which
+	 * permanently breaks fifo_full() and lets live descriptors be
+	 * overwritten.
+	 */
+	if (likely(real_completion)) {
+		/* Ensure the fifo slot is all freed before decrementing */
+		smp_mb__before_atomic();
+		atomic_dec(&eh_dev->nr_request);
+
+		/*
+		 * Released last, after the callback has returned and the BIO
+		 * is gone. Reaching zero here is what tells eh_suspend() the
+		 * pipeline is genuinely empty -- not merely that the ring
+		 * happens to be drained.
+		 */
+		eh_request_done(eh_dev);
+	}
 
 	update_fifo_complete_index(eh_dev);
 	return ret;
