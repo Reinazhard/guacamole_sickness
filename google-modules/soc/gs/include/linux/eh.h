@@ -36,6 +36,17 @@ struct eh_device;
 typedef void (*eh_cb_fn)(int compr_result, void *data, unsigned int size,
 			 void *priv);
 
+/*
+ * Hand back any requests the caller is still holding, without waiting for
+ * anything. Called by the suspend path before it decides whether the device
+ * is idle, because a caller that batches work on a block plug will never
+ * unplug once the freezer has stopped it.
+ *
+ * Takes the caller's own private pointer, since struct eh_device is opaque
+ * outside the driver.
+ */
+typedef void (*eh_drain_fn)(void *priv);
+
 /* tear down hardware block, mostly done when eh_device is unloaded */
 void eh_remove(struct eh_device *eh_dev);
 
@@ -51,7 +62,8 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
                        unsigned int slen, struct page *page);
 
 /* create eh_device for user */
-struct eh_device *eh_create(eh_cb_fn comp);
+struct eh_device *eh_create(eh_cb_fn comp, eh_drain_fn drain,
+			    void *drain_priv);
 
 /* destroty eh_device */
 void eh_destroy(struct eh_device *eh_dev);
