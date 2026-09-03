@@ -1334,6 +1334,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 
 	return t;
 }
+EXPORT_SYMBOL_GPL(psi_trigger_create);
 
 void psi_trigger_set_waitq(struct psi_trigger *t, wait_queue_head_t *wq)
 {
@@ -1414,6 +1415,7 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	}
 	kfree(t_ext);
 }
+EXPORT_SYMBOL_GPL(psi_trigger_destroy);
 
 __poll_t psi_trigger_poll(void **trigger_ptr,
 				struct file *file, poll_table *wait)
