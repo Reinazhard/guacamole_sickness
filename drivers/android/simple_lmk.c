@@ -754,9 +754,26 @@ static int simple_lmk_psi_thread(void *data)
 	return 0;
 }
 
-void simple_lmk_update_adj(struct task_struct *task)
+/*
+ * Stamp simple_lmk_cache_time only when the task *enters* the cached tier.
+ *
+ * This hook runs on every oom_score_adj write, and ActivityManager rewrites
+ * adj for cached apps on many state changes. Stamping unconditionally made
+ * cache_time mean "last written" rather than "entered the tier", while its
+ * only reader -- the grace period in find_victims() -- means the latter: it
+ * drops any candidate stamped within GRACE_PERIOD_MS, so an app rewritten
+ * more often than that is never killable at Tier 0 at all.
+ *
+ * That is the under-killing counterpart to the over-killing fixed by
+ * accounting for pages already pending free.
+ *
+ * Called before the new value is assigned, so task->signal->oom_score_adj
+ * still holds the previous one and the transition is visible.
+ */
+void simple_lmk_update_adj(struct task_struct *task, int new_adj)
 {
-	if (task->signal->oom_score_adj >= tier_min_adj[0])
+	if (new_adj >= tier_min_adj[0] &&
+	    task->signal->oom_score_adj < tier_min_adj[0])
 		task->simple_lmk_cache_time = jiffies;
 }
 EXPORT_SYMBOL_GPL(simple_lmk_update_adj);
