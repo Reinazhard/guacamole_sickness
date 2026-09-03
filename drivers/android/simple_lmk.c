@@ -142,30 +142,6 @@ static unsigned long find_victims(int *vindex)
 		    (thread_group_empty(tsk) && tsk->flags & PF_EXITING))
 			continue;
 
-		/*
-		 * If an app was just backgrounded, it enters the cached tier (>= tier_min_adj[0]).
-		 * Give it a grace period to prevent killing the app the user just left.
-		 * 
-		 * Only grant this luxury during mild preventative reclaims (Tier 0).
-		 * If pressure escalates to Tier 1/2, the system is starving — bypass
-		 * the grace period to ensure heavy apps (e.g. Games) don't cause panics.
-		 */
-		if (limit_adj == tier_min_adj[0] && adj >= tier_min_adj[0] &&
-		    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
-			adj--;
-
-		/*
-		 * If an app was just backgrounded, it enters the cached tier (>= tier_min_adj[0]).
-		 * Give it a grace period to prevent killing the app the user just left.
-		 * 
-		 * Only grant this luxury during mild preventative reclaims (Tier 0).
-		 * If pressure escalates to Tier 1/2, the system is starving — bypass
-		 * the grace period to ensure heavy apps (e.g. Games) don't cause panics.
-		 */
-		if (limit_adj == tier_min_adj[0] && adj >= tier_min_adj[0] &&
-		    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
-			adj--;
-
 		get_task_struct(tsk);
 		tsk->simple_lmk_next = task_bucket[adj];
 		task_bucket[adj] = tsk;
@@ -199,6 +175,16 @@ static unsigned long find_victims(int *vindex)
 			unsigned long pages = 0;
 
 			next = tsk->simple_lmk_next;
+
+			/*
+			 * Grace period: protect recently backgrounded apps from
+			 * Tier 0 kills. When an app enters the cached tier
+			 * (adj >= 800), it gets a 5-second grace period.
+			 * Only applies during mild Tier 0 pressure.
+			 */
+			if (limit_adj == tier_min_adj[0] && i >= tier_min_adj[0] &&
+			    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
+				goto drop_ref;
 
 			rcu_read_lock();
 			vtsk = find_lock_task_mm(tsk);
@@ -660,11 +646,12 @@ static int simple_lmk_psi_thread(void *data)
 	return 0;
 }
 
-static void simple_lmk_oom_adj_probe(void *data, struct task_struct *task)
+void simple_lmk_update_adj(struct task_struct *task)
 {
 	if (task->signal->oom_score_adj >= tier_min_adj[0])
 		task->simple_lmk_cache_time = jiffies;
 }
+EXPORT_SYMBOL_GPL(simple_lmk_update_adj);
 
 static int simple_lmk_oom_notify(struct notifier_block *self,
 				 unsigned long val, void *data)
@@ -739,7 +726,7 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 		if (WARN_ON(IS_ERR(thread)))
 			return PTR_ERR(thread);
 
-		WARN_ON(register_trace_oom_score_adj_update(simple_lmk_oom_adj_probe, NULL));
+		
 		WARN_ON(register_oom_notifier(&simple_lmk_oom_nb));
 
 		complete(&psi_init_done);
