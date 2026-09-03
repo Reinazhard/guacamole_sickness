@@ -371,16 +371,29 @@ struct zcomp *zcomp_create(const char *algo_name, struct zcomp_params *params,
  * @page: original buffer to be compressed
  * @index: swap slot index
  */
-int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
-		      struct page *page, u32 index, u32 prio)
+/*
+ * Store a compressed object in zram's memory pool without touching its slot.
+ *
+ * The two halves are split because they have different requirements. The
+ * store reads @buffer, which for a hardware backend is a buffer owned by the
+ * compression engine's descriptor ring and is only valid until the request
+ * completes -- so it has to happen inline. Publishing only needs the handle,
+ * so it can be deferred to another context.
+ *
+ * A caller that stores must publish, or the object leaks. On failure nothing
+ * was stored and publishing must not be attempted.
+ */
+int zcomp_store_buffer(void *buffer, int comp_len, struct zram *zram,
+		       struct page *page, unsigned long *handlep,
+		       unsigned int *lenp)
 {
-
 	unsigned long handle;
 
-	if (unlikely(comp_len == 0)) {
-		zram_slot_update(zram, index, 0, 0, prio);
+	*handlep = 0;
+	*lenp = 0;
+
+	if (unlikely(comp_len == 0))
 		return 0;
-	}
 
 	if (comp_len >= huge_class_size)
 		comp_len = PAGE_SIZE;
@@ -403,7 +416,36 @@ int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
 	} else {
 		zs_obj_write(zram->mem_pool, handle, buffer, comp_len);
 	}
+
+	*handlep = handle;
+	*lenp = comp_len;
+
+	return 0;
+}
+EXPORT_SYMBOL(zcomp_store_buffer);
+
+/*
+ * Publish a stored object into its slot, freeing whatever was there before.
+ */
+void zcomp_publish_buffer(struct zram *zram, u32 index, unsigned long handle,
+			  unsigned int comp_len, u32 prio)
+{
 	zram_slot_update(zram, index, handle, comp_len, prio);
+}
+EXPORT_SYMBOL(zcomp_publish_buffer);
+
+int zcomp_copy_buffer(void *buffer, int comp_len, struct zram *zram,
+		      struct page *page, u32 index, u32 prio)
+{
+	unsigned long handle;
+	unsigned int len;
+	int ret;
+
+	ret = zcomp_store_buffer(buffer, comp_len, zram, page, &handle, &len);
+	if (ret)
+		return ret;
+
+	zcomp_publish_buffer(zram, index, handle, len, prio);
 
 	return 0;
 }
