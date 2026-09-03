@@ -14,8 +14,7 @@
 #include <linux/sort.h>
 #include <linux/swap.h>
 #include <linux/psi.h>
-#include <linux/tracepoint.h>
-#include <trace/events/oom.h>
+
 #include <uapi/linux/sched/types.h>
 
 /* Grace period in milliseconds for newly backgrounded apps */
@@ -142,6 +141,18 @@ static unsigned long find_victims(int *vindex)
 		    sig->flags & SIGNAL_GROUP_EXIT ||
 		    (thread_group_empty(tsk) && tsk->flags & PF_EXITING))
 			continue;
+
+		/*
+		 * If an app was just backgrounded, it enters the cached tier (>= tier_min_adj[0]).
+		 * Give it a grace period to prevent killing the app the user just left.
+		 * 
+		 * Only grant this luxury during mild preventative reclaims (Tier 0).
+		 * If pressure escalates to Tier 1/2, the system is starving — bypass
+		 * the grace period to ensure heavy apps (e.g. Games) don't cause panics.
+		 */
+		if (limit_adj == tier_min_adj[0] && adj >= tier_min_adj[0] &&
+		    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
+			adj--;
 
 		/*
 		 * If an app was just backgrounded, it enters the cached tier (>= tier_min_adj[0]).
@@ -348,14 +359,6 @@ static void scan_and_kill(void)
 			victim->size << (PAGE_SHIFT - 10));
 
 		/*
-		 * Yield between kills to let RCU grace periods progress
-		 * and reduce scheduling contention from the thundering
-		 * herd of exiting victims.
-		 */
-		if (i)
-			cond_resched();
-
-		/*
 		 * Thaw the victim first so it can receive and process the
 		 * kill signal immediately. Signals can't wake frozen tasks;
 		 * only a thaw operation can.
@@ -369,13 +372,16 @@ static void scan_and_kill(void)
 			set_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags);
 
 		/*
-		 * Mark the thread group dead so that other kernel code knows
-		 * to prioritize their memory allocation. TIF_MEMDIE is
-		 * sufficient for this - it tells the page allocator to
-		 * give these tasks priority without changing scheduling
-		 * class. Elevating to SCHED_RR causes RT throttling when
-		 * many processes are killed simultaneously, which can
-		 * trigger watchdog resets.
+		 * Drop the victim's oom_score_adj to OOM_SCORE_ADJ_MIN.
+		 * This cleanly ensures Android and the kernel's scheduler
+		 * prioritize the dying task's teardown.
+		 */
+		WRITE_ONCE(vtsk->signal->oom_score_adj, OOM_SCORE_ADJ_MIN);
+
+		/*
+		 * Mark the thread group dead so that the page allocator knows
+		 * to give these tasks emergency memory priority (ALLOC_NO_WATERMARKS).
+		 * Without this, victims stall during exit under extreme pressure.
 		 */
 		rcu_read_lock();
 		for_each_thread(vtsk, t)
@@ -556,8 +562,8 @@ static int simple_lmk_reaper_thread(void *data)
 	set_freezable();
 
 	while (1) {
-		wait_event_freezable(reaper_waitq,
-				     atomic_cmpxchg_relaxed(&needs_reap, 1, 0));
+		wait_event_freezable(reaper_waitq, atomic_read(&needs_reap));
+		atomic_set(&needs_reap, 0);
 		reap_victims();
 	}
 
