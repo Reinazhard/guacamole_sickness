@@ -363,7 +363,8 @@ static void scan_and_kill(void)
 		 * kill signal immediately. Signals can't wake frozen tasks;
 		 * only a thaw operation can.
 		 */
-		__thaw_task(vtsk);
+		if (frozen(vtsk))
+			__thaw_task(vtsk);
 
 		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
@@ -665,6 +666,37 @@ static void simple_lmk_oom_adj_probe(void *data, struct task_struct *task)
 		task->simple_lmk_cache_time = jiffies;
 }
 
+static int simple_lmk_oom_notify(struct notifier_block *self,
+				 unsigned long val, void *data)
+{
+	unsigned long *freed = data;
+
+	/*
+	 * If PSI reclaim is already active, we are handling the pressure.
+	 * Tell the core OOM killer we freed memory to abort its panic.
+	 */
+	if (READ_ONCE(reclaim_active) || atomic_read(&needs_reclaim)) {
+		*freed = 1;
+		return NOTIFY_OK;
+	}
+
+	/*
+	 * If the core OOM killer fired but PSI didn't catch it (e.g. huge
+	 * sudden allocation), force a synchronous kill cycle.
+	 */
+	atomic_set(&target_min_adj, tier_min_adj[0]);
+	scan_and_kill();
+
+	if (atomic_read(&nr_killed) > 0)
+		*freed = 1;
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block simple_lmk_oom_nb = {
+	.notifier_call = simple_lmk_oom_notify,
+};
+
 /* Initialize Simple LMK when lmkd in Android writes to the minfree parameter */
 static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 {
@@ -708,6 +740,7 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 			return PTR_ERR(thread);
 
 		WARN_ON(register_trace_oom_score_adj_update(simple_lmk_oom_adj_probe, NULL));
+		WARN_ON(register_oom_notifier(&simple_lmk_oom_nb));
 
 		complete(&psi_init_done);
 	}
