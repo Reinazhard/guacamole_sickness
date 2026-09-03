@@ -137,11 +137,12 @@ static bool sw_fifo_empty(struct eh_sw_fifo *fifo)
  * the count reach zero before it returns would let suspend gate the clock
  * with a request still in use.
  */
-static void eh_request_done(struct eh_device *eh_dev)
+void eh_request_done(struct eh_device *eh_dev)
 {
 	if (atomic_dec_and_test(&eh_dev->nr_inflight))
 		wake_up(&eh_dev->idle_wq);
 }
+EXPORT_SYMBOL(eh_request_done);
 
 /*
  * - Primitive functions for Emerald Hill HW
@@ -524,6 +525,7 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	int ret = 0;
 	int compr_result = 0;
 	bool real_completion = false;
+	bool deferred = false;
 	struct eh_completion *compl = &eh_dev->completions[fifo_index];
 
 	desc = eh_descriptor(eh_dev, fifo_index);
@@ -612,8 +614,8 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 	 * invoke the callback so the upper layer can release its resources.
 	 */
 	if (likely(compl->priv)) {
-		(*eh_dev->comp_callback)(compr_result, compr_data, compr_size,
-					 compl->priv);
+		deferred = (*eh_dev->comp_callback)(compr_result, compr_data,
+						    compr_size, compl->priv);
 		compl->priv = NULL;
 		real_completion = true;
 	} else {
@@ -642,8 +644,15 @@ static int eh_process_completed_descriptor(struct eh_device *eh_dev,
 		 * is gone. Reaching zero here is what tells eh_suspend() the
 		 * pipeline is genuinely empty -- not merely that the ring
 		 * happens to be drained.
+		 *
+		 * Skipped when the callback took the request over, in which
+		 * case it calls this once the deferred work has completed the
+		 * BIO. The descriptor slot accounting above is unaffected:
+		 * the slot is free either way, since the payload has already
+		 * been consumed by then.
 		 */
-		eh_request_done(eh_dev);
+		if (!deferred)
+			eh_request_done(eh_dev);
 	}
 
 	update_fifo_complete_index(eh_dev);
