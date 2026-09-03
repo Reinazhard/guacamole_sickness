@@ -24,6 +24,9 @@
 /* Timeout in jiffies for each reclaim */
 #define RECLAIM_EXPIRES msecs_to_jiffies(CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC)
 
+/* Android oom_score_adj range is 0 to 1000 */
+#define ADJ_MAX 1000
+
 struct victim_info {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -31,7 +34,7 @@ struct victim_info {
 };
 
 static struct victim_info victims[MAX_VICTIMS] __cacheline_aligned_in_smp;
-static struct task_struct *task_bucket[SHRT_MAX + 1] __cacheline_aligned;
+static struct task_struct *task_bucket[ADJ_MAX + 1] __cacheline_aligned;
 static DECLARE_WAIT_QUEUE_HEAD(oom_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 static DECLARE_COMPLETION(reclaim_done);
@@ -71,10 +74,15 @@ static unsigned long get_total_mm_pages(struct mm_struct *mm)
 
 static unsigned long find_victims(int *vindex)
 {
-	short i, min_adj = SHRT_MAX, max_adj = 0;
+	short i, min_adj = ADJ_MAX, max_adj = 0;
 	unsigned long pages_found = 0;
 	struct task_struct *tsk;
 
+	/*
+	 * Phase 1: Walk the process list under RCU to collect pinned
+	 * candidates. get_task_struct() prevents the task from being freed
+	 * after we drop RCU, so the bucket chains remain valid.
+	 */
 	rcu_read_lock();
 	for_each_process(tsk) {
 		struct signal_struct *sig;
@@ -90,75 +98,108 @@ static unsigned long find_victims(int *vindex)
 		 */
 		sig = tsk->signal;
 		adj = READ_ONCE(sig->oom_score_adj);
-		if (adj < 0 || sig->flags & SIGNAL_GROUP_EXIT ||
+		if (adj < 0 || adj > ADJ_MAX ||
+		    sig->flags & SIGNAL_GROUP_EXIT ||
 		    (thread_group_empty(tsk) && tsk->flags & PF_EXITING))
 			continue;
 
-		/* Store the task in a linked-list bucket based on its adj */
+		get_task_struct(tsk);
 		tsk->simple_lmk_next = task_bucket[adj];
 		task_bucket[adj] = tsk;
 
-		/* Track the min and max adjs to speed up the loop below */
 		if (adj > max_adj)
 			max_adj = adj;
 		if (adj < min_adj)
 			min_adj = adj;
 	}
+	rcu_read_unlock();
 
-	/* Start searching for victims from the highest adj (least important) */
+	/*
+	 * Phase 2: Evaluate pinned candidates. Each candidate gets a brief
+	 * RCU critical section only around find_lock_task_mm() (which needs
+	 * RCU for for_each_thread()). This avoids holding rcu_read_lock()
+	 * across the entire process walk and evaluation pass.
+	 */
 	for (i = max_adj; i >= min_adj; i--) {
 		int old_vindex;
+		struct task_struct *next;
 
 		tsk = task_bucket[i];
 		if (!tsk)
 			continue;
 
-		/* Clear out this bucket for the next time reclaim is done */
 		task_bucket[i] = NULL;
 
-		/* Iterate through every task with this adj */
 		old_vindex = *vindex;
 		do {
 			struct task_struct *vtsk;
+			unsigned long pages = 0;
 
+			next = tsk->simple_lmk_next;
+
+			rcu_read_lock();
 			vtsk = find_lock_task_mm(tsk);
-			if (!vtsk)
-				continue;
+			if (!vtsk || !vtsk->mm) {
+				if (vtsk)
+					task_unlock(vtsk);
+				rcu_read_unlock();
+				goto drop_ref;
+			}
 
-			/* Store this potential victim away for later */
+			pages = get_total_mm_pages(vtsk->mm);
+			if (!pages) {
+				task_unlock(vtsk);
+				rcu_read_unlock();
+				goto drop_ref;
+			}
+
+			get_task_struct(vtsk);
+			mmgrab(vtsk->mm);
+			task_unlock(vtsk);
+			rcu_read_unlock();
+
 			victims[*vindex].tsk = vtsk;
 			victims[*vindex].mm = vtsk->mm;
-			victims[*vindex].size = get_total_mm_pages(vtsk->mm);
+			victims[*vindex].size = pages;
 
-			/* Count the number of pages that have been found */
-			pages_found += victims[*vindex].size;
+			pages_found += pages;
 
-			/* Make sure there's space left in the victim array */
-			if (++*vindex == MAX_VICTIMS)
-				break;
-		} while ((tsk = tsk->simple_lmk_next));
+			if (++*vindex == MAX_VICTIMS) {
+				put_task_struct(tsk);
+				/*
+				 * Drain the rest of this bucket's chain
+				 * since task_bucket[i] is already NULL
+				 * and drain_remaining won't find them.
+				 */
+				while (next) {
+					tsk = next;
+					next = tsk->simple_lmk_next;
+					put_task_struct(tsk);
+				}
+				goto drain_remaining;
+			}
+drop_ref:
+			put_task_struct(tsk);
+		} while ((tsk = next));
 
-		/* Go to the next bucket if nothing was found */
 		if (*vindex == old_vindex)
 			continue;
 
-		/*
-		 * Sort the victims in descending order of size to prioritize
-		 * killing the larger ones first.
-		 */
-		sort(&victims[old_vindex], *vindex - old_vindex,
-		     sizeof(*victims), victim_cmp, victim_swap);
-
-		/* Stop when we are out of space or have enough pages found */
-		if (*vindex == MAX_VICTIMS || pages_found >= MIN_FREE_PAGES) {
-			/* Zero out any remaining buckets we didn't touch */
-			if (i > min_adj)
-				memset(&task_bucket[min_adj], 0,
-				       (i - min_adj) * sizeof(*task_bucket));
+		if (*vindex == MAX_VICTIMS || pages_found >= MIN_FREE_PAGES)
 			break;
 		}
+
+drain_remaining:
+	/* Release refs for any candidates still in buckets we didn't visit */
+	for (i = min_adj; i <= max_adj; i++) {
+		tsk = task_bucket[i];
+		task_bucket[i] = NULL;
+		while (tsk) {
+			struct task_struct *next = tsk->simple_lmk_next;
+			put_task_struct(tsk);
+			tsk = next;
+		}
 	}
-	rcu_read_unlock();
 
 	return pages_found;
 }
@@ -176,9 +217,12 @@ static int process_victims(int vlen)
 		struct victim_info *victim = &victims[i];
 		struct task_struct *vtsk = victim->tsk;
 
-		/* The victim's mm lock is taken in find_victims; release it */
+		/* The victim's mm and task refs were taken in find_victims */
 		if (pages_found >= MIN_FREE_PAGES) {
-			task_unlock(vtsk);
+			mmdrop(victim->mm);
+			put_task_struct(vtsk);
+			victim->mm = NULL;
+			victim->tsk = NULL;
 		} else {
 			pages_found += victim->size;
 			nr_to_kill++;
@@ -199,16 +243,27 @@ static void set_task_rt_prio(struct task_struct *tsk, int priority)
 
 static void scan_and_kill(void)
 {
+	static struct mm_struct *drop_mms[MAX_VICTIMS];
 	int i, nr_to_kill, nr_found = 0;
 	unsigned long pages_found;
+	int num_drop = 0;
 
 	/*
 	 * Reset nr_victims so the reaper thread and simple_lmk_mm_freed() are
-	 * aware that the victims array is no longer valid.
+	 * aware that the victims array is no longer valid. Drop leftover mms.
 	 */
 	write_lock(&mm_free_lock);
+	for (i = 0; i < nr_victims; i++) {
+		if (victims[i].mm) {
+			drop_mms[num_drop++] = victims[i].mm;
+			victims[i].mm = NULL;
+		}
+	}
 	nr_victims = 0;
 	write_unlock(&mm_free_lock);
+
+	for (i = 0; i < num_drop; i++)
+		mmdrop(drop_mms[i]);
 
 	/* Populate the victims array with tasks sorted by adj and then size */
 	pages_found = find_victims(&nr_found);
@@ -242,10 +297,25 @@ static void scan_and_kill(void)
 	 * Store the final number of victims for simple_lmk_mm_freed() and the
 	 * reaper thread, and indicate that reclaim is active.
 	 */
+	num_drop = 0;
 	write_lock(&mm_free_lock);
 	nr_victims = nr_to_kill;
 	reclaim_active = true;
+	for (i = 0; i < nr_to_kill; i++) {
+		struct mm_struct *mm = victims[i].mm;
+
+		if (mm && test_bit(MMF_OOM_SKIP, &mm->flags)) {
+			victims[i].mm = NULL;
+			drop_mms[num_drop++] = mm;
+			atomic_inc(&nr_killed);
+		}
+	}
+	if (atomic_read(&nr_killed) >= nr_victims)
+		complete(&reclaim_done);
 	write_unlock(&mm_free_lock);
+
+	for (i = 0; i < num_drop; i++)
+		mmdrop(drop_mms[i]);
 
 	/* Kill the victims */
 	for (i = 0; i < nr_to_kill; i++) {
@@ -259,6 +329,9 @@ static void scan_and_kill(void)
 
 		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
+
+		if (mm)
+			set_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags);
 
 		/*
 		 * Mark the thread group dead so that other kernel code knows,
@@ -286,8 +359,9 @@ static void scan_and_kill(void)
 		/* Store the number of anon pages to sort victims for reaping */
 		victim->size = get_mm_counter(mm, MM_ANONPAGES);
 
-		/* Finally release the victim's task lock acquired earlier */
-		task_unlock(vtsk);
+		/* We don't need the task_struct anymore */
+		put_task_struct(vtsk);
+		victim->tsk = NULL;
 	}
 
 	/*
@@ -311,7 +385,7 @@ static void scan_and_kill(void)
 	write_lock(&mm_free_lock);
 	reinit_completion(&reclaim_done);
 	reclaim_active = false;
-	nr_killed = (atomic_t)ATOMIC_INIT(0);
+	atomic_set(&nr_killed, 0);
 	write_unlock(&mm_free_lock);
 }
 
@@ -347,6 +421,16 @@ static struct mm_struct *next_reap_victim(void)
 		/* Do a trylock so the reaper thread doesn't sleep */
 		if (!mmap_read_trylock(mm)) {
 			should_retry = true;
+			continue;
+		}
+
+		/*
+		 * If mm_users is 0, __mmput is running. exit_mmap tears down
+		 * VMAs without holding mmap_lock at the end. We must skip
+		 * to avoid use-after-free when walking VMAs.
+		 */
+		if (!atomic_read(&mm->mm_users)) {
+			mmap_read_unlock(mm);
 			continue;
 		}
 
@@ -399,6 +483,9 @@ static void reap_victims(void)
 		if (__oom_reap_task_mm(mm))
 			set_bit(MMF_OOM_SKIP, &mm->flags);
 		mmap_read_unlock(mm);
+
+		/* Yield to let RCU grace periods and other work proceed */
+		cond_resched();
 	}
 }
 
@@ -420,15 +507,23 @@ static int simple_lmk_reaper_thread(void *data)
 void simple_lmk_mm_freed(struct mm_struct *mm)
 {
 	int i;
+	bool matched = false;
 
 	/*
 	 * Victims are guaranteed to have MMF_OOM_SKIP set after exit_mmap()
 	 * finishes. Use this to ignore unrelated dying processes.
 	 */
-	if (!test_bit(MMF_OOM_SKIP, &mm->flags))
+	if (!test_bit(MMF_OOM_SKIP, &mm->flags) || !test_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags))
 		return;
 
-	read_lock(&mm_free_lock);
+	/*
+	 * Fast path: if no reclaim is active and the reaper is done, then
+	 * there's no need to search the victims array.
+	 */
+	if (!reclaim_active && !atomic_read(&needs_reap))
+		return;
+
+	write_lock(&mm_free_lock);
 	for (i = 0; i < nr_victims; i++) {
 		if (victims[i].mm == mm) {
 			/*
@@ -441,10 +536,14 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 			if (reclaim_active &&
 			    atomic_inc_return_relaxed(&nr_killed) == nr_victims)
 				complete(&reclaim_done);
+			matched = true;
 			break;
 		}
 	}
-	read_unlock(&mm_free_lock);
+	write_unlock(&mm_free_lock);
+
+	if (matched)
+		mmdrop(mm);
 }
 
 static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
