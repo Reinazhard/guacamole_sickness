@@ -16,11 +16,8 @@
 #include <linux/psi.h>
 #include <uapi/linux/sched/types.h>
 
-/* The minimum number of pages to free per reclaim */
-#define MIN_FREE_PAGES (CONFIG_ANDROID_SIMPLE_LMK_MINFREE * SZ_1M / PAGE_SIZE)
-
 /* Kill up to this many victims per reclaim */
-#define MAX_VICTIMS 1024
+#define MAX_VICTIMS 32
 
 /* Timeout in jiffies for each reclaim */
 #define RECLAIM_EXPIRES msecs_to_jiffies(CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC)
@@ -48,10 +45,11 @@ static unsigned long get_target_free_pages(void)
 	unsigned long deficit;
 
 	if (nr_free_pages() >= totalreserve_pages)
-		return MIN_FREE_PAGES;
+		return 0;
 
 	deficit = totalreserve_pages - nr_free_pages();
-	return max_t(unsigned long, MIN_FREE_PAGES, deficit + (deficit >> 2));
+	/* ponytail: bump to >> 2 if underkill is observed */
+	return deficit + (deficit >> 3);
 }
 
 static int nr_victims;
@@ -398,35 +396,22 @@ static void scan_and_kill(void)
 		wake_up(&reaper_waitq);
 
 	/*
-	 * Wait until all the victims die, memory recovers, or timeout.
-	 * Checking nr_free_pages() allows us to proceed as soon as the
-	 * reaper thread or normal exit paths have freed enough memory,
-	 * even if not all victims have fully exited yet.
+	 * Wait until all victims die and the reaper finishes, memory
+	 * recovers, or timeout. Folding the reaper check here eliminates
+	 * the separate settle wait — if accounting lags and PSI fires
+	 * again, the next cycle's get_target_free_pages() sees a small
+	 * or zero deficit and kills little or nothing.
 	 */
 	if (!wait_event_timeout(oom_waitq,
-				atomic_read(&nr_killed) >= nr_victims ||
+				(atomic_read(&nr_killed) >= nr_victims &&
+				 !atomic_read(&needs_reap)) ||
 				nr_free_pages() >= totalreserve_pages,
 				RECLAIM_EXPIRES))
 		pr_info("Timeout hit waiting for victims to die, proceeding\n");
 
-	/*
-	 * The kernel's memory accounting can lag behind the actual freeing of
-	 * memory. To avoid a "kill-loop" where we kill more processes than
-	 * necessary due to stale vmpressure events, wait for the system state
-	 * to actually recover. We wait until free pages reach a safe level
-	 * AND the reaper thread has finished its work.
-	 */
-	wait_event_timeout(oom_waitq,
-			   nr_free_pages() >= totalreserve_pages &&
-			   atomic_read(&needs_reap) == 0,
-			   msecs_to_jiffies(200));
-
-	/* If memory already recovered, skip escalation entirely */
-	if (nr_free_pages() >= totalreserve_pages)
-		goto deescalate;
-
-	/* Escalate PSI trigger if kill failed to free enough memory */
-	if (nr_free_pages() < totalreserve_pages) {
+	if (nr_free_pages() >= totalreserve_pages) {
+		atomic_set(&target_min_adj, tier_min_adj[0]);
+	} else {
 		int current_adj = atomic_read(&target_min_adj);
 		if (current_adj == tier_min_adj[0])
 			atomic_set(&target_min_adj, tier_min_adj[1]);
@@ -436,14 +421,6 @@ static void scan_and_kill(void)
 		atomic_set(&needs_reclaim, 1);
 		if (waitqueue_active(&oom_waitq))
 			wake_up(&oom_waitq);
-	} else {
-deescalate:
-		/*
-		 * Memory recovered — de-escalate to least aggressive tier.
-		 * This prevents the driver from staying at a high kill tier
-		 * after a transient memory spike has resolved.
-		 */
-		atomic_set(&target_min_adj, tier_min_adj[0]);
 	}
 
 	/* Clean up for future reclaims but let the reaper thread keep going */
