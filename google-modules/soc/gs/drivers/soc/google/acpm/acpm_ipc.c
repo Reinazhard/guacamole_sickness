@@ -37,7 +37,8 @@
 #define SW_CNT_TIMEOUT_100MS			(10000)
 #define IPC_NB_RETRIES				5
 #define APM_SYSTICK_PERIOD_US			(20345)
-#define IPC_TIMEOUT_COUNT_US			(500*1000)
+/* Budget for ACPM to drain the tx queue before a send is failed back. */
+#define IPC_QUEUE_DRAIN_TIMEOUT_NS		(20 * NSEC_PER_MSEC)
 
 static struct acpm_ipc_info *acpm_ipc;
 static struct workqueue_struct *update_log_wq;
@@ -683,8 +684,8 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 	struct acpm_ipc_ch *channel;
 	bool timeout_flag = 0;
 	u64 timeout, now, frc;
+	u64 drain_timeout;
 	u32 retry_cnt = 0;
-	u32 count = 0;
 	unsigned long flags;
 	unsigned int cnt_10us = 0;
 
@@ -698,6 +699,8 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 
 	spin_lock_irqsave(&channel->tx_lock, flags);
 
+	drain_timeout = sched_clock() + IPC_QUEUE_DRAIN_TIMEOUT_NS;
+
 	/*
 	 * Reserve at least 2 elements in the queue to prevent buffer full and qfull.
 	 * For those channels tx_ch.len = 1, it's not allowed to use acpm_ipc_send_data.
@@ -709,15 +712,26 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 
 		if (((tx_front + 2) % channel->tx_ch.len) != rx_front)
 			break;
-		/* timeout if rx front can't catch up with tx front */
-		if (count++ > IPC_TIMEOUT_COUNT_US)
-			panic("[ACPM] channel %u tx f:%u rx f:%u timeout!\n",
-				channel_id, tx_front, rx_front);
+
+		if (sched_clock() > drain_timeout) {
+			spin_unlock_irqrestore(&channel->tx_lock, flags);
+			pr_err_ratelimited("[ACPM] channel %u tx f:%u rx f:%u drain timeout\n",
+					   channel_id, tx_front, rx_front);
+			return -ETIMEDOUT;
+		}
+
 		/*
-		 * Add 1us delay to avoid being occupied by kernel
-		 * all the time since ACPM also does the same access.
+		 * ACPM consumes the queue on its own; give it room to do so
+		 * without holding tx_lock and without keeping interrupts
+		 * disabled for the whole wait. Nothing is carried across the
+		 * gap - the queue state is re-read on the next iteration.
 		 */
-		udelay(1);
+		spin_unlock_irqrestore(&channel->tx_lock, flags);
+		if (preemptible())
+			usleep_range(10, 20);
+		else
+			udelay(1);
+		spin_lock_irqsave(&channel->tx_lock, flags);
 	}
 
 	tx_rear = __raw_readl(channel->tx_ch.rear);
@@ -725,6 +739,7 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 
 	/* buffer full check */
 	if (tmp_index == tx_rear) {
+		spin_unlock_irqrestore(&channel->tx_lock, flags);
 		acpm_log_print();
 		panic("[ACPM] channel %u tx buffer full!\n", channel_id);
 	}
