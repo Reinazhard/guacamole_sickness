@@ -1060,7 +1060,8 @@ int gpu_dvfs_init(struct kbase_device *kbdev)
 #endif /* CONFIG_MALI_PIXEL_GPU_THERMAL */
 
 	/* Initialize workqueues */
-	pc->dvfs.control_wq = create_singlethread_workqueue("gpu-dvfs-control");
+	pc->dvfs.control_wq = alloc_ordered_workqueue("gpu-dvfs-control",
+						      WQ_HIGHPRI | WQ_MEM_RECLAIM);
 	INIT_WORK(&pc->dvfs.control_work, gpu_dvfs_control_worker);
 
 	pc->dvfs.clockdown_wq = create_singlethread_workqueue("gpu-dvfs-clockdown");
