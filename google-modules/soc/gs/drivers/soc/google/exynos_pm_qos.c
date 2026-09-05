@@ -718,7 +718,7 @@ static void exynos_pm_qos_async_vote_fn(struct work_struct *work)
 						  struct exynos_pm_qos_request,
 						  async_vote);
 
-	exynos_pm_qos_update_request(req, async_vote->target_freq);
+	exynos_pm_qos_update_request(req, READ_ONCE(async_vote->target_freq));
 }
 
 
@@ -801,10 +801,15 @@ void exynos_pm_qos_update_request_async(struct exynos_pm_qos_request *req,
 		return;
 	}
 
-	if (req->node.prio != new_value) {
-		req->async_vote.target_freq = new_value;
-		queue_work(async_vote_wq, &req->async_vote.work);
-	}
+	/*
+	 * Record the request unconditionally: comparing against node.prio only
+	 * tells us what has already been applied, so a value that matches the
+	 * applied vote while an older, differing vote is still queued would
+	 * otherwise leave that stale vote to win. The worker re-reads this
+	 * field, so a queue_work() collapse is harmless.
+	 */
+	WRITE_ONCE(req->async_vote.target_freq, new_value);
+	queue_work(async_vote_wq, &req->async_vote.work);
 }
 EXPORT_SYMBOL_GPL(exynos_pm_qos_update_request_async);
 
@@ -830,6 +835,13 @@ void exynos_pm_qos_remove_request(struct exynos_pm_qos_request *req)
 	}
 
 	class = req->exynos_pm_qos_class;
+
+	/*
+	 * An async vote may still be queued against this request; the memset
+	 * below zeroes work->func, so let any pending item finish first.
+	 */
+	cancel_work_sync(&req->async_vote.work);
+
 	exynos_pm_qos_update_target(exynos_pm_qos_array[class]->constraints,
 				    &req->node, EXYNOS_PM_QOS_REMOVE_REQ,
 				    EXYNOS_PM_QOS_DEFAULT_VALUE);
