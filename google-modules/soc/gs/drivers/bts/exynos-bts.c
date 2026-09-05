@@ -549,27 +549,36 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 		goto err;
 	}
 
+	/*
+	 * Trace and log before taking the lock: neither touches shared
+	 * state, and formatting four trace names is not worth holding a
+	 * lock other voters are waiting on. The name is fixed at
+	 * registration, and the vote being reported is the one handed in,
+	 * which is also the only truthful value for the rt field -- that
+	 * is stored only for RT clients, so reading it back would report
+	 * whatever a previous vote left behind.
+	 */
+	if (trace_clock_set_rate_enabled()) {
+		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rd_bw", bts_bw[index].name);
+		trace_clock_set_rate(trace_name, bw.read, raw_smp_processor_id());
+		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_wr_bw", bts_bw[index].name);
+		trace_clock_set_rate(trace_name, bw.write, raw_smp_processor_id());
+		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rt_bw", bts_bw[index].name);
+		trace_clock_set_rate(trace_name, bw.rt, raw_smp_processor_id());
+		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_peak_bw", bts_bw[index].name);
+		trace_clock_set_rate(trace_name, bw.peak, raw_smp_processor_id());
+	}
+
+	BTSDBG_LOG(btsdev->dev,
+		   "%s R: %.8u W: %.8u P: %.8u RT: %.8u\n",
+		   bts_bw[index].name, bw.read, bw.write, bw.peak, bw.rt);
+
 	rt_mutex_lock(&btsdev->mutex_lock);
 	bts_bw[index].peak = bw.peak;
 	bts_bw[index].read = bw.read;
 	bts_bw[index].write = bw.write;
 	if (bts_bw[index].is_rt)
 		bts_bw[index].rt = bw.rt;
-
-	if(trace_clock_set_rate_enabled()) {
-		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rd_bw", bts_bw[index].name);
-		trace_clock_set_rate(trace_name, bts_bw[index].read, raw_smp_processor_id());
-		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_wr_bw", bts_bw[index].name);
-		trace_clock_set_rate(trace_name, bts_bw[index].write, raw_smp_processor_id());
-		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rt_bw", bts_bw[index].name);
-		trace_clock_set_rate(trace_name, bts_bw[index].rt, raw_smp_processor_id());
-		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_peak_bw", bts_bw[index].name);
-		trace_clock_set_rate(trace_name, bts_bw[index].peak, raw_smp_processor_id());
-	}
-
-	BTSDBG_LOG(btsdev->dev,
-		   "%s R: %.8u W: %.8u P: %.8u RT: %.8u\n",
-		   bts_bw[index].name, bw.read, bw.write, bw.peak, bts_bw[index].rt);
 
 	bts_calc_bw();
 	bts_update_stats(index);
@@ -585,15 +594,16 @@ EXPORT_SYMBOL_GPL(bts_update_bw);
 int bts_add_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
+	unsigned int top;
 	unsigned int i;
-
-	spin_lock(&btsdev->lock);
+	bool trace_scen = false;
 
 	if (index >= btsdev->num_scen) {
 		dev_err(btsdev->dev, "Invalid scenario index!\n");
-		spin_unlock(&btsdev->lock);
 		return -EINVAL;
 	}
+
+	spin_lock(&btsdev->lock);
 
 	scen[index].usage_count++;
 
@@ -603,14 +613,22 @@ int bts_add_scenario(unsigned int index)
 
 		if (index >= btsdev->top_scen) {
 			btsdev->top_scen = index;
+			top = btsdev->top_scen;
 			for (i = 0; i < btsdev->num_bts; i++)
 				bts_set(btsdev->top_scen, i);
-			trace_clock_set_rate("BTS_scenario", btsdev->top_scen,
-					     raw_smp_processor_id());
+			trace_scen = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
+
+	/*
+	 * Trace with the value latched under the lock: re-reading top_scen
+	 * here could report another voter's scenario.
+	 */
+	if (trace_scen)
+		trace_clock_set_rate("BTS_scenario", top,
+				     raw_smp_processor_id());
 
 	return 0;
 }
@@ -619,32 +637,25 @@ EXPORT_SYMBOL_GPL(bts_add_scenario);
 int bts_del_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
+	bool trace_scen = false;
+	bool default_scen = false;
+	bool underflow = false;
+	unsigned int top;
 	unsigned int i;
 
-	spin_lock(&btsdev->lock);
 	if (index >= btsdev->num_scen) {
 		dev_err(btsdev->dev, "Invalid scenario index!\n");
-		spin_unlock(&btsdev->lock);
 		return -EINVAL;
 	}
 
+	spin_lock(&btsdev->lock);
+
 	if (index == ID_DEFAULT && scen[index].usage_count == 1) {
-		dev_notice(btsdev->dev,
-			   "Default scenario cannot be deleted!\n");
-		spin_unlock(&btsdev->lock);
-		return 0;
-	}
-
-	scen[index].usage_count--;
-
-	if (scen[index].usage_count < 0) {
-		dev_warn(btsdev->dev, "Usage count is below 0!\n");
+		default_scen = true;
+	} else if (--scen[index].usage_count < 0) {
 		scen[index].usage_count = 0;
-		spin_unlock(&btsdev->lock);
-		return 0;
-	}
-
-	if (scen[index].usage_count == 0) {
+		underflow = true;
+	} else if (scen[index].usage_count == 0) {
 		list_del(&scen[index].node);
 		scen[index].status = false;
 
@@ -656,12 +667,32 @@ int bts_del_scenario(unsigned int index)
 			}
 			for (i = 0; i < btsdev->num_bts; i++)
 				bts_set(btsdev->top_scen, i);
-			trace_clock_set_rate("BTS_scenario", btsdev->top_scen,
-					     raw_smp_processor_id());
+
+			top = btsdev->top_scen;
+			trace_scen = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
+
+	/*
+	 * dev_* and the trace call can sleep, so keep them out of the
+	 * spinlock that bts_set() voters contend on.
+	 */
+	if (default_scen) {
+		dev_notice(btsdev->dev,
+			   "Default scenario cannot be deleted!\n");
+		return 0;
+	}
+
+	if (underflow) {
+		dev_warn(btsdev->dev, "Usage count is below 0!\n");
+		return 0;
+	}
+
+	if (trace_scen)
+		trace_clock_set_rate("BTS_scenario", top,
+				     raw_smp_processor_id());
 
 	return 0;
 }
