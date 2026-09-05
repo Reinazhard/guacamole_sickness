@@ -775,6 +775,7 @@ static int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg)
 retry:
 		timeout = sched_clock() + IPC_TIMEOUT;
 		timeout_flag = false;
+		cnt_10us = 0;
 		do {
 			check_response(channel, cfg);
 			if (!test_bit(seq_num - 1, channel->bitmap_seqnum))
@@ -823,7 +824,6 @@ retry:
 					++retry_cnt;
 					continue;
 				}
-				cnt_10us = 0;
 			} else {
 				if (preemptible()) {
 					/*assume at least 50us delay here*/
