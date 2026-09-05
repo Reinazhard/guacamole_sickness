@@ -88,8 +88,23 @@ struct nocl_info {
 struct bts_device {
 	struct device *dev;
 
-	/* bts spinlock */
+	/*
+	 * Guards the scenario bookkeeping: scen_list[] status and usage
+	 * counts, scen_node, top_scen, and the bts_bw[] name registry.
+	 *
+	 * It does not cover register programming: every IP owns a distinct
+	 * register window, so that is serialized per IP by bts_info.lock.
+	 * The two never nest -- this lock is always dropped before any
+	 * register is touched.
+	 */
 	spinlock_t lock;
+	/*
+	 * Serializes whole-device scenario reprograms.  Concurrent add/del
+	 * would otherwise be able to interleave their per-IP programming and
+	 * leave different IPs running different top scenarios.  Sleepable;
+	 * only bts_add_scenario()/bts_del_scenario() take it.
+	 */
+	struct mutex scen_lock;
 	/* mutex-lock to protect accessing setting DVFS */
 	struct rt_mutex mutex_lock;
 
@@ -230,6 +245,8 @@ struct bts_stat {
  * @pd_on:	whether related power domain is on/off
  * @stat:	list of array that contains BTS status data for QoS control
  * @ops:	operation function classified according to bts type
+ * @lock:	guards this IP's register window (va_base) and pd_on.  Register
+ *		windows are per IP, so IPs never contend with each other here
  *
  */
 struct bts_info {
@@ -247,6 +264,8 @@ struct bts_info {
 
 	struct bts_stat *stat;
 	struct bts_ops *ops;
+
+	spinlock_t lock;	/* protects va_base and pd_on */
 };
 
 int register_btsops(struct bts_info *info);
