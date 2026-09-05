@@ -682,8 +682,11 @@ static int exynos_bts_hwstatus_open_show(struct seq_file *buf, void *d)
 			continue;
 		if (!info.pd_on)
 			continue;
-		if (info.type == SCI_BTS)
-			stat = *info.stat;
+		/*
+		 * Not every getter fills the whole struct, so start from the
+		 * default setting rather than whatever was on the stack.
+		 */
+		stat = info.stat[ID_DEFAULT];
 
 		if (!info.ops->get_bts)
 			continue;
@@ -923,22 +926,47 @@ static ssize_t bts_stats_show(struct device *dev, struct device_attribute *attr,
 
 static int exynos_bts_scenario_open_show(struct seq_file *buf, void *d)
 {
-	struct bts_scen *scen;
-	unsigned int i;
+	struct bts_scen *scen = btsdev->scen_list;
+	bool *status;
+	int *usage;
+	unsigned int top, i;
 
-	seq_printf(buf, "Current Top scenario: [%u]%s\n  ", btsdev->top_scen,
-		   btsdev->scen_list[btsdev->top_scen].name);
-	list_for_each_entry(scen, &btsdev->scen_node, node) {
-		seq_printf(buf, "%u - ", scen->index);
+	/*
+	 * Snapshot the mutable fields under the lock and print after
+	 * dropping it: seq_printf can grow the buffer and sleep, which is
+	 * not allowed under the spinlock.
+	 */
+	status = kmalloc_array(btsdev->num_scen, sizeof(*status), GFP_KERNEL);
+	usage = kmalloc_array(btsdev->num_scen, sizeof(*usage), GFP_KERNEL);
+	if (!status || !usage) {
+		kfree(status);
+		kfree(usage);
+		return -ENOMEM;
+	}
+
+	spin_lock(&btsdev->lock);
+	top = btsdev->top_scen;
+	for (i = 0; i < btsdev->num_scen; i++) {
+		status[i] = scen[i].status;
+		usage[i] = scen[i].usage_count;
+	}
+	spin_unlock(&btsdev->lock);
+
+	seq_printf(buf, "Current Top scenario: [%u]%s\n  ", top,
+		   scen[top].name);
+	for (i = 0; i < btsdev->num_scen; i++) {
+		if (status[i])
+			seq_printf(buf, "%u - ", scen[i].index);
 	}
 	seq_puts(buf, "\n");
 
 	for (i = 0; i < btsdev->num_scen; i++)
 		seq_printf(buf, "bts scen[%u] %s(%d) - status: %s\n",
-			   btsdev->scen_list[i].index,
-			   btsdev->scen_list[i].name,
-			   btsdev->scen_list[i].usage_count,
-			   (btsdev->scen_list[i].status ? "on" : "off"));
+			   scen[i].index, scen[i].name, usage[i],
+			   (status[i] ? "on" : "off"));
+
+	kfree(status);
+	kfree(usage);
 
 	return 0;
 }
@@ -1048,14 +1076,14 @@ static ssize_t exynos_bts_qos_write(struct file *file,
 		return -EINVAL;
 	}
 
-	if (index >= btsdev->num_bts) {
+	if (index < 0 || index >= btsdev->num_bts) {
 		pr_err("%s: IP index should be in range of (0~%d). input=(%d)\n",
 		       __func__, btsdev->num_bts - 1, index);
 		return -EINVAL;
 	}
 
-	if (info[index].type == SCI_BTS)
-		stat = *info[index].stat;
+	/* Start from the default setting; only the fields below are set */
+	stat = info[index].stat[ID_DEFAULT];
 
 	if (bypass == 0)
 		stat.bypass = false;
@@ -1138,11 +1166,14 @@ static ssize_t exynos_bts_mo_write(struct file *file,
 		return -EINVAL;
 	}
 
-	if (index >= btsdev->num_bts) {
+	if (index < 0 || index >= btsdev->num_bts) {
 		pr_err("%s: IP index should be in range of (0 ~ %d). input=(%d)\n",
 		       __func__, btsdev->num_bts - 1, index);
 		return -EINVAL;
 	}
+
+	/* Start from the default setting; only the fields below are set */
+	stat = info[index].stat[ID_DEFAULT];
 
 	stat.rmo = rmo;
 	stat.wmo = wmo;
@@ -1222,11 +1253,14 @@ static ssize_t exynos_bts_urgent_write(struct file *file,
 		return -EINVAL;
 	}
 
-	if (index >= btsdev->num_bts) {
+	if (index < 0 || index >= btsdev->num_bts) {
 		pr_err("%s: IP index should be in range of (0 ~ %d). input=(%d)\n",
 		       __func__, btsdev->num_bts - 1, index);
 		return -EINVAL;
 	}
+
+	/* Start from the default setting; only the fields below are set */
+	stat = info[index].stat[ID_DEFAULT];
 
 	stat.qurgent_on = on;
 	stat.qurgent_th_r = th_r;
@@ -1320,11 +1354,14 @@ static ssize_t exynos_bts_blocking_write(struct file *file,
 		return -EINVAL;
 	}
 
-	if (index >= btsdev->num_bts) {
+	if (index < 0 || index >= btsdev->num_bts) {
 		pr_err("%s: IP index should be in range of (0 ~ %d). input=(%d)\n",
 		       __func__, btsdev->num_bts - 1, index);
 		return -EINVAL;
 	}
+
+	/* Start from the default setting; only the fields below are set */
+	stat = info[index].stat[ID_DEFAULT];
 
 	stat.blocking_on = on;
 	stat.qfull_limit_r = full_r;
@@ -1433,12 +1470,12 @@ static ssize_t exynos_bts_vc_write(struct file *file,
 				   const char __user *user_buf, size_t count,
 				   loff_t *ppos)
 {
-	struct bts_info info;
 	char buf[16];
 	ssize_t buf_size;
 
-	int i, ret;
-	unsigned int value, vc_num, cnt;
+	int i, ret, cnt;
+	unsigned int value;
+	int vc_num;
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf,
 					  count);
@@ -1455,23 +1492,29 @@ static ssize_t exynos_bts_vc_write(struct file *file,
 		return -EINVAL;
 	}
 
-	if (vc_num >= vc_num_total) {
+	if (vc_num < 0 || vc_num >= vc_num_total) {
 		pr_err("%s: vc_num=%d out of range\n", __func__, vc_num);
 		return -EINVAL;
 	}
 
-	for (i = 0, cnt = 0; i < btsdev->num_bts && cnt <= vc_num; i++) {
-		info = btsdev->bts_list[i];
-		if (!info.va_base)
+	for (i = 0, cnt = 0; i < btsdev->num_bts; i++) {
+		struct bts_info *info = &btsdev->bts_list[i];
+
+		if (!info->va_base || !info->ops->set_vc)
 			continue;
-		if (!info.ops->set_vc)
-			continue;
+
+		if (cnt == vc_num) {
+			spin_lock(&btsdev->lock);
+			info->ops->set_vc(info->va_base, value);
+			spin_unlock(&btsdev->lock);
+			return buf_size;
+		}
 		cnt++;
 	}
 
-	info.ops->set_vc(info.va_base, value);
+	pr_err("%s: vc_num=%d not found\n", __func__, vc_num);
 
-	return buf_size;
+	return -EINVAL;
 }
 
 static const struct file_operations debug_bts_hwstatus_fops = {
