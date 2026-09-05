@@ -93,29 +93,29 @@ u64 get_frc_time(void)
 EXPORT_SYMBOL_GPL(get_frc_time);
 
 #define IPC_AP_FVP_CAL    0
-#define IPC_BUSY_CHK_CNT  500
 
 bool is_acpm_ipc_flushed(void)
 {
 	struct acpm_ipc_ch *channel;
 	unsigned int channel_id = IPC_AP_FVP_CAL;
 	volatile unsigned int tx_front, rx_front;
-	unsigned int wait_cnt = 0;
 	bool ret = false;
 
 	channel = &acpm_ipc->channel[channel_id];
 
-	while (wait_cnt++ <= IPC_BUSY_CHK_CNT) {
-		tx_front = __raw_readl(channel->tx_ch.front);
-		rx_front = __raw_readl(channel->rx_ch.front);
+	tx_front = __raw_readl(channel->tx_ch.front);
+	rx_front = __raw_readl(channel->rx_ch.front);
 
-		if (tx_front == rx_front) {
-			/*mbox req has been flushed*/
-			ret = true;
-			break;
-		} else
-			udelay(10);
-	}
+	/*
+	 * The caller is the cpuidle path, which runs with interrupts disabled
+	 * and the global cpupm_lock held. Only report the current state: a
+	 * request still in flight simply means this idle entry is skipped and
+	 * retried on the next one, which is far cheaper than stalling every
+	 * other CPU behind a multi-millisecond poll.
+	 */
+	if (tx_front == rx_front)
+		ret = true;
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(is_acpm_ipc_flushed);
