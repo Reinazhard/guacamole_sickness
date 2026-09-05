@@ -101,7 +101,7 @@ static void bts_update_urgent_lat_req(unsigned int bus1_freq)
 {
 	struct bts_info *info = btsdev->bts_list;
 	struct bts_urgent_lat *urgent_lat = btsdev->urgent_lat_list;
-	unsigned int i, scen, threshold, bts_index;
+	unsigned int i, scen, threshold, top_scen, bts_index;
 	struct bts_stat stat;
 	char trace_name[32];
 
@@ -110,44 +110,63 @@ static void bts_update_urgent_lat_req(unsigned int bus1_freq)
 
 	bus1_freq = bus1_freq_to_mhz(bus1_freq);
 
+	/* top_scen is only mutated under scen_lock; a snapshot is enough. */
 	spin_lock(&btsdev->lock);
+	top_scen = btsdev->top_scen;
+	spin_unlock(&btsdev->lock);
 
-	scen = btsdev->top_scen;
 	for (i = 0; i < btsdev->num_urgent_lat; i++) {
-		if (urgent_lat[i].lat_read) {
-			bts_index = urgent_lat[i].bts_index;
-			if (!info[bts_index].pd_on || !info[bts_index].ops->get_urgent ||
-			    !info[bts_index].ops->set_urgent)
-				continue;
-			threshold = bts_cal_urgent_lat_threshold(bus1_freq, urgent_lat[i].lat_read);
-			if (!info[bts_index].stat[scen].stat_on)
-				scen = ID_DEFAULT;
-			if (threshold > info[bts_index].stat[scen].qurgent_th_r || !threshold)
-				threshold = info[bts_index].stat[scen].qurgent_th_r;
-			if (threshold == urgent_lat[i].th_read)
-				continue;
+		if (!urgent_lat[i].lat_read)
+			continue;
 
-			urgent_lat[i].th_read = threshold;
-			BTSDBG_LOG(btsdev->dev,
-				   "Update %s latency: bus1 %uMhz, lat %u ns, th 0x%x\n",
-				   urgent_lat[i].name, bus1_freq, urgent_lat[i].lat_read,
-				   threshold);
+		bts_index = urgent_lat[i].bts_index;
+		if (!info[bts_index].ops->get_urgent ||
+		    !info[bts_index].ops->set_urgent)
+			continue;
 
-			info[bts_index].ops->get_urgent(info[bts_index].va_base, &stat);
-			if (stat.qurgent_th_r != threshold) {
-				stat.qurgent_th_r = threshold;
-				info[bts_index].ops->set_urgent(info[bts_index].va_base, &stat);
-				if (trace_clock_set_rate_enabled()) {
-					scnprintf(trace_name, sizeof(trace_name), "BTS_%s_ur_th_rd",
-						  urgent_lat[i].name);
-					trace_clock_set_rate(trace_name, threshold,
-							     raw_smp_processor_id());
-				}
-			}
+		scen = top_scen;
+
+		spin_lock(&info[bts_index].lock);
+
+		if (!info[bts_index].pd_on) {
+			spin_unlock(&info[bts_index].lock);
+			continue;
+		}
+
+		threshold = bts_cal_urgent_lat_threshold(bus1_freq, urgent_lat[i].lat_read);
+		if (!info[bts_index].stat[scen].stat_on)
+			scen = ID_DEFAULT;
+		if (threshold > info[bts_index].stat[scen].qurgent_th_r || !threshold)
+			threshold = info[bts_index].stat[scen].qurgent_th_r;
+		if (threshold == urgent_lat[i].th_read) {
+			spin_unlock(&info[bts_index].lock);
+			continue;
+		}
+
+		urgent_lat[i].th_read = threshold;
+
+		info[bts_index].ops->get_urgent(info[bts_index].va_base, &stat);
+		if (stat.qurgent_th_r == threshold) {
+			spin_unlock(&info[bts_index].lock);
+			continue;
+		}
+		stat.qurgent_th_r = threshold;
+		info[bts_index].ops->set_urgent(info[bts_index].va_base, &stat);
+
+		spin_unlock(&info[bts_index].lock);
+
+		BTSDBG_LOG(btsdev->dev,
+			   "Update %s latency: bus1 %uMhz, lat %u ns, th 0x%x\n",
+			   urgent_lat[i].name, bus1_freq, urgent_lat[i].lat_read,
+			   threshold);
+
+		if (trace_clock_set_rate_enabled()) {
+			scnprintf(trace_name, sizeof(trace_name), "BTS_%s_ur_th_rd",
+				  urgent_lat[i].name);
+			trace_clock_set_rate(trace_name, threshold,
+					     raw_smp_processor_id());
 		}
 	}
-
-	spin_unlock(&btsdev->lock);
 }
 #endif
 
@@ -323,7 +342,12 @@ static void bts_update_stats(unsigned int index)
 	return;
 }
 
-static void bts_set(unsigned int scen, unsigned int index)
+/*
+ * Program one IP for the given scenario.  Caller must hold info[index].lock,
+ * which is what makes the read-modify-write inside the ops safe against
+ * concurrent debugfs writers and against a concurrent pd_on flip.
+ */
+static int __bts_set(unsigned int scen, unsigned int index)
 {
 	struct bts_info *info = btsdev->bts_list;
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
@@ -332,26 +356,36 @@ static void bts_set(unsigned int scen, unsigned int index)
 	unsigned int i, cur_urgent_th_r;
 	bool update_urgent = false;
 #endif
-	int ret;
+	int ret = 0;
 
 	if (!info[index].ops->set_bts || !info[index].pd_on)
-		return;
+		return 0;
 
 	/* Check scenario set exists */
 	if (!info[index].stat[scen].stat_on)
 		scen = ID_DEFAULT;
 
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
+	/*
+	 * urgent_lat_list is global state owned by btsdev->lock, which this
+	 * path deliberately does not hold.  Read it once: the worst outcome
+	 * of a concurrent bts_set_urgent_lat_read() is that this reprogram
+	 * uses the threshold it just replaced, and the next reprogram picks
+	 * up the new one.
+	 */
 	for (i = 0; i < btsdev->num_urgent_lat; i++) {
-		if (urgent_lat[i].bts_index == index) {
+		if (READ_ONCE(urgent_lat[i].bts_index) == index) {
+			unsigned int th_read = READ_ONCE(urgent_lat[i].th_read);
+
 			cur_urgent_th_r = info[index].stat[scen].qurgent_th_r;
-			if (urgent_lat[i].th_read > 0 && urgent_lat[i].th_read < cur_urgent_th_r) {
-				BTSDBG_LOG(btsdev->dev, "Replace %s urgent: th_read 0x%x -> 0x%x\n",
+			if (th_read > 0 && th_read < cur_urgent_th_r) {
+				BTSDBG_LOG(btsdev->dev,
+					   "Replace %s urgent: th_read 0x%x -> 0x%x\n",
 					   urgent_lat[i].name, cur_urgent_th_r,
-					   urgent_lat[i].th_read);
+					   th_read);
 				memcpy(&bts_stat, &info[index].stat[scen],
 				       sizeof(info[index].stat[scen]));
-				bts_stat.qurgent_th_r = urgent_lat[i].th_read;
+				bts_stat.qurgent_th_r = th_read;
 				update_urgent = true;
 			}
 			break;
@@ -361,36 +395,57 @@ static void bts_set(unsigned int scen, unsigned int index)
 	if (update_urgent)
 		ret = info[index].ops->set_bts(info[index].va_base, &bts_stat);
 	else
-		ret = info[index].ops->set_bts(info[index].va_base, &info[index].stat[scen]);
+		ret = info[index].ops->set_bts(info[index].va_base,
+					       &info[index].stat[scen]);
 #else
-	ret = info[index].ops->set_bts(info[index].va_base, &info[index].stat[scen]);
+	ret = info[index].ops->set_bts(info[index].va_base,
+				       &info[index].stat[scen]);
 #endif
+
+	return ret;
+}
+
+static void bts_set(unsigned int scen, unsigned int index)
+{
+	struct bts_info *info = btsdev->bts_list;
+	int ret;
+
+	spin_lock(&info[index].lock);
+	ret = __bts_set(scen, index);
+	spin_unlock(&info[index].lock);
 
 	if (ret)
 		dev_err(btsdev->dev,
 			"%s failed! (scenario=%u) (index=%u)\n",
 			__func__, scen, index);
-
 }
 
 void bts_pd_sync(unsigned int cal_id, int on)
 {
 	struct bts_info *info = btsdev->bts_list;
-	unsigned int i;
+	unsigned int top_scen, i;
 
+	/* top_scen is only mutated under scen_lock; a snapshot is enough. */
 	spin_lock(&btsdev->lock);
+	top_scen = btsdev->top_scen;
+	spin_unlock(&btsdev->lock);
 
 	for (i = 0; i < btsdev->num_bts; i++) {
-		if (!info[i].pd_id)
-			continue;
-		if (info[i].pd_id == cal_id) {
-			info[i].pd_on = on ? true : false;
-			if (on)
-				bts_set(btsdev->top_scen, i);
-		}
-	}
+		int ret = 0;
 
-	spin_unlock(&btsdev->lock);
+		if (!info[i].pd_id || info[i].pd_id != cal_id)
+			continue;
+
+		spin_lock(&info[i].lock);
+		info[i].pd_on = on ? true : false;
+		if (on)
+			ret = __bts_set(top_scen, i);
+		spin_unlock(&info[i].lock);
+
+		if (ret)
+			dev_err(btsdev->dev, "%s failed! (index=%u)\n",
+				__func__, i);
+	}
 }
 EXPORT_SYMBOL_GPL(bts_pd_sync);
 
@@ -398,7 +453,19 @@ int bts_get_bwindex(const char *name)
 {
 	struct bts_bw *bw = btsdev->bts_bw;
 	unsigned int index;
+	char *dup;
 	int ret, i;
+
+	/*
+	 * Duplicate up front: devm_kstrdup() can sleep, so it must not run
+	 * under the spinlock, and failing it must not leave the caller with
+	 * an unregistered index.
+	 */
+	dup = devm_kstrdup(btsdev->dev, name, GFP_KERNEL);
+	if (!dup) {
+		dev_err(btsdev->dev, "failed to allocate bandwidth name\n");
+		return -ENOMEM;
+	}
 
 	spin_lock(&btsdev->lock);
 
@@ -415,12 +482,8 @@ int bts_get_bwindex(const char *name)
 		goto out;
 	}
 
-	bw[index].name = devm_kstrdup(btsdev->dev, name, GFP_ATOMIC);
-	if (!bw[index].name) {
-		dev_err(btsdev->dev, "failed to allocate bandwidth name\n");
-		ret = -ENOMEM;
-		goto out;
-	}
+	bw[index].name = dup;
+	dup = NULL;
 	ret = index;
 	bw[index].is_rt = false;
 	for (i = 0; i < btsdev->num_rts; i++) {
@@ -443,6 +506,10 @@ int bts_get_bwindex(const char *name)
 #endif
 out:
 	spin_unlock(&btsdev->lock);
+
+	if (dup)
+		devm_kfree(btsdev->dev, dup);
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(bts_get_bwindex);
@@ -594,14 +661,16 @@ EXPORT_SYMBOL_GPL(bts_update_bw);
 int bts_add_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
-	unsigned int top;
+	unsigned int top = ID_DEFAULT;
 	unsigned int i;
-	bool trace_scen = false;
+	bool new_top = false;
 
 	if (index >= btsdev->num_scen) {
 		dev_err(btsdev->dev, "Invalid scenario index!\n");
 		return -EINVAL;
 	}
+
+	mutex_lock(&btsdev->scen_lock);
 
 	spin_lock(&btsdev->lock);
 
@@ -613,22 +682,28 @@ int bts_add_scenario(unsigned int index)
 
 		if (index >= btsdev->top_scen) {
 			btsdev->top_scen = index;
-			top = btsdev->top_scen;
-			for (i = 0; i < btsdev->num_bts; i++)
-				bts_set(btsdev->top_scen, i);
-			trace_scen = true;
+			top = index;
+			new_top = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
 
 	/*
-	 * Trace with the value latched under the lock: re-reading top_scen
-	 * here could report another voter's scenario.
+	 * Program with the global lock dropped.  scen_lock keeps a concurrent
+	 * add/del from interleaving its own reprogram with this one, and
+	 * bts_set() serializes each IP against the other register writers, so
+	 * the per-IP lock is all that is needed here.
 	 */
-	if (trace_scen)
+	if (new_top) {
+		for (i = 0; i < btsdev->num_bts; i++)
+			bts_set(top, i);
+
 		trace_clock_set_rate("BTS_scenario", top,
 				     raw_smp_processor_id());
+	}
+
+	mutex_unlock(&btsdev->scen_lock);
 
 	return 0;
 }
@@ -637,16 +712,18 @@ EXPORT_SYMBOL_GPL(bts_add_scenario);
 int bts_del_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
-	bool trace_scen = false;
 	bool default_scen = false;
+	bool new_top = false;
 	bool underflow = false;
-	unsigned int top;
+	unsigned int top = ID_DEFAULT;
 	unsigned int i;
 
 	if (index >= btsdev->num_scen) {
 		dev_err(btsdev->dev, "Invalid scenario index!\n");
 		return -EINVAL;
 	}
+
+	mutex_lock(&btsdev->scen_lock);
 
 	spin_lock(&btsdev->lock);
 
@@ -665,34 +742,38 @@ int bts_del_scenario(unsigned int index)
 				if (scen->index >= btsdev->top_scen)
 					btsdev->top_scen = scen->index;
 			}
-			for (i = 0; i < btsdev->num_bts; i++)
-				bts_set(btsdev->top_scen, i);
 
 			top = btsdev->top_scen;
-			trace_scen = true;
+			new_top = true;
 		}
 	}
 
 	spin_unlock(&btsdev->lock);
 
 	/*
-	 * dev_* and the trace call can sleep, so keep them out of the
-	 * spinlock that bts_set() voters contend on.
+	 * dev_* and the trace call can sleep, so keep them out of the locks
+	 * that register voters contend on.
 	 */
 	if (default_scen) {
 		dev_notice(btsdev->dev,
 			   "Default scenario cannot be deleted!\n");
-		return 0;
+		goto out;
 	}
 
 	if (underflow) {
 		dev_warn(btsdev->dev, "Usage count is below 0!\n");
-		return 0;
+		goto out;
 	}
 
-	if (trace_scen)
+	if (new_top) {
+		for (i = 0; i < btsdev->num_bts; i++)
+			bts_set(top, i);
+
 		trace_clock_set_rate("BTS_scenario", top,
 				     raw_smp_processor_id());
+	}
+out:
+	mutex_unlock(&btsdev->scen_lock);
 
 	return 0;
 }
@@ -701,36 +782,36 @@ EXPORT_SYMBOL_GPL(bts_del_scenario);
 /* DebugFS for BTS */
 static int exynos_bts_hwstatus_open_show(struct seq_file *buf, void *d)
 {
-	struct bts_info info;
+	struct bts_info *info;
 	struct bts_stat stat;
 	int ret, i;
 
 	/* Check BTS setting */
 	for (i = 0; i < btsdev->num_bts; i++) {
-		info = btsdev->bts_list[i];
+		info = &btsdev->bts_list[i];
 
-		if (!info.va_base)
+		if (!info->va_base)
 			continue;
-		if (!info.pd_on)
+		if (!info->pd_on)
 			continue;
 		/*
 		 * Not every getter fills the whole struct, so start from the
 		 * default setting rather than whatever was on the stack.
 		 */
-		stat = info.stat[ID_DEFAULT];
+		stat = info->stat[ID_DEFAULT];
 
-		if (!info.ops->get_bts)
+		if (!info->ops->get_bts)
 			continue;
 
-		spin_lock(&btsdev->lock);
-		ret = info.ops->get_bts(info.va_base, &stat);
-		spin_unlock(&btsdev->lock);
+		spin_lock(&info->lock);
+		ret = info->ops->get_bts(info->va_base, &stat);
+		spin_unlock(&info->lock);
 
 		if (ret)
 			continue;
 
 		seq_printf(buf, "%s:\tARQOS 0x%X, AWQOS 0x%X, RMO 0x%.4X, WMO 0x%.4X, QUR(%u) TH_R 0x%.2X, TH_W 0x%.2X, EX_QUR(%u), ",
-			info.name, stat.arqos, stat.awqos,
+			info->name, stat.arqos, stat.awqos,
 			stat.rmo, stat.wmo,
 			(stat.qurgent_on ? 1 : 0),
 			stat.qurgent_th_r, stat.qurgent_th_w,
@@ -1054,7 +1135,7 @@ static int exynos_bts_qos_open_show(struct seq_file *buf, void *d)
 		if (!info[i].ops->get_qos)
 			continue;
 
-		spin_lock(&btsdev->lock);
+		spin_lock(&info[i].lock);
 
 		if (info[i].pd_on) {
 			if (info[i].type == SCI_BTS)
@@ -1071,7 +1152,7 @@ static int exynos_bts_qos_open_show(struct seq_file *buf, void *d)
 				   info[i].name);
 		}
 
-		spin_unlock(&btsdev->lock);
+		spin_unlock(&info[i].lock);
 	}
 
 	return 0;
@@ -1124,7 +1205,7 @@ static ssize_t exynos_bts_qos_write(struct file *file,
 	stat.arqos = ar;
 	stat.awqos = aw;
 
-	spin_lock(&btsdev->lock);
+	spin_lock(&info[index].lock);
 
 	if (info[index].ops->set_qos) {
 		if (info[index].pd_on) {
@@ -1135,7 +1216,7 @@ static ssize_t exynos_bts_qos_write(struct file *file,
 		}
 	}
 
-	spin_unlock(&btsdev->lock);
+	spin_unlock(&info[index].lock);
 
 	return buf_size;
 }
@@ -1150,7 +1231,7 @@ static int exynos_bts_mo_open_show(struct seq_file *buf, void *d)
 		if (!info[i].ops->get_mo)
 			continue;
 
-		spin_lock(&btsdev->lock);
+		spin_lock(&info[i].lock);
 
 		if (info[i].pd_on) {
 			ret = info[i].ops->get_mo(info[i].va_base, &stat);
@@ -1161,7 +1242,7 @@ static int exynos_bts_mo_open_show(struct seq_file *buf, void *d)
 				   info[i].name);
 		}
 
-		spin_unlock(&btsdev->lock);
+		spin_unlock(&info[i].lock);
 	}
 
 	return 0;
@@ -1209,7 +1290,7 @@ static ssize_t exynos_bts_mo_write(struct file *file,
 	stat.rmo = rmo;
 	stat.wmo = wmo;
 
-	spin_lock(&btsdev->lock);
+	spin_lock(&info[index].lock);
 
 	if (info[index].ops->set_mo) {
 		if (info[index].pd_on) {
@@ -1219,7 +1300,7 @@ static ssize_t exynos_bts_mo_write(struct file *file,
 		}
 	}
 
-	spin_unlock(&btsdev->lock);
+	spin_unlock(&info[index].lock);
 
 	return buf_size;
 }
@@ -1234,7 +1315,7 @@ static int exynos_bts_urgent_open_show(struct seq_file *buf, void *d)
 		if (!info[i].ops->get_urgent)
 			continue;
 
-		spin_lock(&btsdev->lock);
+		spin_lock(&info[i].lock);
 
 		if (info[i].pd_on) {
 			ret = info[i].ops->get_urgent(info[i].va_base, &stat);
@@ -1248,7 +1329,7 @@ static int exynos_bts_urgent_open_show(struct seq_file *buf, void *d)
 				   info[i].name);
 		}
 
-		spin_unlock(&btsdev->lock);
+		spin_unlock(&info[i].lock);
 	}
 
 	return 0;
@@ -1298,7 +1379,7 @@ static ssize_t exynos_bts_urgent_write(struct file *file,
 	stat.qurgent_th_w = th_w;
 	stat.ex_qurgent_on = ex_on;
 
-	spin_lock(&btsdev->lock);
+	spin_lock(&info[index].lock);
 
 	if (info[index].ops->set_urgent) {
 		if (info[index].pd_on) {
@@ -1309,7 +1390,7 @@ static ssize_t exynos_bts_urgent_write(struct file *file,
 		}
 	}
 
-	spin_unlock(&btsdev->lock);
+	spin_unlock(&info[index].lock);
 
 	return buf_size;
 }
@@ -1324,7 +1405,7 @@ static int exynos_bts_blocking_open_show(struct seq_file *buf, void *d)
 		if (!info[i].ops->get_blocking)
 			continue;
 
-		spin_lock(&btsdev->lock);
+		spin_lock(&info[i].lock);
 
 		if (info[i].pd_on) {
 			ret = info[i].ops->get_blocking(info[i].va_base, &stat);
@@ -1344,7 +1425,7 @@ static int exynos_bts_blocking_open_show(struct seq_file *buf, void *d)
 				   info[i].name);
 		}
 
-		spin_unlock(&btsdev->lock);
+		spin_unlock(&info[i].lock);
 	}
 
 	return 0;
@@ -1404,7 +1485,7 @@ static ssize_t exynos_bts_blocking_write(struct file *file,
 	stat.qmax1_limit_r = max1_r;
 	stat.qmax1_limit_w = max1_w;
 
-	spin_lock(&btsdev->lock);
+	spin_lock(&info[index].lock);
 
 	if (info[index].ops->set_blocking) {
 		if (info[index].pd_on) {
@@ -1415,7 +1496,7 @@ static ssize_t exynos_bts_blocking_write(struct file *file,
 		}
 	}
 
-	spin_unlock(&btsdev->lock);
+	spin_unlock(&info[index].lock);
 
 	return buf_size;
 }
@@ -1465,18 +1546,18 @@ static ssize_t exynos_bts_log_write(struct file *file,
 
 static int exynos_bts_vc_open_show(struct seq_file *buf, void *d)
 {
-	struct bts_info info;
+	struct bts_info *info;
 	int ret, i;
 	unsigned int value, vc_num = 0;
 
 	for (i = 0; i < btsdev->num_bts; i++) {
-		info = btsdev->bts_list[i];
-		if (!info.va_base || !info.ops->get_vc)
+		info = &btsdev->bts_list[i];
+		if (!info->va_base || !info->ops->get_vc)
 			continue;
 
-		spin_lock(&btsdev->lock);
-		ret = info.ops->get_vc(info.va_base, &value);
-		spin_unlock(&btsdev->lock);
+		spin_lock(&info->lock);
+		ret = info->ops->get_vc(info->va_base, &value);
+		spin_unlock(&info->lock);
 
 		if (ret) {
 			pr_warn("%s: get_vc failed. err=(%d)\n",
@@ -1485,7 +1566,7 @@ static int exynos_bts_vc_open_show(struct seq_file *buf, void *d)
 		}
 
 		seq_printf(buf, "[%d] %s:   \t0x%.8X\n",
-			   vc_num, info.name, value);
+			   vc_num, info->name, value);
 		vc_num++;
 	}
 
@@ -1535,9 +1616,9 @@ static ssize_t exynos_bts_vc_write(struct file *file,
 			continue;
 
 		if (cnt == vc_num) {
-			spin_lock(&btsdev->lock);
+			spin_lock(&info->lock);
 			info->ops->set_vc(info->va_base, value);
-			spin_unlock(&btsdev->lock);
+			spin_unlock(&info->lock);
 			return buf_size;
 		}
 		cnt++;
@@ -1658,15 +1739,24 @@ static int exynos_bts_syscore_suspend(void)
 static void exynos_bts_syscore_resume(void)
 {
 	struct bts_info *info = btsdev->bts_list;
-	unsigned int i;
+	unsigned int top_scen, i;
 
+	/*
+	 * Syscore resume runs with interrupts off, so only spinlocks are
+	 * available here: read top_scen and program each IP under its own
+	 * lock rather than taking scen_lock.
+	 */
 	spin_lock(&btsdev->lock);
+	top_scen = btsdev->top_scen;
+	spin_unlock(&btsdev->lock);
+
 	for (i = 0; i < btsdev->num_bts; i++) {
+		spin_lock(&info[i].lock);
 		if (info[i].ops->init_bts)
 			info[i].ops->init_bts(info[i].va_base);
-		bts_set(btsdev->top_scen, i);
+		__bts_set(top_scen, i);
+		spin_unlock(&info[i].lock);
 	}
-	spin_unlock(&btsdev->lock);
 }
 
 /* Syscore operation */
@@ -1683,12 +1773,12 @@ static int bts_initialize(struct bts_device *data)
 	int ret;
 
 	/* Default scenario should be enabled */
-	spin_lock(&btsdev->lock);
 	for (i = 0; i < btsdev->num_bts; i++) {
+		spin_lock(&info[i].lock);
 		if (info[i].ops->init_bts)
 			info[i].ops->init_bts(info[i].va_base);
+		spin_unlock(&info[i].lock);
 	}
-	spin_unlock(&btsdev->lock);
 
 	btsdev->top_scen = ID_DEFAULT;
 	ret = bts_add_scenario(ID_DEFAULT);
@@ -2136,6 +2226,7 @@ ATTRIBUTE_GROUPS(bts_dev);
 static int bts_probe(struct platform_device *pdev)
 {
 	int ret;
+	unsigned int i;
 
 	btsdev = devm_kmalloc(&pdev->dev, sizeof(struct bts_device), GFP_KERNEL);
 	if (!btsdev)
@@ -2157,8 +2248,12 @@ static int bts_probe(struct platform_device *pdev)
 		return ret;
 	}
 	spin_lock_init(&btsdev->lock);
+	mutex_init(&btsdev->scen_lock);
 	rt_mutex_init(&btsdev->mutex_lock);
 	INIT_LIST_HEAD(&btsdev->scen_node);
+
+	for (i = 0; i < btsdev->num_bts; i++)
+		spin_lock_init(&btsdev->bts_list[i].lock);
 
 	ret = bts_initialize(btsdev);
 	if (ret) {
