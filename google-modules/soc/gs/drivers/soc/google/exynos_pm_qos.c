@@ -698,9 +698,12 @@ static void __exynos_pm_qos_update_request(struct exynos_pm_qos_request *req,
 
 	class = req->exynos_pm_qos_class;
 
-	if (new_value != req->node.prio)
-		exynos_pm_qos_update_target(exynos_pm_qos_array[class]->constraints,
-					    &req->node, EXYNOS_PM_QOS_UPDATE_REQ, new_value);
+	if (new_value == req->node.prio)
+		return;
+
+	exynos_pm_qos_update_target(exynos_pm_qos_array[class]->constraints,
+				    &req->node, EXYNOS_PM_QOS_UPDATE_REQ, new_value);
+
 	trace_clock_set_rate(exynos_pm_qos_array[class]->name,
 			exynos_pm_qos_request(class), raw_smp_processor_id());
 }
