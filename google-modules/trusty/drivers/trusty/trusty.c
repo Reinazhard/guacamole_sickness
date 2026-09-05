@@ -204,13 +204,22 @@ err_out:
 	return ERR_PTR(ret);
 }
 
+/*
+ * Trusty returns SM_ERR_BUSY while another std_call is still in progress.
+ * Back off exponentially rather than in millisecond-scale sleeps: smc_lock is
+ * held across this loop, so every millisecond spent sleeping is a millisecond
+ * that every other Trusty user (keymaster, gatekeeper, DRM) is blocked for.
+ */
+#define TRUSTY_BUSY_BACKOFF_MIN_US	50
+#define TRUSTY_BUSY_BACKOFF_MAX_US	2000
+
 static unsigned long trusty_std_call_helper(struct device *dev,
 					    unsigned long smcnr,
 					    unsigned long a0, unsigned long a1,
 					    unsigned long a2)
 {
 	unsigned long ret;
-	int sleep_time = 1;
+	unsigned int sleep_us = TRUSTY_BUSY_BACKOFF_MIN_US;
 	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
 
 	while (true) {
@@ -263,21 +272,21 @@ static unsigned long trusty_std_call_helper(struct device *dev,
 		if ((int)ret != SM_ERR_BUSY)
 			break;
 
-		if (sleep_time == 256)
+		if (sleep_us == TRUSTY_BUSY_BACKOFF_MAX_US)
 			dev_warn(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy\n",
 				 __func__, smcnr, a0, a1, a2);
-		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy, wait %d ms\n",
-			__func__, smcnr, a0, a1, a2, sleep_time);
+		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy, wait %u us\n",
+			__func__, smcnr, a0, a1, a2, sleep_us);
 
-		msleep(sleep_time);
-		if (sleep_time < 1000)
-			sleep_time <<= 1;
+		usleep_range(sleep_us, sleep_us * 2);
+		if (sleep_us < TRUSTY_BUSY_BACKOFF_MAX_US)
+			sleep_us <<= 1;
 
 		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) retry\n",
 			__func__, smcnr, a0, a1, a2);
 	}
 
-	if (sleep_time > 256)
+	if (sleep_us > TRUSTY_BUSY_BACKOFF_MIN_US)
 		dev_warn(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) busy cleared\n",
 			 __func__, smcnr, a0, a1, a2);
 
