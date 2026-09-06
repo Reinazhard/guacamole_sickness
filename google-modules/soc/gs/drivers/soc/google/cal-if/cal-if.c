@@ -379,8 +379,10 @@ int cal_cluster_enable(unsigned int cluster)
 	if (likely(ret == 0 && set_cluster_enabled_cb))
 		set_cluster_enabled_cb(cluster, 1);
 
-	scnprintf(clock_name, 32, "CAL_CLUSTER_ENABLE_%u", cluster);
-	trace_clock_set_rate(clock_name, 1, raw_smp_processor_id());
+	if (trace_clock_set_rate_enabled()) {
+		scnprintf(clock_name, 32, "CAL_CLUSTER_ENABLE_%u", cluster);
+		trace_clock_set_rate(clock_name, 1, raw_smp_processor_id());
+	}
 
 	return ret;
 }
@@ -398,8 +400,10 @@ int cal_cluster_disable(unsigned int cluster)
 	if (likely(ret == 0 && set_cluster_enabled_cb))
 		set_cluster_enabled_cb(cluster, 0);
 
-	scnprintf(clock_name, 32, "CAL_CLUSTER_ENABLE_%u", cluster);
-	trace_clock_set_rate(clock_name, 0, raw_smp_processor_id());
+	if (trace_clock_set_rate_enabled()) {
+		scnprintf(clock_name, 32, "CAL_CLUSTER_ENABLE_%u", cluster);
+		trace_clock_set_rate(clock_name, 0, raw_smp_processor_id());
+	}
 
 	return ret;
 }
