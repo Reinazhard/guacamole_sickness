@@ -6034,7 +6034,21 @@ static ssize_t min_ttl_ms_show(struct kobject *kobj, struct kobj_attribute *attr
 	return sysfs_emit(buf, "%u\n", jiffies_to_msecs(READ_ONCE(lru_gen_min_ttl)));
 }
 
-static struct kobj_attribute lru_gen_min_ttl_attr = __ATTR_RO(min_ttl_ms);
+/* see Documentation/admin-guide/mm/multigen_lru.rst for details */
+static ssize_t min_ttl_ms_store(struct kobject *kobj, struct kobj_attribute *attr,
+				const char *buf, size_t len)
+{
+	unsigned int msecs;
+
+	if (kstrtouint(buf, 0, &msecs))
+		return -EINVAL;
+
+	WRITE_ONCE(lru_gen_min_ttl, msecs_to_jiffies(msecs));
+
+	return len;
+}
+
+static struct kobj_attribute lru_gen_min_ttl_attr = __ATTR_RW(min_ttl_ms);
 
 static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
@@ -6525,9 +6539,6 @@ static int __init init_lru_gen(void)
 {
 	BUILD_BUG_ON(MIN_NR_GENS + 1 >= MAX_NR_GENS);
 	BUILD_BUG_ON(BIT(LRU_GEN_WIDTH) <= MAX_NR_GENS);
-
-	/* Default min_ttl_ms to 1000ms (HZ-independent, set at runtime) */
-	lru_gen_min_ttl = msecs_to_jiffies(1000);
 
 	if (sysfs_create_group(mm_kobj, &lru_gen_attr_group))
 		pr_err("lru_gen: failed to create sysfs group\n");
