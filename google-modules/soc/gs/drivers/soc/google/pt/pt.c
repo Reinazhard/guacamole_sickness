@@ -100,6 +100,8 @@ struct {
 	struct task_struct *resize_thread;
 	struct list_head resize_list; /* callback to call */
 	wait_queue_head_t resize_wq; /* wait for new callback */
+	struct pt_pts *resize_running; /* callback being run right now */
+	wait_queue_head_t resize_done_wq; /* wait for resize_running to clear */
 } pt_internal_data;
 
 enum pt_fn {
@@ -202,6 +204,31 @@ static bool pt_resize_list_disable(struct pt_pts *pts)
 }
 
 /*
+ * True once no resize callback is running for @pts.  Sampled under sl so it
+ * cannot race with the thread publishing or clearing resize_running.
+ */
+static bool pt_resize_completed(struct pt_pts *pts)
+{
+	bool completed;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pt_internal_data.sl, flags);
+	completed = pt_internal_data.resize_running != pts;
+	spin_unlock_irqrestore(&pt_internal_data.sl, flags);
+
+	return completed;
+}
+
+/*
+ * Wait for a resize callback that was already dequeued for @pts to finish.
+ * Must be called with handle->lock released, since the callback may sleep.
+ */
+static void pt_resize_list_wait_completion(struct pt_pts *pts)
+{
+	wait_event(pt_internal_data.resize_done_wq, pt_resize_completed(pts));
+}
+
+/*
  * Allow resize callback on the pts.
  */
 static void pt_resize_list_enable(struct pt_pts *pts)
@@ -226,26 +253,28 @@ static int pt_resize_thread(void *data)
 	struct pt_driver *driver;
 	pt_resize_callback_t resize_callback = NULL;
 	int id;
+	unsigned long flags;
 
 	while (!kthread_should_stop()) {
-		spin_lock_irq(&pt_internal_data.sl);
+		spin_lock_irqsave(&pt_internal_data.sl, flags);
 
 		pts = pt_resize_list_next(&size);
 		if (pts != NULL) {
 			handle = pts->handle;
 			resize_callback = handle->resize_callback;
-			id = ((char *)pts - (char *)handle->pts) / sizeof(handle->pts[0]);
-			resize_callback(handle->data, id, size);
 			driver = pts->driver;
-			trace_pt_resize_callback(
-				handle->node->name,
-				driver->properties->nodes[pts->property_index]->name, false,
-				(int)size, pts->ptid);
+			id = ((char *)pts - (char *)handle->pts) / sizeof(handle->pts[0]);
+			/*
+			 * Published under sl so pt_resize_list_wait_completion()
+			 * can see the callback that is about to run.  pts stays
+			 * alive until it is cleared: whoever disables it first
+			 * waits for that.
+			 */
+			pt_internal_data.resize_running = pts;
 		}
 
-		spin_unlock_irq(&pt_internal_data.sl);
+		spin_unlock_irqrestore(&pt_internal_data.sl, flags);
 
-		/* List was empty, wait to be notified by pt_resize_list_add */
 		if (pts == NULL) {
 			int ret;
 			do {
@@ -254,7 +283,24 @@ static int pt_resize_thread(void *data)
 					!list_empty(&pt_internal_data.resize_list) ||
 						kthread_should_stop());
 			} while (ret);
+			continue;
 		}
+
+		/*
+		 * No lock is held here, so the callback may sleep and may
+		 * call pt_client_*(), which take handle->lock and
+		 * driver->lock.
+		 */
+		resize_callback(handle->data, id, size);
+		trace_pt_resize_callback(
+			handle->node->name,
+			driver->properties->nodes[pts->property_index]->name, false,
+			(int)size, pts->ptid);
+
+		spin_lock_irqsave(&pt_internal_data.sl, flags);
+		pt_internal_data.resize_running = NULL;
+		spin_unlock_irqrestore(&pt_internal_data.sl, flags);
+		wake_up(&pt_internal_data.resize_done_wq);
 	}
 
 	return 0;
@@ -691,6 +737,13 @@ void pt_client_disable_no_free(struct pt_handle *handle, int id)
 	pt_driver_disable(handle, id);
 	pt_trace(handle, id, false);
 	spin_unlock_irqrestore(&handle->lock, flags);
+
+	/*
+	 * The callback may have been dequeued before this point and still be
+	 * running, in which case it holds a pointer into this handle.  Wait
+	 * for it before letting the caller free the handle.
+	 */
+	pt_resize_list_wait_completion(&handle->pts[id]);
 }
 
 void pt_client_free(struct pt_handle *handle, int id)
@@ -1238,6 +1291,7 @@ static int __init pt_init(void)
 	INIT_LIST_HEAD(&pt_internal_data.driver_list);
 	INIT_LIST_HEAD(&pt_internal_data.resize_list);
 	init_waitqueue_head(&pt_internal_data.resize_wq);
+	init_waitqueue_head(&pt_internal_data.resize_done_wq);
 	sysctl_table = &pt_internal_data.sysctl_table[0];
 	sysctl_table[0].procname = "dev";
 	sysctl_table[0].mode = 0550;
