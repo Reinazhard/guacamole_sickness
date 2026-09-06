@@ -1845,10 +1845,22 @@ static void exynos_qos_notify(struct exynos_devfreq_data *data)
 	flags = data->nb_lock_fn(&data->nb_lock);
 	freq = min(data->min_freq, data->max_freq);
 	if (freq != data->cur_freq) {
+		u32 prev = data->cur_freq;
+
 		/* Pairs with memperfd and exynos_df_get_cur_freq() */
 		WRITE_ONCE(data->cur_freq, freq);
-		if (!data->suspended)
-			cal_dfs_set_rate(data->dfs_id, freq);
+		if (!data->suspended && cal_dfs_set_rate(data->dfs_id, freq)) {
+			/*
+			 * The transition did not take, so the domain is still
+			 * running at prev.  Keep reporting prev: this value is
+			 * what memperfd scales its next vote against, and the
+			 * "freq != data->cur_freq" test above means a stale
+			 * value here both misreports the frequency and hides
+			 * the domain from every later vote for it.
+			 */
+			WRITE_ONCE(data->cur_freq, prev);
+			freq = prev;
+		}
 
 #ifdef CONFIG_SOC_ZUMA
 		/* Set BCI frequency 1:1 to DSU frequency */
