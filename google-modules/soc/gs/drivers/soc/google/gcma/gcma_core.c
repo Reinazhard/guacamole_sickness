@@ -699,12 +699,37 @@ void evict_gcma_lru_pages(unsigned long nr_request)
 	add_gcma_stat(EVICTED_PAGE, nr_evicted);
 }
 
+/*
+ * Reclaim work: it must be able to run while the allocator is under pressure,
+ * hence WQ_MEM_RECLAIM, and promptly, hence WQ_HIGHPRI.  Sharing
+ * system_unbound_wq put GCMA's only eviction path behind unrelated work.
+ */
+static struct workqueue_struct *gcma_evict_wq;
+
+/*
+ * Set by a store that could not get a page.  Cleared by the worker when it
+ * starts, so a store that fails while the worker is running is honoured by
+ * another run instead of being dropped.
+ */
+static atomic_t evict_pending = ATOMIC_INIT(0);
+
+static void evict_gcma_pages(struct work_struct *work);
+static DECLARE_WORK(lru_evict_work, evict_gcma_pages);
+
 static void evict_gcma_pages(struct work_struct *work)
 {
-	evict_gcma_lru_pages(MAX_EVICT_BATCH);
-}
+	atomic_set(&evict_pending, 0);
 
-static DECLARE_WORK(lru_evict_work, evict_gcma_pages);
+	evict_gcma_lru_pages(MAX_EVICT_BATCH);
+
+	/*
+	 * queue_work() is a no-op while this work item is running, so a store
+	 * that failed during the run above got no eviction of its own.  Run
+	 * again for it rather than leaving the request unanswered.
+	 */
+	if (atomic_read(&evict_pending))
+		queue_work(gcma_evict_wq, &lru_evict_work);
+}
 
 /*
  * We want to store only workingset page in the GCMA to increase hit ratio
@@ -773,7 +798,8 @@ load_page:
 
 	g_page = gcma_alloc_page();
 	if (!g_page) {
-		queue_work(system_unbound_wq, &lru_evict_work);
+		atomic_set(&evict_pending, 1);
+		queue_work(gcma_evict_wq, &lru_evict_work);
 		goto out_unlock;
 	}
 
@@ -1023,6 +1049,14 @@ int __init gcma_init(void)
 	slab_gcma_inode = KMEM_CACHE(gcma_inode, 0);
 	if (!slab_gcma_inode)
 		return -ENOMEM;
+
+	gcma_evict_wq = alloc_workqueue("gcma-evict",
+					WQ_UNBOUND | WQ_HIGHPRI | WQ_MEM_RECLAIM,
+					0);
+	if (!gcma_evict_wq) {
+		kmem_cache_destroy(slab_gcma_inode);
+		return -ENOMEM;
+	}
 
 	gcma_sysfs_init();
 	gcma_debugfs_init();
