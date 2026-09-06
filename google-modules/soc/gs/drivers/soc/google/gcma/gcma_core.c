@@ -916,22 +916,39 @@ static bool try_empty_inode(struct gcma_inode *inode)
 	return atomic64_cmpxchg(&inode->ref_count, 1, 0) == 1;
 }
 
+/*
+ * try_empty_inode() erases the pages as it walks, so a failed attempt has
+ * already discarded the data; only the refcount handoff to zero did not
+ * happen.  Giving up therefore leaves the inode to be released by whoever
+ * still holds a reference, rather than losing anything.
+ */
+#define MAX_INVALIDATE_RETRIES	16
+
 static struct gcma_inode *__gcma_cc_invalidate_inode(struct gcma_fs *gcma_fs,
 					struct cleancache_filekey *key)
 {
 	struct gcma_inode *inode;
+	int retries;
 
-retry:
-	inode = find_and_get_gcma_inode(gcma_fs, key);
-	if (!inode)
-		return NULL;
+	for (retries = 0; retries < MAX_INVALIDATE_RETRIES; retries++) {
+		inode = find_and_get_gcma_inode(gcma_fs, key);
+		if (!inode)
+			return NULL;
 
-	if (!try_empty_inode(inode)) {
+		if (try_empty_inode(inode))
+			return inode;
+
+		/*
+		 * Another store holds a reference.  Retrying immediately
+		 * re-walks the whole xarray, so yield between attempts: an
+		 * unbounded loop here livelocks against a concurrent
+		 * gcma_cc_store_page().
+		 */
 		put_gcma_inode(inode);
-		goto retry;
+		cond_resched();
 	}
 
-	return inode;
+	return NULL;
 }
 
 static void gcma_cc_invalidate_inode(int hash_id, struct cleancache_filekey key)
