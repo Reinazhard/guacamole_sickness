@@ -105,6 +105,10 @@
 #include "avc_ss.h"
 
 struct selinux_state selinux_state;
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running __read_mostly;
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 /* SECMARK reference count */
 static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);
@@ -6590,6 +6594,41 @@ abort_change:
 	return error;
 }
 
+#ifdef CONFIG_KSU_SUSFS
+static int my_setprocattr(const char *name, void *value, size_t size)
+{
+	u32 mysid = current_sid(), sid = 0;
+	int error;
+	char *str = value;
+
+	// apply to all app uids
+	if (likely(current_uid().val < 10000 || !ksu_selinux_hide_running ||
+		   strcmp(name, "current")))
+		return selinux_setprocattr(name, value, size);
+
+	error = avc_has_perm(&selinux_state, mysid, mysid, SECCLASS_PROCESS,
+			     PROCESS__SETCURRENT, NULL);
+
+	if (error)
+		return error;
+
+	/* Obtain a SID for the context, if one was specified. */
+	if (size && str[0] && str[0] != '\n') {
+		if (str[size - 1] == '\n') {
+			str[size - 1] = 0;
+			size--;
+		}
+
+		error = security_context_to_sid(&fake_state, value, size, &sid,
+						GFP_KERNEL);
+		if (error)
+			return error;
+	}
+
+	return selinux_setprocattr(name, value, size);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 static int selinux_ismaclabel(const char *name)
 {
 	return (strcmp(name, XATTR_SELINUX_SUFFIX) == 0);
@@ -7136,7 +7175,8 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 
 	LSM_HOOK_INIT(inode_free_security, selinux_inode_free_security),
 	LSM_HOOK_INIT(inode_init_security, selinux_inode_init_security),
-	LSM_HOOK_INIT(inode_init_security_anon, selinux_inode_init_security_anon),
+	LSM_HOOK_INIT(inode_init_security_anon,
+		      selinux_inode_init_security_anon),
 	LSM_HOOK_INIT(inode_create, selinux_inode_create),
 	LSM_HOOK_INIT(inode_link, selinux_inode_link),
 	LSM_HOOK_INIT(inode_unlink, selinux_inode_unlink),
@@ -7225,7 +7265,11 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(d_instantiate, selinux_d_instantiate),
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
+#ifdef CONFIG_KSU_SUSFS
+	LSM_HOOK_INIT(setprocattr, my_setprocattr),
+#else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	LSM_HOOK_INIT(ismaclabel, selinux_ismaclabel),
 	LSM_HOOK_INIT(secctx_to_secid, selinux_secctx_to_secid),
@@ -7253,7 +7297,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(socket_shutdown, selinux_socket_shutdown),
 	LSM_HOOK_INIT(socket_sock_rcv_skb, selinux_socket_sock_rcv_skb),
 	LSM_HOOK_INIT(socket_getpeersec_stream,
-			selinux_socket_getpeersec_stream),
+		      selinux_socket_getpeersec_stream),
 	LSM_HOOK_INIT(socket_getpeersec_dgram, selinux_socket_getpeersec_dgram),
 	LSM_HOOK_INIT(sk_free_security, selinux_sk_free_security),
 	LSM_HOOK_INIT(sk_clone_security, selinux_sk_clone_security),
@@ -7288,7 +7332,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(xfrm_state_delete_security, selinux_xfrm_state_delete),
 	LSM_HOOK_INIT(xfrm_policy_lookup, selinux_xfrm_policy_lookup),
 	LSM_HOOK_INIT(xfrm_state_pol_flow_match,
-			selinux_xfrm_state_pol_flow_match),
+		      selinux_xfrm_state_pol_flow_match),
 	LSM_HOOK_INIT(xfrm_decode_session, selinux_xfrm_decode_session),
 #endif
 
