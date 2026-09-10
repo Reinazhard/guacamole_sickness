@@ -1026,9 +1026,11 @@ static void update_cpu_hw_throttle(void)
 	/*
 	 * Report the throttle detected by measuring the real frequency, unless
 	 * there's a newer frequency measurement from another CPU in the domain.
+	 * If the throttle cleared, apply it immediately to prevent stale pressure.
 	 */
 	raw_spin_lock(&t->throt_lock);
-	if (htd->start > t->last_htd_cntpct) {
+	if (htd->start > t->last_htd_cntpct ||
+	    (freq == UINT_MAX && t->cap[CPU_HW_THROTTLE] != UINT_MAX)) {
 		t->last_htd_cntpct = htd->start;
 		update_thermal_pressure(t, CPU_HW_THROTTLE, freq);
 	}
