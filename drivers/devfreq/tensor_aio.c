@@ -347,7 +347,15 @@ static void calc_cntpct_arith(void)
 }
 
 enum cpu_throttle_src {
-	CPU_CPUFREQ_THROTTLE,
+	/*
+	 * TJ and TSKIN are independent cooling actors and need their own
+	 * slots. exynos-acme caps whichever actor is currently limiting and
+	 * the domain must stay capped at the lower of the two, so storing
+	 * them together would let releasing one re-raise the cap while the
+	 * other is still limiting.
+	 */
+	CPU_TJ_THROTTLE,
+	CPU_TSKIN_THROTTLE,
 	CPU_HW_THROTTLE,
 #ifdef CONFIG_SOC_ZUMA
 	CPU_TMU_THROTTLE,
@@ -875,14 +883,31 @@ static void update_thermal_pressure(struct throt_data *t,
 	arch_update_thermal_pressure(&t->domain->cpus, capped_freq);
 }
 
-void tensor_aio_cpufreq_pressure(int cpu, unsigned int cap)
+/*
+ * `actor` selects which cooling actor is reporting, so TJ and TSKIN are kept
+ * apart and update_thermal_pressure() can take their minimum. Passing them
+ * through one slot made the last writer win, so releasing either actor lifted
+ * the cap while the other was still limiting.
+ */
+void tensor_aio_cpufreq_pressure(int cpu, unsigned int cap, int actor)
 {
 	struct throt_data *t = per_cpu(domain_throt_data, cpu);
 	unsigned long flags;
+	enum cpu_throttle_src src;
 
 	/* Update the throttle set via cpufreq policy (e.g., via sysfs) */
+	switch (actor) {
+	case TSKIN:
+		src = CPU_TSKIN_THROTTLE;
+		break;
+	case TJ:
+	default:
+		src = CPU_TJ_THROTTLE;
+		break;
+	}
+
 	raw_spin_lock_irqsave(&t->throt_lock, flags);
-	update_thermal_pressure(t, CPU_CPUFREQ_THROTTLE, cap);
+	update_thermal_pressure(t, src, cap);
 	raw_spin_unlock_irqrestore(&t->throt_lock, flags);
 }
 
