@@ -1280,9 +1280,36 @@ static struct scale_freq_data tensor_aio_sfd = {
 	.set_freq_scale = tensor_aio_tick
 };
 
+/*
+ * Whether this CPU is currently counted in its domain's idle count. Only ever
+ * touched by the local CPU - the cpuidle hooks and the hotplug callbacks for
+ * CPUHP_AP_ONLINE_DYN both run on the CPU being changed - except under
+ * stop_machine() in tensor_aio_idle_init(), where every CPU is frozen.
+ */
+static DEFINE_PER_CPU(bool, hw_throttle_idle);
+
 static void set_cpu_hw_throttle_idle(int cpu, bool idle)
 {
 	struct throt_data *t = per_cpu(domain_throt_data, cpu);
+	bool *counted = &per_cpu(hw_throttle_idle, cpu);
+
+	/*
+	 * The cpuidle exit hook is not reached on every path that runs the
+	 * enter hook: cpuidle_enter_state() returns early when no idle state
+	 * is selected, and again after default_idle_call() when broadcast
+	 * entry fails, and neither reaches the exit hook. Counting enter and
+	 * exit events therefore lets idle_cpus creep upwards for the life of
+	 * the boot, which eventually makes the "all CPUs idle" test below fire
+	 * for a domain that is not idle - clearing a real hardware throttle -
+	 * and underflows the count on the way back out.
+	 *
+	 * Track the state instead and only move the counter on an actual
+	 * change, so a repeated enter without an intervening exit is a no-op
+	 * and the drift is bounded to one count per CPU.
+	 */
+	if (*counted == idle)
+		return;
+	*counted = idle;
 
 	raw_spin_lock(&t->idle_cpu_lock);
 	if (idle) {
@@ -1496,10 +1523,19 @@ static int tensor_aio_idle_init(void *unused)
 	/*
 	 * All CPUs are guaranteed to not be in the idle task right now. Reset
 	 * the counts for the number of idle CPUs since they may be overflowed.
+	 *
+	 * The per-CPU counted state has to be cleared alongside the counter,
+	 * or a CPU left marked idle would decrement a zeroed count on its
+	 * next exit and underflow it.
 	 */
 	idle_task_cpus = 0;
-	list_for_each_entry(t, &domain_throt_list, node)
+	list_for_each_entry(t, &domain_throt_list, node) {
+		int cpu;
+
 		t->idle_cpus = 0;
+		for_each_cpu(cpu, &t->domain->cpus)
+			per_cpu(hw_throttle_idle, cpu) = false;
+	}
 
 	return 0;
 }
