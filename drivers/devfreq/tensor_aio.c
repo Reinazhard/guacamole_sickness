@@ -1650,8 +1650,15 @@ static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
 		 * (CPUFREQ_RELATION_L) is used for the estimation in order to
 		 * avoid voting for a MIF frequency that's too low and thus too
 		 * close to causing the CPU's frequency to increase.
+		 *
+		 * The bound includes the lowest index because the branch guard
+		 * already established that even it raises the estimate, so the
+		 * loop is guaranteed to break before running off the table.
+		 * Excluding it would let the search reach its end and vote the
+		 * one frequency proven to be too low whenever cur is the index
+		 * just above the lowest.
 		 */
-		for (vote = cur + 1; vote < mif->nr_freqs - 1; vote++) {
+		for (vote = cur + 1; vote <= mif->nr_freqs - 1; vote++) {
 			if (est_cpu_khz(vote, L) > cpu_khz) {
 				vote--;
 				break;
