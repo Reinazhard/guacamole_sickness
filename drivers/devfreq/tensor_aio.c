@@ -1570,6 +1570,24 @@ static void memperfd_init(void)
 	BUG_ON(cpuhp_state <= 0);
 
 	/*
+	 * Reset the idle CPU counters before any hook can run, not after.
+	 *
+	 * cpuhp_setup_state() above invoked memperf_cpuhp_up() for every CPU
+	 * that was already online, and that ends in
+	 * set_cpu_hw_throttle_idle(cpu, false), which decrements
+	 * t->idle_cpus. Nothing ever incremented it, so each domain is left
+	 * several counts below zero. While it stays there the
+	 * "++t->idle_cpus == t->nr_domain_cpus" test can never be true, so a
+	 * domain whose CPUs all go idle would keep a stale hardware throttle
+	 * instead of clearing it.
+	 *
+	 * tensor_aio_idle_init() zeroes the counters, so it repairs this, but
+	 * only if it runs before the cpuidle and scheduler hooks are live.
+	 * Running it here closes the window rather than relying on ordering.
+	 */
+	BUG_ON(stop_machine(tensor_aio_idle_init, NULL, NULL));
+
+	/*
 	 * Register the cpuidle callback for frequency-invariant counting needed
 	 * to set the CPU frequency scale correctly in update_freq_scale().
 	 */
@@ -1590,14 +1608,6 @@ static void memperfd_init(void)
 
 	/* Register the idle-task CPUs tracker for quiescing memperfd */
 	BUG_ON(register_trace_android_rvh_schedule(tensor_aio_schedule, NULL));
-
-	/*
-	 * Stop all online CPUs in order to initialize the idle-task CPUs
-	 * tracker and thermal throttle domain idle CPUs tracker with the
-	 * correct number of idle CPUs. When tensor_aio_idle_init() runs, it
-	 * runs with all CPUs guaranteed to not be running inside the idle task.
-	 */
-	BUG_ON(stop_machine(tensor_aio_idle_init, NULL, NULL));
 }
 
 static u32 mif_cpu_vote(struct pmu_stat *stat, int cpu, u32 cur, u32 *dsu_vote)
