@@ -1826,19 +1826,33 @@ static void memperfd_work(void)
 
 	/* Find the highest PPC MIF vote and set the higher of the MIF votes */
 	vote = max((u32)mif->tbl[vote], mif_ppc_vote(mif->tbl[cur], &bus2_mif));
-	update_qos_req(&mif->min_req, vote);
 
-	/* Set the new INT vote using BUS2's MIF requirement */
-	for (vote = mif_int_cnt - 1; vote > 0; vote--) {
-		if (bus2_mif <= mif_int_map[vote].mif_freq)
-			break;
-	}
-	update_qos_req(&df_data[INT].min_req, mif_int_map[vote].int_freq);
+	/*
+	 * A quiesce can land while this work is in flight. Applying these
+	 * votes then would immediately undo it and hold MIF and INT at their
+	 * running-time levels for as long as every CPU stays in the idle task,
+	 * which is exactly the power saving quiescence exists to capture.
+	 * Nothing becomes stuck by skipping the update: memperfd_unquiesce()
+	 * resets the request, and leaving once a CPU wakes restores normal
+	 * voting. The PPC read above still happens so the sample window it
+	 * accumulates over cannot grow without bound across a long idle.
+	 */
+	if (!READ_ONCE(memperfd_quiescent)) {
+		update_qos_req(&mif->min_req, vote);
+
+		/* Set the new INT vote using BUS2's MIF requirement */
+		for (vote = mif_int_cnt - 1; vote > 0; vote--) {
+			if (bus2_mif <= mif_int_map[vote].mif_freq)
+				break;
+		}
+		update_qos_req(&df_data[INT].min_req,
+			       mif_int_map[vote].int_freq);
 
 #ifdef CONFIG_SOC_ZUMA
-	/* Set the new DSU vote */
-	update_qos_req(&dsu->min_req, dsu_vote);
+		/* Set the new DSU vote */
+		update_qos_req(&dsu->min_req, dsu_vote);
 #endif
+	}
 
 	/*
 	 * Reset the statistics for all CPUs. This is done after all voting
