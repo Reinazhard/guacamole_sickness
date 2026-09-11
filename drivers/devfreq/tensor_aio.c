@@ -797,7 +797,7 @@ static void kick_memperfd(void)
 	unsigned long prev, now = jiffies;
 
 	/* Do not kick memperfd when it's quiescent */
-	if (memperfd_quiescent)
+	if (READ_ONCE(memperfd_quiescent))
 		return;
 
 	/* Do not kick memperfd for idle CPUs */
@@ -1383,14 +1383,19 @@ static void memperfd_quiesce(void)
 
 		update_qos_req(&data->min_req, data->tbl[data->nr_freqs - 1]);
 	}
-	memperfd_quiescent = true;
+
+	/*
+	 * Store the flag last, so memperfd_work() cannot miss a quiesce that
+	 * races with it by observing the flag before the votes are dropped.
+	 */
+	WRITE_ONCE(memperfd_quiescent, true);
 }
 
 static void memperfd_unquiesce(void)
 {
 	atomic_set(&stats_avail_cpus, 0);
 	atomic_long_set(&last_run_jiffies, jiffies);
-	memperfd_quiescent = false;
+	WRITE_ONCE(memperfd_quiescent, false);
 }
 
 static void tensor_aio_idle_task_switch(bool entering)
