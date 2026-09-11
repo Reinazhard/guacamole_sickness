@@ -1540,13 +1540,21 @@ static void memperfd_init(void)
 	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
 					 cpu_possible_mask);
 
+	/*
+	 * Precompute arithmetic to convert between ticks and nanoseconds.
+	 *
+	 * This has to precede the hotplug registration below, because that
+	 * call immediately runs memperf_cpuhp_up() for every already-online
+	 * CPU. Until this runs, cntpct_mult is zero, ns_to_cntpct() divides by
+	 * it, and both thresholds are still nanoseconds while being compared
+	 * against timer ticks.
+	 */
+	calc_cntpct_arith();
+
 	/* Register the CPU hotplug notifier with calls to all online CPUs */
 	cpuhp_state = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "memperf",
 					memperf_cpuhp_up, memperf_cpuhp_down);
 	BUG_ON(cpuhp_state <= 0);
-
-	/* Precompute arithmetic to convert between ticks and nanoseconds */
-	calc_cntpct_arith();
 
 	/*
 	 * Register the cpuidle callback for frequency-invariant counting needed
