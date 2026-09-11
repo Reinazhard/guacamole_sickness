@@ -401,12 +401,29 @@ static __always_inline bool cpu_cortex_a55_or_a76(int cpu)
 
 static __always_inline bool cpu_supports_amu_const(int cpu)
 {
+	if (IS_ENABLED(CONFIG_SOC_ZUMAPRO)) {
+		/* Zumapro supports AMU const cycles on all cores */
+		return true;
+	}
+
+	if (IS_ENABLED(CONFIG_SOC_ZUMA)) {
+		/*
+		 * Zuma supports AMU const cycles on all but the Cortex-A510
+		 * cores due to ARM erratum 2457168.
+		 */
+		return cpu > 4;
+	}
+
 	/*
-	 * Zumapro supports AMU const cycles on all cores, while
-	 * zuma supports AMU const cycles on all but the Cortex-A510 cores due
-	 * to ARM erratum 2457168.
+	 * Gsx01 has no AMU at all, so gsx01_pmu_read() substitutes CNTPCT_EL0
+	 * for the constant cycles counter. Unlike a real AMU const cycles
+	 * counter, CNTPCT_EL0 keeps incrementing during WFE/WFI, so no Gsx01
+	 * CPU behaves as though it supports AMU const cycles. Claiming
+	 * otherwise skips the idle exit re-baseline in tensor_aio_cpu_idle(),
+	 * which lets idle residency inflate the sample window and makes the
+	 * measured CPU frequency collapse toward zero upon waking.
 	 */
-	return IS_ENABLED(CONFIG_SOC_ZUMAPRO) ? true : cpu > 4;
+	return false;
 }
 
 static __always_inline unsigned long cpu_pmu_evt_en_mask(int cpu)
