@@ -266,7 +266,14 @@ static void apply_thermal_pressure(struct exynos_cpufreq_domain *domain,
 	maskp = &domain->cpus;
 
 	if (IS_ENABLED(CONFIG_ARM_TENSOR_AIO_DEVFREQ)) {
-		tensor_aio_cpufreq_pressure(cpumask_any(maskp), capped_freq);
+		/*
+		 * Pass the actor through. tensor_aio keeps TJ and TSKIN in
+		 * separate slots and applies their minimum, which is what the
+		 * path below does for its own bookkeeping; dropping the actor
+		 * here collapsed them into one and let the last writer win.
+		 */
+		tensor_aio_cpufreq_pressure(cpumask_any(maskp), capped_freq,
+					    thermal_actor);
 		return;
 	}
 
