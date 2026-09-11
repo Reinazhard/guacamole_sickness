@@ -1223,6 +1223,35 @@ static void tensor_aio_tick_entry(void *data, struct rq *rq)
 	if (!static_branch_unlikely(&system_ready))
 		return;
 
+	/*
+	 * Never evaluate the hardware throttle from the idle task.
+	 *
+	 * update_cpu_hw_throttle() derives a frequency from accumulated CPU
+	 * cycles over accumulated constant cycles. On gsx01 the constant
+	 * cycles source is CNTPCT_EL0, which runs across WFI, while the CPU
+	 * cycle counter is clock-gated and stops - so a window containing any
+	 * idle residency measures below the target even when the target
+	 * latched perfectly, and gets published as CPU_HW_THROTTLE to every
+	 * CPU in the domain. cpu_min_sample_cntpct is only 3 us, so the
+	 * minimum-window check does not filter this out.
+	 *
+	 * add_htd_data() accumulates on every local update_rq_clock(),
+	 * including while the idle task is current, so a tick landing mid-idle
+	 * sees a diluted window. Discard it, and reset rather than just
+	 * return: this function's reset is the only unconditional bound on the
+	 * window, so skipping it without resetting would let the window grow
+	 * across the whole residency on idle paths that never reach the
+	 * cpuidle exit hook. The window is written only by the local CPU, so
+	 * resetting here is race-free.
+	 *
+	 * Detecting a genuine throttle is unaffected: that needs sustained
+	 * busy execution, and a busy CPU is not in the idle task.
+	 */
+	if (is_idle_task(rq->curr)) {
+		reset_htd_data(&per_cpu(cpu_pmu_evs, raw_smp_processor_id()).htd);
+		return;
+	}
+
 	update_cpu_hw_throttle();
 }
 
