@@ -2078,6 +2078,18 @@ static int exynos_devfreq_parse_ect(struct device *dev,
 		dev_pm_opp_add(dev, freq, 0);
 	}
 
+	/*
+	 * Nothing landed inside the frequency limits, so there is no table to
+	 * publish. Giving up here leaves data->tbl NULL instead of letting
+	 * the caller index tbl[nr_freqs - 1] and read nonsense into both the
+	 * minimum and maximum frequencies.
+	 */
+	if (!data->nr_freqs) {
+		kfree(data->tbl);
+		data->tbl = NULL;
+		return -ENODEV;
+	}
+
 	data->min_freq = data->tbl[data->nr_freqs - 1];
 	data->max_freq = data->tbl[0];
 	return 0;
