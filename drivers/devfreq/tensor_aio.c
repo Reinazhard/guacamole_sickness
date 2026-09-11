@@ -2424,9 +2424,15 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 	exynos_pm_qos_add_request(&data->umax_req, data->qmax, data->max_freq);
 	data->df = devfreq_add_device(dev, &data->profile,
 				      DEVFREQ_GOV_TENSOR_AIO, NULL);
-	if (IS_ERR(data->df))
+	if (IS_ERR(data->df)) {
 		dev_err(dev, "Failed to add devfreq, ret: %ld\n",
 			PTR_ERR(data->df));
+		/*
+		 * Leave this NULL. exynos_df_target() guards on !df, which an
+		 * error pointer would sail straight past.
+		 */
+		data->df = NULL;
+	}
 
 	dev_info(dev, "Registered device successfully\n");
 	return 0;
