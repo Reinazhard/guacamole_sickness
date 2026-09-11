@@ -2255,10 +2255,18 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 	data->suspend_freq = clamp(freq_cfg[2], data->min_freq, data->max_freq);
 	data->use_acpm = !of_property_read_string(np, "use_acpm", &use_acpm) &&
 			 !strcmp(use_acpm, "true");
+	/*
+	 * The frequency table and its OPPs are already allocated by this point,
+	 * so they have to be released like every other failure below does. A
+	 * bare return also leaves `data->tbl` set, which makes any deferred
+	 * probe retry trip WARN_ON(data->tbl) and kill the domain permanently.
+	 */
 	if (data->use_acpm &&
 	    (of_property_read_u32(np, "devfreq_type", &data->devfreq_type) ||
-	     of_property_read_u32(np, "acpm-ipc-channel", &data->ipc_chan_id)))
-		return -ENODEV;
+	     of_property_read_u32(np, "acpm-ipc-channel", &data->ipc_chan_id))) {
+		ret = -ENODEV;
+		goto free_tbl;
+	}
 
 	if (domain_has_fast_dvfs(edev)) {
 		raw_spin_lock_init(&data->min_nb_lock.raw_spinlock);
@@ -2342,6 +2350,7 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 
 free_int_map:
 	kfree(mif_int_map);
+	mif_int_map = NULL;
 remove_req:
 	exynos_pm_qos_remove_request(&data->min_req);
 	exynos_pm_qos_remove_notifier(data->qmax, &data->max_nb);
@@ -2349,6 +2358,7 @@ del_min_nb:
 	exynos_pm_qos_remove_notifier(data->qmin, &data->min_nb);
 free_tbl:
 	kfree(data->tbl);
+	data->tbl = NULL;
 	return ret;
 }
 
