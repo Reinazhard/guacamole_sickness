@@ -2084,10 +2084,23 @@ static bool cache_cpu_policy(void)
 	return true;
 }
 
+/*
+ * Release the first `cnt` mappings of a PPC group along with the group itself.
+ * Groups are zero-initialized, so entries beyond those handed to ioremap() are
+ * NULL and iounmap() of them is a no-op.
+ */
+static void exynos_ppc_unmap_group(struct um_group *ug, int cnt)
+{
+	while (cnt--)
+		iounmap(ug->va_base[cnt]);
+	kfree(ug->va_base);
+	ug->va_base = NULL;
+}
+
 static int exynos_ppc_init(struct device *dev, struct device_node *np)
 {
 	struct mif_um_ppc *um = &mif_um;
-	int i, j, k = 0, ret = -ENOMEM;
+	int i, j = 0, k = 0, ret = -ENOMEM;
 
 	um->grp_cnt = of_property_count_u32_elems(np, "um_count");
 	if (um->grp_cnt <= 0) {
@@ -2095,7 +2108,7 @@ static int exynos_ppc_init(struct device *dev, struct device_node *np)
 		return -EINVAL;
 	}
 
-	um->grp = kmalloc_array(um->grp_cnt, sizeof(*um->grp), GFP_KERNEL);
+	um->grp = kcalloc(um->grp_cnt, sizeof(*um->grp), GFP_KERNEL);
 	if (!um->grp)
 		return -ENOMEM;
 
@@ -2103,19 +2116,31 @@ static int exynos_ppc_init(struct device *dev, struct device_node *np)
 		struct um_group *ug = &um->grp[i];
 		u32 pa;
 
+		/* Number of entries mapped in this group so far */
+		j = 0;
+
 		if (of_property_read_u32_index(np, "um_count", i, &ug->cnt) ||
 		    of_property_read_u32_index(np, "target_load", i,
 					       &ug->target_load))
 			goto prop_error;
 
-		ug->va_base = kmalloc_array(ug->cnt, sizeof(*ug->va_base),
-					    GFP_KERNEL);
+		ug->va_base = kcalloc(ug->cnt, sizeof(*ug->va_base),
+				      GFP_KERNEL);
 		if (!ug->va_base)
 			goto free_mem;
 
-		for (j = 0; j < ug->cnt; j++) {
-			of_property_read_u32_index(np, "um_list", k++, &pa);
+		/*
+		 * A short or unreadable "um_list" must not be papered over
+		 * with whatever `pa` happens to hold, and a failed ioremap()
+		 * leaves a NULL that later faults in ppc_write_regs().
+		 */
+		for (; j < ug->cnt; j++) {
+			if (of_property_read_u32_index(np, "um_list", k++, &pa))
+				goto free_mem;
+
 			ug->va_base[j] = ioremap(pa, SZ_4K);
+			if (!ug->va_base[j])
+				goto free_mem;
 		}
 
 		um->all_regs_cnt += ug->cnt;
@@ -2139,9 +2164,19 @@ static int exynos_ppc_init(struct device *dev, struct device_node *np)
 prop_error:
 	ret = -ENODEV;
 free_mem:
+	/*
+	 * `i` indexes the group under construction when the loop bailed out,
+	 * of which the first `j` entries were mapped. Once that loop ran to
+	 * completion, `i` sits one past the last group and every group needs
+	 * tearing down. There is no remove path for this driver, so a failed
+	 * probe is the only opportunity to unmap.
+	 */
+	if (i < um->grp_cnt)
+		exynos_ppc_unmap_group(&um->grp[i], j);
 	while (i--)
-		kfree(um->grp[i].va_base);
+		exynos_ppc_unmap_group(&um->grp[i], um->grp[i].cnt);
 	kfree(um->grp);
+	um->grp = NULL;
 	return ret;
 }
 
