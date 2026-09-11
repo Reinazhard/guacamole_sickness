@@ -1770,6 +1770,25 @@ static u32 mif_ppc_vote(u32 cur_mif_khz, u32 *bus2_mif)
 		 */
 		vote = (u64)cur_mif_khz * h_pmcnt1 * 1000 /
 		       ((u64)ccnt * ug->target_load);
+
+		/*
+		 * Bound the result to one step either side of the current MIF
+		 * frequency, exactly as governor_simpleinteractive.c does for
+		 * both its overall vote and its BUS2-derived INT vote.
+		 *
+		 * The bound is not optional. With GS101's target_load of
+		 * <20 10 40> the formula reaches the current frequency at only
+		 * 2% busy time and doubles it at 4%, so without a ceiling a
+		 * single transient saturates the vote. That pins MIF to its
+		 * maximum, and because memperfd_work() derives the INT vote
+		 * from this group via bus2_mif, it pins INT there too.
+		 *
+		 * The lower bound is equally deliberate: it keeps a single
+		 * quiet sample from collapsing the vote, which would otherwise
+		 * let the bus fall faster than the PPC window can justify.
+		 */
+		vote = clamp_t(u32, vote, cur_mif_khz >> 1, cur_mif_khz << 1);
+
 		if (vote > h_vote)
 			h_vote = vote;
 	} while (++i < um->grp_cnt);
