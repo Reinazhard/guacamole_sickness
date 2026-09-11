@@ -1190,6 +1190,14 @@ void tensor_aio_update_rq_clock(struct rq *rq)
  */
 static void tensor_aio_tick_entry(void *data, struct rq *rq)
 {
+	/*
+	 * Guard like every other hook we install. `system_ready` is cleared by
+	 * memperf_reboot() and no throttle can be meaningfully reported on the
+	 * way down, so there is nothing to gain by running past that point.
+	 */
+	if (!static_branch_unlikely(&system_ready))
+		return;
+
 	update_cpu_hw_throttle();
 }
 
