@@ -5,6 +5,7 @@
 
 #include <linux/cpufreq.h>
 #include <linux/freezer.h>
+#include <linux/irq_work.h>
 #include <linux/kthread.h>
 #include <linux/of_platform.h>
 #include <linux/perf/arm_pmuv3.h>
@@ -1455,21 +1456,21 @@ static void memperfd_quiesce(void)
 
 	/*
 	 * Clear out all of memperfd's votes for the domains it governs. This is
-	 * safe from atomic context because all of memperfd's domains have fast,
-	 * atomic DVFS, and therefore use raw spin locks in their exynos_pm_qos
-	 * notifier callbacks.
+	 * safe from atomic context because all of memperfd's domains use raw
+	 * spin locks in their exynos_pm_qos notifier callbacks, so nothing on
+	 * this path sleeps.
+	 *
+	 * "Won't sleep" is not the same as "is quick", though: each update ends
+	 * in an ACPM IPC transaction, and __acpm_ipc_send_data() retries it for
+	 * up to IPC_QUEUE_DRAIN_TIMEOUT_NS with interrupts off when ACPM's tx
+	 * queue is backed up. Callers must therefore hold no lock whose hold
+	 * time matters; see memperfd_quiesce_worker().
 	 */
 	for (i = 0; i < ARRAY_SIZE(memperfd_domains); i++) {
 		struct exynos_devfreq_data *data = memperfd_domains[i];
 
 		update_qos_req(&data->min_req, data->tbl[data->nr_freqs - 1]);
 	}
-
-	/*
-	 * Store the flag last, so memperfd_work() cannot miss a quiesce that
-	 * races with it by observing the flag before the votes are dropped.
-	 */
-	WRITE_ONCE(memperfd_quiescent, true);
 }
 
 static void memperfd_unquiesce(void)
@@ -1478,6 +1479,53 @@ static void memperfd_unquiesce(void)
 	atomic_long_set(&last_run_jiffies, jiffies);
 	WRITE_ONCE(memperfd_quiescent, false);
 }
+
+static void memperfd_quiesce_worker(struct irq_work *work)
+{
+	if (!static_branch_unlikely(&system_ready))
+		return;
+
+	/*
+	 * Claim quiescence under idle_task_lock, then drop it before touching
+	 * hardware. Every CPU takes this lock from tensor_aio_idle_task_switch()
+	 * inside __schedule(), with that CPU's rq->lock held and interrupts
+	 * off, so holding it across the ACPM transactions below would park
+	 * every other CPU behind exactly the multi-millisecond wait this
+	 * deferral exists to take off the scheduler's critical section.
+	 */
+	raw_spin_lock(&idle_task_lock);
+	if (idle_task_cpus != nr_cpu_ids) {
+		raw_spin_unlock(&idle_task_lock);
+		return;
+	}
+
+	/*
+	 * Claim before dropping the votes rather than after, so that
+	 * memperfd_work() cannot slip an update in between: it skips its
+	 * update while the flag is set, so ordering the store first is what
+	 * makes the drop stick. A quiesce which loses the race below is
+	 * undone, so the flag is never left set for a busy system.
+	 */
+	WRITE_ONCE(memperfd_quiescent, true);
+	raw_spin_unlock(&idle_task_lock);
+
+	memperfd_quiesce();
+
+	/*
+	 * A CPU can have left the idle task while those transactions were in
+	 * flight. Drop the claim again so memperfd resumes voting; it re-votes
+	 * from fresh statistics on its next poll. Don't call
+	 * memperfd_unquiesce(): that CPU already did, and re-stamping
+	 * last_run_jiffies here would push the next poll out by up to the
+	 * length of the wait we just came back from.
+	 */
+	raw_spin_lock(&idle_task_lock);
+	if (idle_task_cpus != nr_cpu_ids)
+		WRITE_ONCE(memperfd_quiescent, false);
+	raw_spin_unlock(&idle_task_lock);
+}
+
+static DEFINE_IRQ_WORK(memperfd_quiesce_work, memperfd_quiesce_worker);
 
 static void tensor_aio_idle_task_switch(bool entering)
 {
@@ -1488,8 +1536,28 @@ static void tensor_aio_idle_task_switch(bool entering)
 	 */
 	raw_spin_lock(&idle_task_lock);
 	if (entering) {
+		/*
+		 * Don't quiesce here. The votes are dropped by
+		 * memperfd_quiesce(), which ends in an ACPM IPC transaction
+		 * that can busy-wait for IPC_QUEUE_DRAIN_TIMEOUT_NS with
+		 * interrupts off, and this runs inside __schedule() with
+		 * rq->lock held. Defer it to irq_work instead: that raises a
+		 * self-IPI rather than waking a task, so unlike swake_up_one()
+		 * or queue_work() it does not re-enter ttwu_queue() and
+		 * deadlock on the rq->lock already held here.
+		 *
+		 * The IPI is taken at the next interrupt enable, which for a
+		 * switch to the idle task is finish_lock_switch() immediately
+		 * after switch_to(). The votes are therefore still dropped
+		 * before this CPU reaches cpuidle, so no idle entry is
+		 * shortened and the quiesce is not delayed in practice.
+		 *
+		 * A false return only means a quiesce is already pending or in
+		 * flight, and the re-check in the worker makes a duplicate
+		 * harmless.
+		 */
 		if (++idle_task_cpus == nr_cpu_ids)
-			memperfd_quiesce();
+			irq_work_queue(&memperfd_quiesce_work);
 	} else {
 		if (idle_task_cpus-- == nr_cpu_ids)
 			memperfd_unquiesce();
