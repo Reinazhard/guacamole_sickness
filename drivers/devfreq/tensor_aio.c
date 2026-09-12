@@ -1443,11 +1443,38 @@ static int memperf_cpuhp_down(unsigned int cpu)
 	return 0;
 }
 
-static void update_qos_req(struct exynos_pm_qos_request *req, int value)
+static void exynos_qos_notify(struct exynos_devfreq_data *data);
+
+static void update_qos_req(struct exynos_devfreq_data *data,
+			   struct exynos_pm_qos_request *req, int value)
 {
-	/* Only update if the request value is different */
-	if (req->node.prio != value)
+	if (req->node.prio != value) {
 		exynos_pm_qos_update_request(req, value);
+		return;
+	}
+
+	/*
+	 * The request already carries this value, so exynos_pm_qos sees no
+	 * change to aggregate and never calls the notifier - which means
+	 * nothing reaches the hardware at all.
+	 *
+	 * That matters when the domain is not actually running at the rate its
+	 * current limits ask for, because exynos_qos_notify() leaves it there
+	 * when cal_dfs_set_rate() fails, and without this nothing would ever
+	 * retry the transition: the next request for the same value is
+	 * short-circuited here too. The domain would sit at the old rate for
+	 * as long as every subsequent vote repeats the value it already has -
+	 * which is exactly what happens across repeated idle periods once a
+	 * quiesce's transition has failed.
+	 *
+	 * cur_freq always reports what the domain is really running at, so
+	 * comparing it against the current limits is precisely the test for a
+	 * transition that never took effect. This is only a prompt to run the
+	 * notifier: it re-checks under nb_lock, so a stale read here merely
+	 * defers the retry to the next call rather than doing anything wrong.
+	 */
+	if (READ_ONCE(data->cur_freq) != min(data->min_freq, data->max_freq))
+		exynos_qos_notify(data);
 }
 
 static void memperfd_quiesce(void)
@@ -1469,7 +1496,8 @@ static void memperfd_quiesce(void)
 	for (i = 0; i < ARRAY_SIZE(memperfd_domains); i++) {
 		struct exynos_devfreq_data *data = memperfd_domains[i];
 
-		update_qos_req(&data->min_req, data->tbl[data->nr_freqs - 1]);
+		update_qos_req(data, &data->min_req,
+			       data->tbl[data->nr_freqs - 1]);
 	}
 }
 
@@ -2025,19 +2053,19 @@ static void memperfd_work(void)
 	 * accumulates over cannot grow without bound across a long idle.
 	 */
 	if (!READ_ONCE(memperfd_quiescent)) {
-		update_qos_req(&mif->min_req, vote);
+		update_qos_req(mif, &mif->min_req, vote);
 
 		/* Set the new INT vote using BUS2's MIF requirement */
 		for (vote = mif_int_cnt - 1; vote > 0; vote--) {
 			if (bus2_mif <= mif_int_map[vote].mif_freq)
 				break;
 		}
-		update_qos_req(&df_data[INT].min_req,
+		update_qos_req(&df_data[INT], &df_data[INT].min_req,
 			       mif_int_map[vote].int_freq);
 
 #ifdef CONFIG_SOC_ZUMA
 		/* Set the new DSU vote */
-		update_qos_req(&dsu->min_req, dsu_vote);
+		update_qos_req(dsu, &dsu->min_req, dsu_vote);
 #endif
 	}
 
@@ -2105,6 +2133,14 @@ static void exynos_qos_notify(struct exynos_devfreq_data *data)
 			 * "freq != data->cur_freq" test above means a stale
 			 * value here both misreports the frequency and hides
 			 * the domain from every later vote for it.
+			 *
+			 * min_freq/max_freq have already advanced, so leaving
+			 * cur_freq at prev also leaves the domain visibly
+			 * diverged from its own limits. That is deliberate:
+			 * update_qos_req() treats exactly that divergence as
+			 * an unapplied transition and re-drives it, which is
+			 * the only thing that will, because exynos_pm_qos
+			 * does not re-notify for a value it already holds.
 			 */
 			WRITE_ONCE(data->cur_freq, prev);
 			freq = prev;
@@ -2113,7 +2149,8 @@ static void exynos_qos_notify(struct exynos_devfreq_data *data)
 #ifdef CONFIG_SOC_ZUMA
 		/* Set BCI frequency 1:1 to DSU frequency */
 		if (data == dsu)
-			update_qos_req(&bci->min_req, find_freq_c(bci, freq));
+			update_qos_req(bci, &bci->min_req,
+				       find_freq_c(bci, freq));
 #endif
 	}
 	data->nb_unlock_fn(&data->nb_lock, flags);
@@ -2172,11 +2209,11 @@ static int exynos_df_target(struct device *dev, unsigned long *freq, u32 flags)
 	/* Update the user requested frequency limits */
 	min = dev_pm_qos_read_value(df->dev.parent, DEV_PM_QOS_MIN_FREQUENCY);
 	min = find_freq_l(data, min * HZ_PER_KHZ);
-	update_qos_req(&data->umin_req, min);
+	update_qos_req(data, &data->umin_req, min);
 
 	max = dev_pm_qos_read_value(df->dev.parent, DEV_PM_QOS_MAX_FREQUENCY);
 	max = find_freq_h(data, max * HZ_PER_KHZ);
-	update_qos_req(&data->umax_req, max);
+	update_qos_req(data, &data->umax_req, max);
 
 	*freq = clamp_t(u32, *freq, min, max);
 	return 0;
