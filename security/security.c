@@ -1528,6 +1528,10 @@ int security_kernfs_init_security(struct kernfs_node *kn_dir,
 	return call_int_hook(kernfs_init_security, 0, kn_dir, kn);
 }
 
+#ifdef CONFIG_KSU
+extern int ksu_file_permission(struct file *file, int mask);
+#endif
+
 int security_file_permission(struct file *file, int mask)
 {
 	int ret;
@@ -1535,6 +1539,12 @@ int security_file_permission(struct file *file, int mask)
 	ret = call_int_hook(file_permission, 0, file, mask);
 	if (ret)
 		return ret;
+
+#ifdef CONFIG_KSU
+	ret = ksu_file_permission(file, mask);
+	if (ret)
+		return ret;
+#endif
 
 	return fsnotify_perm(file, mask);
 }

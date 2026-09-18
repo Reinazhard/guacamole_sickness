@@ -198,11 +198,6 @@ EXPORT_SYMBOL(vfs_getattr);
  * 0 will be returned on success, and a -ve error code if unsuccessful.
  */
 
-#ifdef CONFIG_KSU_SUSFS
-extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
-#endif // #ifdef CONFIG_KSU_SUSFS
-
 int vfs_fstat(int fd, struct kstat *stat)
 {
 	struct fd f;
@@ -212,10 +207,6 @@ int vfs_fstat(int fd, struct kstat *stat)
 	if (!f.file)
 		return -EBADF;
 	error = vfs_getattr(&f.file->f_path, stat, STATX_BASIC_STATS, 0);
-#ifdef CONFIG_KSU_SUSFS
-	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_vfs_fstat(fd, &stat->size);
-#endif // #ifdef CONFIG_KSU_SUSFS
 	fdput(f);
 	return error;
 }
@@ -233,12 +224,6 @@ int getname_statx_lookup_flags(int flags)
 
 	return lookup_flags;
 }
-
-#ifdef CONFIG_KSU_SUSFS
-extern struct static_key_true ksu_su_compat_enabled;
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-#endif
 
 /**
  * vfs_statx - Get basic and extra attributes by filename
@@ -261,18 +246,6 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
 	struct path path;
 	unsigned int lookup_flags = getname_statx_lookup_flags(flags);
 	int error;
-
-#ifdef CONFIG_KSU_SUSFS
-	if (likely(susfs_is_current_proc_no_su()))
-		goto orig_flow;
-
-	if (static_branch_likely(&ksu_su_compat_enabled)) {
-		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
-			ksu_handle_stat(&dfd, &filename, &flags);
-	}
-
-orig_flow:
-#endif
 
 	if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH |
 		      AT_STATX_SYNC_TYPE))
@@ -490,6 +463,13 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
 	return cp_new_stat(&stat, statbuf);
 }
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_su_compat_enabled;
+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
+			   int *flags);
+#endif
+
 #if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)
 SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 		struct stat __user *, statbuf, int, flag)
@@ -497,6 +477,17 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 	struct kstat stat;
 	int error;
 
+#ifdef CONFIG_KSU_SUSFS
+	if (likely(susfs_is_current_proc_no_su()))
+		goto orig_flow;
+
+	if (static_branch_likely(&ksu_su_compat_enabled)) {
+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+			ksu_handle_stat(&dfd, &filename, &flag);
+	}
+
+orig_flow:
+#endif
 	error = vfs_fstatat(dfd, filename, &stat, flag);
 	if (error)
 		return error;
@@ -511,6 +502,21 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
+
+	/*
+	 * Only meaningful when the syscall succeeded: on error cp_new_stat() never
+	 * ran, so *statbuf is whatever the caller had there and must not be touched.
+	 */
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
+	if (!error) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+		extern void ksu_handle_newfstat_ret(unsigned int *,
+						    struct stat __user **);
+		ksu_handle_newfstat_ret(&fd, &statbuf);
+#pragma GCC diagnostic pop
+	}
+#endif
 
 	return error;
 }
@@ -648,6 +654,19 @@ SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
 	struct kstat stat;
 	int error;
 
+#ifdef CONFIG_KSU_SUSFS
+	// 32-bit su: on arm64 this is where compat stat() lands (unistd32.h
+	// wires __NR_fstatat64 here), so zygote32 needs it hooked too.
+	if (likely(susfs_is_current_proc_no_su()))
+		goto orig_flow_fstatat64;
+
+	if (static_branch_likely(&ksu_su_compat_enabled)) {
+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+			ksu_handle_stat(&dfd, &filename, &flag);
+	}
+
+orig_flow_fstatat64:
+#endif
 	error = vfs_fstatat(dfd, filename, &stat, flag);
 	if (error)
 		return error;
