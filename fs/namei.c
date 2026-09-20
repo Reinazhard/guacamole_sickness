@@ -1654,6 +1654,14 @@ retry:
 		 * borrowed here, so there is nothing to skip.)
 		 */
 		dput(dentry);
+		/*
+		 * Callers that are about to create or rename onto the result
+		 * would take a negative dentry as a free slot and materialise
+		 * the hidden name under the fake qstr.  Fail closed instead of
+		 * handing out the placeholder.
+		 */
+		if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
+			return ERR_PTR(-ENOENT);
 		dentry = d_alloc(base, &susfs_fake_qstr_name);
 		found_sus_path = true;
 		goto retry;
@@ -3571,6 +3579,21 @@ skip_orig_flow:
 		/* Cached positive dentry: will open in f_op->open */
 		return dentry;
 	}
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	/*
+	 * This dentry is the synthetic negative placeholder that stands in for a
+	 * SUS_PATH-hidden name (see susfs_fake_qstr_name).  Everything below
+	 * treats a negative dentry as a free slot - it may call ->atomic_open()
+	 * or ->create(), or re-enter ->lookup() - and for the placeholder that
+	 * would materialise the hidden name on disk under the fake qstr.  Report
+	 * the path as missing instead.
+	 */
+	if (unlikely(found_sus_path)) {
+		error = -ENOENT;
+		goto out_dput;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 
 	/*
 	 * Checking write permission is tricky, bacuse we don't know if we are
