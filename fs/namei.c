@@ -1647,8 +1647,13 @@ retry:
 	    !found_sus_path && susfs_is_inode_sus_path(dentry->d_inode)) {
 		if (d_in_lookup(dentry))
 			d_lookup_done(dentry);
-		if (!(flags & LOOKUP_RCU))
-			dput(dentry);
+		/*
+		 * dentry is owned by us regardless of the walk mode: it came
+		 * either from d_alloc() above or from ->lookup().  (Unlike the
+		 * __d_lookup_rcu() path in lookup_fast(), no reference is
+		 * borrowed here, so there is nothing to skip.)
+		 */
+		dput(dentry);
 		dentry = d_alloc(base, &susfs_fake_qstr_name);
 		found_sus_path = true;
 		goto retry;
@@ -1786,8 +1791,8 @@ retry:
 	    susfs_is_inode_sus_path(dentry->d_inode)) {
 		if (d_in_lookup(dentry))
 			d_lookup_done(dentry);
-		if (!(flags & LOOKUP_RCU))
-			dput(dentry);
+		/* see lookup_one_qstr_excl(): the reference is ours to drop */
+		dput(dentry);
 		dentry = d_alloc_parallel(dir, &susfs_fake_qstr_name, &wq);
 		found_sus_path = true;
 		goto retry;
