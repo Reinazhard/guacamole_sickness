@@ -117,6 +117,8 @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (likely(susfs_is_current_proc_umounted() && path->mnt)) {
 		no_sus_vfsmnt = susfs_get_non_sus_vfsmnt_from_vfsmnt(path->mnt);
+		if (!no_sus_vfsmnt)
+			goto orig_flow;
 		if (path->mnt == no_sus_vfsmnt) {
 			dput(no_sus_vfsmnt->mnt_root);
 			mntput(no_sus_vfsmnt);
