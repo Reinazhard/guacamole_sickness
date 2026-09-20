@@ -1718,6 +1718,7 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 static int susfs_sdcard_monitor_fn(void *data)
 {
 	struct cred *cred = prepare_creds();
+	struct fsnotify_group *grp;
 	int ret = 0;
 
 	if (!cred) {
@@ -1750,6 +1751,26 @@ static int susfs_sdcard_monitor_fn(void *data)
 	ret = watch_one_dir(&g_watch);
 
 	SUSFS_LOGI("ret: %d\n", ret);
+
+	if (ret) {
+		/*
+		 * The watch was never installed, so susfs_handle_sdcard_inode_event()
+		 * can never fire and susfs_sdcard_cleanup_fn() can never run.  That
+		 * cleanup is the only place the group is destroyed and the
+		 * "not decrypted" key is cleared, so releasing them here is not
+		 * optional - otherwise both leak permanently.  Safe to destroy the
+		 * group: this is the monitor kthread, not an fsnotify callback.
+		 */
+		SUSFS_LOGE("failed to watch '%s' (%d), aborting monitor\n",
+			   g_watch.path, ret);
+		if (static_key_enabled(
+			    &susfs_is_sdcard_android_data_not_decrypted))
+			static_branch_disable(
+				&susfs_is_sdcard_android_data_not_decrypted);
+		grp = xchg(&g, NULL);
+		if (grp)
+			fsnotify_destroy_group(grp);
+	}
 
 	return 0;
 }
