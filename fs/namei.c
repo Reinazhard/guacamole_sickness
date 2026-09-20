@@ -3896,6 +3896,28 @@ struct file *vfs_tmpfile_open(struct user_namespace *mnt_userns,
 }
 EXPORT_SYMBOL(vfs_tmpfile_open);
 
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+/*
+ * The SUSFS open-redirect substitutes nd->name with a freshly
+ * getname_kernel()'d filename for the duration of the redirected walk.
+ * do_filp_open() and do_file_open_root() retry path_openat() with the *same*
+ * nameidata on -ECHILD/-ESTALE, and path_init() dereferences nd->name, so the
+ * substitute must not be freed while it is still installed - otherwise the
+ * retry walks a freed struct filename.
+ *
+ * Restore the caller's original filename first, then drop the reference.
+ */
+static void susfs_put_fake_filename(struct nameidata *nd,
+				    struct filename *orig_name,
+				    struct filename *fake_filename)
+{
+	if (!fake_filename || IS_ERR(fake_filename))
+		return;
+	nd->name = orig_name;
+	putname(fake_filename);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
 static int do_tmpfile(struct nameidata *nd, unsigned flags,
 		const struct open_flags *op,
 		struct file *file)
@@ -3904,6 +3926,7 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 	int old_dfd = nd->dfd;
 	bool is_nd_state_root_preset = (nd->state & ND_ROOT_PRESET);
 	struct filename *fake_filename = NULL;
+	struct filename *orig_name = nd->name;
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct user_namespace *mnt_userns;
 	struct path path;
@@ -3922,7 +3945,8 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 			error = path_lookupat(nd, flags | LOOKUP_DIRECTORY,
 					      &path);
 			if (unlikely(error)) {
-				putname(fake_filename);
+				susfs_put_fake_filename(nd, orig_name,
+							fake_filename);
 				return error;
 			}
 		}
@@ -3943,8 +3967,7 @@ out2:
 out:
 	path_put(&path);
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (fake_filename && !IS_ERR(fake_filename))
-		putname(fake_filename);
+	susfs_put_fake_filename(nd, orig_name, fake_filename);
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	return error;
 }
@@ -3955,6 +3978,7 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 	int old_dfd = nd->dfd;
 	bool is_nd_state_root_preset = (nd->state & ND_ROOT_PRESET);
 	struct filename *fake_filename = NULL;
+	struct filename *orig_name = nd->name;
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct path path;
 	int error = path_lookupat(nd, flags, &path);
@@ -3971,7 +3995,8 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 				set_nameidata(nd, old_dfd, fake_filename, NULL);
 				error = path_lookupat(nd, flags, &path);
 				if (unlikely(error)) {
-					putname(fake_filename);
+					susfs_put_fake_filename(nd, orig_name,
+								fake_filename);
 					return error;
 				}
 			}
@@ -3982,8 +4007,7 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 		path_put(&path);
 	}
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (fake_filename && !IS_ERR(fake_filename))
-		putname(fake_filename);
+	susfs_put_fake_filename(nd, orig_name, fake_filename);
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	return error;
 }
@@ -3995,6 +4019,7 @@ static struct file *path_openat(struct nameidata *nd,
 	int old_dfd = nd->dfd;
 	bool is_nd_state_root_preset = (nd->state & ND_ROOT_PRESET);
 	struct filename *fake_filename = NULL;
+	struct filename *orig_name = nd->name;
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct file *file;
 	int error;
@@ -4036,8 +4061,7 @@ static struct file *path_openat(struct nameidata *nd,
 		terminate_walk(nd);
 	}
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (fake_filename && !IS_ERR(fake_filename))
-		putname(fake_filename);
+	susfs_put_fake_filename(nd, orig_name, fake_filename);
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	if (likely(!error)) {
 		if (likely(file->f_mode & FMODE_OPENED))
