@@ -376,7 +376,7 @@ susfs_mark_inode_sus_kstat(char *target_pathname,
 
 out_path_put_path:
 	path_put(&path);
-	return 0;
+	return err;
 }
 
 void susfs_add_sus_kstat(void __user **user_info)
