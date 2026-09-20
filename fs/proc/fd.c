@@ -87,7 +87,13 @@ static int seq_show(struct seq_file *m, void *v)
 			goto orig_flow;
 		}
 		dpath = d_path(&file->f_path, pathname, PAGE_SIZE);
-		if (!dpath) {
+		/*
+		 * d_path() returns an ERR_PTR (not NULL) when the resolved path
+		 * does not fit, e.g. ERR_PTR(-ENAMETOOLONG).  Testing only for
+		 * NULL would feed that pointer to kern_path(), which strlen()s
+		 * it and faults in kernel mode.
+		 */
+		if (IS_ERR_OR_NULL(dpath)) {
 			goto out_kfree;
 		}
 		if (kern_path(dpath, 0, &path)) {
