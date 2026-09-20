@@ -5008,7 +5008,12 @@ int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt)
 	return mnt_id;
 }
 
-/* - To retrieve the non sus vfsmount from vfsmount, takes a reference on &mnt->mnt and mnt->mnt.mnt_root */
+/*
+ * - To retrieve the non sus vfsmount from vfsmount.
+ * - On success, takes a reference on &mnt->mnt and mnt->mnt.mnt_root.
+ * - Returns NULL if no mount could be resolved (see below); callers must
+ *   check, because NULL carries no reference and is not a usable mount.
+ */
 struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt)
 {
 	struct mount *mnt = real_mount(vfsmnt);
@@ -5020,9 +5025,15 @@ struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt)
 	}
 	mntget(&mnt->mnt);
 	if (!mnt->mnt.mnt_root || IS_ERR(mnt->mnt.mnt_root)) {
+		/*
+		 * No root dentry to resolve against.  Drop the reference we just
+		 * took and report failure as NULL - returning vfsmnt here would
+		 * hand the caller a borrowed pointer that it releases as if it
+		 * were owned, i.e. an over-put of a mount it never acquired.
+		 */
 		mntput(&mnt->mnt);
 		unlock_mount_hash();
-		return vfsmnt;
+		return NULL;
 	}
 	dget(mnt->mnt.mnt_root);
 	unlock_mount_hash();
