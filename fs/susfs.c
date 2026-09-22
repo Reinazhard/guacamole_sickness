@@ -384,6 +384,7 @@ void susfs_add_sus_kstat(void __user **user_info)
 	struct st_susfs_sus_kstat info = { 0 };
 	struct st_susfs_sus_kstat_hlist *new_entry, *tmp_entry;
 	struct hlist_node *tmp_hlist_node;
+	int bkt;
 
 	if (copy_from_user(&info,
 			   (struct st_susfs_sus_kstat __user *)*user_info,
@@ -419,8 +420,8 @@ void susfs_add_sus_kstat(void __user **user_info)
 
 	// statically or not, check for duplicated entry, and remove it first if so
 	mutex_lock(&susfs_mutex_lock_sus_kstat);
-	hash_for_each_possible_safe(SUS_KSTAT_HLIST, tmp_entry, tmp_hlist_node,
-				    node, info.target_ino) {
+	// full-table walk: pathname may have moved to another bucket when ino changed
+	hash_for_each_safe(SUS_KSTAT_HLIST, bkt, tmp_hlist_node, tmp_entry, node) {
 		if (!strcmp(tmp_entry->info.target_pathname,
 			    info.target_pathname)) {
 			info.err = susfs_mark_inode_sus_kstat(
@@ -930,12 +931,15 @@ void susfs_add_open_redirect(void __user **user_info)
 {
 	struct st_susfs_open_redirect info = { 0 };
 	struct st_susfs_open_redirect_hlist *new_entry_target,
-		*new_entry_redirected, *tmp_entry_target, *tmp_entry_redirected;
+		*new_entry_redirected, *tmp_entry;
+	struct st_susfs_open_redirect_hlist *free_fwd = NULL;
+	struct st_susfs_open_redirect_hlist *free_rev_new = NULL;
+	struct st_susfs_open_redirect_hlist *free_rev_old = NULL;
 	struct hlist_node *tmp_hlist_node;
 	struct path target_path, redirected_path;
 	struct inode *target_inode, *redirected_inode;
-	bool is_first_dup_found = false;
-	bool is_second_dup_found = false;
+	const char *old_rev_key = NULL;
+	int bkt;
 
 	if (copy_from_user(&info,
 			   (struct st_susfs_open_redirect __user *)*user_info,
@@ -1036,11 +1040,12 @@ void susfs_add_open_redirect(void __user **user_info)
 
 	// check for existing entries, delete it first if so
 	mutex_lock(&susfs_mutex_lock_open_redirect);
-	hash_for_each_possible_safe(OPEN_REDIRECT_HLIST, tmp_entry_target,
-				    tmp_hlist_node, node, target_inode->i_ino) {
-		if (!strcmp(tmp_entry_target->info.target_pathname,
+	// full-table walk: pathname may live in another bucket when ino changed
+	hash_for_each_safe(OPEN_REDIRECT_HLIST, bkt, tmp_hlist_node, tmp_entry,
+			   node) {
+		if (!strcmp(tmp_entry->info.target_pathname,
 			    info.target_pathname)) {
-			if (tmp_entry_target->reversed_lookup_only) {
+			if (tmp_entry->reversed_lookup_only) {
 				SUSFS_LOGE(
 					"duplicated '%s' cannot be removed/added because it is used for reversed lookup only\n",
 					info.target_pathname);
@@ -1050,70 +1055,51 @@ void susfs_add_open_redirect(void __user **user_info)
 				kfree(new_entry_target);
 				goto out_path_put_target_path;
 			}
-			is_first_dup_found = true;
-			hash_del_rcu(&tmp_entry_target->node);
+			free_fwd = tmp_entry;
+			old_rev_key = tmp_entry->info.redirected_pathname;
+			hash_del_rcu(&tmp_entry->node);
 			break;
 		}
 	}
 
-	if (is_first_dup_found) {
-		hash_for_each_possible_safe(OPEN_REDIRECT_HLIST,
-					    tmp_entry_redirected,
-					    tmp_hlist_node, node,
-					    redirected_inode->i_ino) {
-			if (!strcmp(tmp_entry_redirected->info.target_pathname,
-				    info.redirected_pathname)) {
-				is_second_dup_found = true;
-				hash_del_rcu(&tmp_entry_redirected->node);
+	/*
+	 * Always drop reverse entries that would collide with this add:
+	 * reverse for the new redirect path (orphan or replace), and
+	 * reverse for the previous redirect path when the forward is replaced.
+	 */
+	hash_for_each_safe(OPEN_REDIRECT_HLIST, bkt, tmp_hlist_node, tmp_entry,
+			   node) {
+		if (!tmp_entry->reversed_lookup_only)
+			continue;
+		if (!strcmp(tmp_entry->info.target_pathname,
+			    info.redirected_pathname)) {
+			free_rev_new = tmp_entry;
+			hash_del_rcu(&tmp_entry->node);
+			break;
+		}
+	}
+	if (old_rev_key && strcmp(old_rev_key, info.redirected_pathname)) {
+		hash_for_each_safe(OPEN_REDIRECT_HLIST, bkt, tmp_hlist_node,
+				   tmp_entry, node) {
+			if (!tmp_entry->reversed_lookup_only)
+				continue;
+			if (!strcmp(tmp_entry->info.target_pathname,
+				    old_rev_key)) {
+				free_rev_old = tmp_entry;
+				hash_del_rcu(&tmp_entry->node);
 				break;
 			}
 		}
-		SUSFS_LOGI(
-			"target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
-			new_entry_target->info.target_pathname,
-			new_entry_target->info.redirected_pathname,
-			new_entry_target->target_ino,
-			new_entry_target->redirected_ino,
-			new_entry_target->target_dev,
-			new_entry_target->redirected_dev,
-			new_entry_target->info.uid_scheme,
-			new_entry_target->reversed_lookup_only,
-			new_entry_target->spoofed_mnt_id);
-		SUSFS_LOGI(
-			"target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
-			new_entry_redirected->info.target_pathname,
-			new_entry_redirected->info.redirected_pathname,
-			new_entry_redirected->target_ino,
-			new_entry_redirected->redirected_ino,
-			new_entry_redirected->target_dev,
-			new_entry_redirected->redirected_dev,
-			new_entry_redirected->info.uid_scheme,
-			new_entry_redirected->reversed_lookup_only,
-			new_entry_redirected->spoofed_mnt_id);
-		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node,
-			     new_entry_target->target_ino);
-		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node,
-			     new_entry_redirected->target_ino);
-		// we need to mark both target and redirected path inode just for spoofing readlink as well
-		set_bit(AS_FLAGS_OPEN_REDIRECT,
-			&redirected_inode->i_mapping->flags);
-		set_bit(AS_FLAGS_OPEN_REDIRECT,
-			&target_inode->i_mapping->flags);
-		mutex_unlock(&susfs_mutex_lock_open_redirect);
-		synchronize_srcu(&susfs_srcu_open_redirect);
-		if (is_second_dup_found)
-			kfree(tmp_entry_redirected);
-		kfree(tmp_entry_target);
-		info.err = 0;
-		goto out_path_put_target_path;
 	}
 
 	SUSFS_LOGI(
 		"target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
 		new_entry_target->info.target_pathname,
 		new_entry_target->info.redirected_pathname,
-		new_entry_target->target_ino, new_entry_target->redirected_ino,
-		new_entry_target->target_dev, new_entry_target->redirected_dev,
+		new_entry_target->target_ino,
+		new_entry_target->redirected_ino,
+		new_entry_target->target_dev,
+		new_entry_target->redirected_dev,
 		new_entry_target->info.uid_scheme,
 		new_entry_target->reversed_lookup_only,
 		new_entry_target->spoofed_mnt_id);
@@ -1133,9 +1119,18 @@ void susfs_add_open_redirect(void __user **user_info)
 	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node,
 		     new_entry_redirected->target_ino);
 	// we need to mark both target and redirected path inode just for spoofing readlink as well
-	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
-	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
+	set_bit(AS_FLAGS_OPEN_REDIRECT,
+		&redirected_inode->i_mapping->flags);
+	set_bit(AS_FLAGS_OPEN_REDIRECT,
+		&target_inode->i_mapping->flags);
 	mutex_unlock(&susfs_mutex_lock_open_redirect);
+	synchronize_srcu(&susfs_srcu_open_redirect);
+	if (free_fwd)
+		kfree(free_fwd);
+	if (free_rev_new)
+		kfree(free_rev_new);
+	if (free_rev_old)
+		kfree(free_rev_old);
 	info.err = 0;
 
 out_path_put_target_path:
@@ -1723,6 +1718,10 @@ static int susfs_sdcard_monitor_fn(void *data)
 
 	if (!cred) {
 		SUSFS_LOGE("failed to prepare creds!\n");
+		if (static_key_enabled(
+			    &susfs_is_sdcard_android_data_not_decrypted))
+			static_branch_disable(
+				&susfs_is_sdcard_android_data_not_decrypted);
 		return -ENOMEM;
 	}
 
@@ -1731,6 +1730,10 @@ static int susfs_sdcard_monitor_fn(void *data)
 
 	if (!susfs_is_current_ksu_domain()) {
 		SUSFS_LOGE("domain is not ksu, exiting the thread\n");
+		if (static_key_enabled(
+			    &susfs_is_sdcard_android_data_not_decrypted))
+			static_branch_disable(
+				&susfs_is_sdcard_android_data_not_decrypted);
 		return -EINVAL;
 	}
 
@@ -1745,7 +1748,14 @@ static int susfs_sdcard_monitor_fn(void *data)
 	g = fsnotify_alloc_group(&fsnotify_ops);
 #endif
 	if (IS_ERR(g)) {
-		return PTR_ERR(g);
+		int err = PTR_ERR(g);
+
+		g = NULL;
+		if (static_key_enabled(
+			    &susfs_is_sdcard_android_data_not_decrypted))
+			static_branch_disable(
+				&susfs_is_sdcard_android_data_not_decrypted);
+		return err;
 	}
 
 	ret = watch_one_dir(&g_watch);
