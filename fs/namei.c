@@ -1623,8 +1623,19 @@ struct dentry *lookup_one_qstr_excl(const struct qstr *name,
 	bool found_sus_path = false;
 #endif
 
-	if (dentry)
+	if (dentry) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+		/*
+		 * Cached positive dentry for a SUS_PATH name must not be handed
+		 * out (unlink/rmdir would operate on the real file).
+		 */
+		if (dentry->d_inode && susfs_is_inode_sus_path(dentry->d_inode)) {
+			dput(dentry);
+			return ERR_PTR(-ENOENT);
+		}
+#endif
 		return dentry;
+	}
 
 	/* Don't create child dentry for a dead directory. */
 	if (unlikely(IS_DEADDIR(dir)))
@@ -1665,6 +1676,14 @@ retry:
 		dentry = d_alloc(base, &susfs_fake_qstr_name);
 		found_sus_path = true;
 		goto retry;
+	}
+	/*
+	 * After substituting the fake qstr, a real file may occupy that name.
+	 * Never return it as the result of a hidden-path lookup.
+	 */
+	if (found_sus_path && dentry && !IS_ERR(dentry) && dentry->d_inode) {
+		dput(dentry);
+		return ERR_PTR(-ENOENT);
 	}
 #endif
 	return dentry;
@@ -1804,6 +1823,16 @@ retry:
 		dentry = d_alloc_parallel(dir, &susfs_fake_qstr_name, &wq);
 		found_sus_path = true;
 		goto retry;
+	}
+	/*
+	 * Fake name may collide with a real file - never return it as the
+	 * result of a hidden-path lookup.
+	 */
+	if (found_sus_path && dentry && !IS_ERR(dentry) && dentry->d_inode) {
+		if (d_in_lookup(dentry))
+			d_lookup_done(dentry);
+		dput(dentry);
+		return ERR_PTR(-ENOENT);
 	}
 #endif
 	return dentry;
@@ -3575,25 +3604,20 @@ skip_orig_flow:
 		dput(dentry);
 		dentry = NULL;
 	}
-	if (dentry->d_inode) {
-		/* Cached positive dentry: will open in f_op->open */
-		return dentry;
-	}
-
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	/*
-	 * This dentry is the synthetic negative placeholder that stands in for a
-	 * SUS_PATH-hidden name (see susfs_fake_qstr_name).  Everything below
-	 * treats a negative dentry as a free slot - it may call ->atomic_open()
-	 * or ->create(), or re-enter ->lookup() - and for the placeholder that
-	 * would materialise the hidden name on disk under the fake qstr.  Report
-	 * the path as missing instead.
+	 * When found_sus_path is set, dentry may be a real file that occupies
+	 * the fake qstr - never open it for a hidden name.  Report missing.
 	 */
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	if (unlikely(found_sus_path)) {
 		error = -ENOENT;
 		goto out_dput;
 	}
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#endif
+	if (dentry->d_inode) {
+		/* Cached positive dentry: will open in f_op->open */
+		return dentry;
+	}
 
 	/*
 	 * Checking write permission is tricky, bacuse we don't know if we are
