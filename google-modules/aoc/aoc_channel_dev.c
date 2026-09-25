@@ -839,6 +839,12 @@ static int aocc_remove(struct aoc_service_dev *dev)
 			/* Disable shared memory transport doorbell. */
 			if (entry == sh_mem_doorbell_channel_device) {
 				sh_mem_doorbell_channel_device = NULL;
+				/*
+				 * The work item is embedded in entry and the
+				 * handler can still schedule it, so drain it
+				 * before entry is released.
+				 */
+				cancel_work_sync(&entry->sh_mem_doorbell_work);
 			}
 			entry->sh_mem_doorbell_available = false;
 
