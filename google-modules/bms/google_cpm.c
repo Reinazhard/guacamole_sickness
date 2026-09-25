@@ -4762,9 +4762,26 @@ static int google_cpm_remove(struct platform_device *pdev)
 	if (!gcpm)
 		return 0;
 
+	/*
+	 * gcpm_init_mdis() runs from init_work and is what registers the MDIS
+	 * cooling device and creates the mdis election, so the work items have
+	 * to be stopped before anything they reach through gcpm is withdrawn.
+	 */
+	cancel_delayed_work_sync(&gcpm->init_work);
+	cancel_delayed_work_sync(&gcpm->select_work);
+	cancel_delayed_work_sync(&gcpm->pps_work);
+	cancel_delayed_work_sync(&gcpm->fcc_retry_work);
+	cancel_delayed_work_sync(&gcpm->cop_warn_work);
+
+	if (gcpm->thermal_device.tcd)
+		thermal_cooling_device_unregister(gcpm->thermal_device.tcd);
+
 	power_supply_unreg_notifier(&gcpm->chg_nb);
 
 	gvotable_destroy_election(gcpm->dc_fcc_votable);
+	gvotable_destroy_election(gcpm->mdis_votable);
+	gvotable_destroy_election(gcpm->cp_votable);
+	gvotable_destroy_election(gcpm->dc_chg_avail_votable);
 
 	for (i = 0; i < gcpm->chg_psy_count; i++) {
 		if (!gcpm->chg_psy_avail[i])
