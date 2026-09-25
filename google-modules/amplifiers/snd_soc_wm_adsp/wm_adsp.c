@@ -617,6 +617,7 @@ struct wm_coeff_ctl {
 	struct soc_bytes_ext bytes_ext;
 	unsigned int flags;
 	snd_ctl_elem_type_t type;
+	struct work_struct work;
 };
 
 static const char *wm_adsp_mem_region_name(unsigned int type)
@@ -1253,12 +1254,6 @@ static int wm_coeff_get_acked(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-struct wmfw_ctl_work {
-	struct wm_adsp *dsp;
-	struct wm_coeff_ctl *ctl;
-	struct work_struct work;
-};
-
 static unsigned int wmfw_convert_flags(unsigned int in, unsigned int len)
 {
 	unsigned int out, rd, wr, vol;
@@ -1407,16 +1402,16 @@ static void wm_adsp_signal_event_controls(struct wm_adsp *dsp,
 
 static void wm_adsp_ctl_work(struct work_struct *work)
 {
-	struct wmfw_ctl_work *ctl_work = container_of(work,
-						      struct wmfw_ctl_work,
-						      work);
+	struct wm_coeff_ctl *ctl = container_of(work, struct wm_coeff_ctl,
+						work);
 
-	wmfw_add_ctl(ctl_work->dsp, ctl_work->ctl);
-	kfree(ctl_work);
+	wmfw_add_ctl(ctl->dsp, ctl);
 }
 
 static void wm_adsp_free_ctl_blk(struct wm_coeff_ctl *ctl)
 {
+	cancel_work_sync(&ctl->work);
+
 	kfree(ctl->cache);
 	kfree(ctl->name);
 	kfree(ctl->subname);
@@ -1430,7 +1425,6 @@ static int wm_adsp_create_control(struct wm_adsp *dsp,
 				  unsigned int flags, snd_ctl_elem_type_t type)
 {
 	struct wm_coeff_ctl *ctl;
-	struct wmfw_ctl_work *ctl_work;
 	char name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 	const char *region_name;
 	int ret;
@@ -1521,22 +1515,11 @@ static int wm_adsp_create_control(struct wm_adsp *dsp,
 	if (flags & WMFW_CTL_FLAG_SYS)
 		return 0;
 
-	ctl_work = kzalloc(sizeof(*ctl_work), GFP_KERNEL);
-	if (!ctl_work) {
-		ret = -ENOMEM;
-		goto err_list_del;
-	}
-
-	ctl_work->dsp = dsp;
-	ctl_work->ctl = ctl;
-	INIT_WORK(&ctl_work->work, wm_adsp_ctl_work);
-	schedule_work(&ctl_work->work);
+	INIT_WORK(&ctl->work, wm_adsp_ctl_work);
+	schedule_work(&ctl->work);
 
 	return 0;
 
-err_list_del:
-	list_del(&ctl->list);
-	kfree(ctl->cache);
 err_ctl_subname:
 	kfree(ctl->subname);
 err_ctl_name:
