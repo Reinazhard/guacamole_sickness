@@ -970,8 +970,8 @@ static void dsim_reg_set_porch(u32 id, struct dsim_reg_config *config)
 		dsim_reg_set_vfp_detail(id,
 				DSIM_CMD_ALLOW_VALUE,
 				DSIM_STABLE_VFP_VALUE);
-		dsim_reg_set_hporch(id, config->p_timing.hfp,
-				config->p_timing.hbp);
+		dsim_reg_set_hporch(id, config->p_timing.hbp,
+				config->p_timing.hfp);
 		dsim_reg_set_sync_area(id, config->p_timing.vsa,
 				config->p_timing.hsa);
 	}
