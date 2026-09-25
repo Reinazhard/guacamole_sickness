@@ -216,7 +216,6 @@ static int dhdpcie_bus_dmaxfer_req(struct  dhd_bus *bus,
 	uint32 len, uint32 srcdelay, uint32 destdelay,
 	uint32 d11_lpbk, uint32 core_num, uint32 wait,
 	uint32 mem_addr);
-static uint serialized_backplane_access(dhd_bus_t* bus, uint addr, uint size, uint* val, bool read);
 static int dhdpcie_bus_download_state(dhd_bus_t *bus, bool enter);
 static int _dhdpcie_download_firmware(struct dhd_bus *bus);
 static int dhdpcie_download_firmware(dhd_bus_t *bus, osl_t *osh);
@@ -7924,7 +7923,7 @@ dhdpcie_set_dma_ring_indices(dhd_pub_t *dhd, int32 int_val)
  * dhd_pcie_backplane_access_[un]lock() as needed (e.g. if serialization is not
  * needed implementation might be empty)
  */
-static uint
+uint
 serialized_backplane_access(dhd_bus_t *bus, uint addr, uint size, uint *val, bool read)
 {
 	uint ret;
