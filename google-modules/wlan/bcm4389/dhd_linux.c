@@ -9108,6 +9108,9 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 #ifndef BCMDBUS
 	dhd->thr_dpc_ctl.thr_pid = DHD_PID_KT_TL_INVALID;
 	dhd->thr_wdt_ctl.thr_pid = DHD_PID_KT_INVALID;
+#ifdef DHD_PCIE_RUNTIMEPM
+	dhd->thr_rpm_ctl.thr_pid = DHD_PID_KT_INVALID;
+#endif /* DHD_PCIE_RUNTIMEPM */
 #ifdef DHD_WET
 	dhd->pub.wet_info = dhd_get_wet_info(&dhd->pub);
 #endif /* DHD_WET */
@@ -9363,6 +9366,13 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 	init_timer_compat(&dhd->timer, dhd_watchdog, dhd);
 	dhd->default_wd_interval = dhd_watchdog_ms;
 
+	/*
+	 * Mark the threads as created before the first one is started: the
+	 * detach path tests each thread's own thr_pid, so it can still stop
+	 * the threads that did start when a later PROC_START fails.
+	 */
+	dhd_state |= DHD_ATTACH_STATE_THREADS_CREATED;
+
 	if (dhd_watchdog_prio >= 0) {
 		/* Initialize watchdog thread */
 		PROC_START(dhd_watchdog_thread, dhd, &dhd->thr_wdt_ctl, 0, "dhd_watchdog_thread");
@@ -9379,7 +9389,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 	init_timer_compat(&dhd->rpm_timer, dhd_runtimepm, dhd);
 	dhd->rpm_timer_valid = FALSE;
 
-	dhd->thr_rpm_ctl.thr_pid = DHD_PID_KT_INVALID;
 	PROC_START(dhd_rpm_state_thread, dhd, &dhd->thr_rpm_ctl, 0, "dhd_rpm_state_thread");
 	if (dhd->thr_rpm_ctl.thr_pid < 0) {
 		goto fail;
@@ -9419,8 +9428,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 		}
 	}
 #endif /* BCMDBUS */
-
-	dhd_state |= DHD_ATTACH_STATE_THREADS_CREATED;
 
 #if defined(CONFIG_PM_SLEEP)
 	if (!dhd_pm_notifier_registered) {
