@@ -1863,6 +1863,10 @@ static int stmvl53l1_set_tuning(struct stmvl53l1_data *data, int key,
 	if (key & ~0xffff)
 		return -EINVAL;
 
+	if (key == VL53L1_TUNINGPARM_HIST_MERGE_MAX_SIZE &&
+			(value < 1 || value > VL53L1_BIN_REC_SIZE))
+		return -EINVAL;
+
 	dev_dbg(dev, "trying to set %d with key %d\n", value, key);
 
 	rc = VL53L1_SetTuningParameter(&data->stdev, key, value);
