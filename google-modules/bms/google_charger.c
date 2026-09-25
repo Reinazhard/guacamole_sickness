@@ -6472,7 +6472,20 @@ static int google_charger_remove(struct platform_device *pdev)
 	struct chg_drv *chg_drv = (struct chg_drv *)platform_get_drvdata(pdev);
 
 	if (chg_drv) {
+		/*
+		 * Quiesce the work items and close their re-arm sources before
+		 * releasing anything they dereference. chg_work() re-arms
+		 * itself, chg_psy_work() and the wakeup alarm both re-arm
+		 * chg_work(), and chg_work() arms bd_work(), so every one of
+		 * them has to be cancelled synchronously here.
+		 */
+		chg_drv->init_done = false;
 		power_supply_unreg_notifier(&chg_drv->psy_nb);
+		alarm_cancel(&chg_drv->chg_wakeup_alarm);
+		cancel_work_sync(&chg_drv->chg_psy_work);
+		cancel_delayed_work_sync(&chg_drv->chg_work);
+		cancel_delayed_work_sync(&chg_drv->bd_work);
+		cancel_delayed_work_sync(&chg_drv->init_work);
 
 		if (chg_drv->chg_term.enable) {
 			alarm_cancel(&chg_drv->chg_term.alarm);
@@ -6495,8 +6508,6 @@ static int google_charger_remove(struct platform_device *pdev)
 		wakeup_source_unregister(chg_drv->bd_ws);
 		wakeup_source_unregister(chg_drv->chg_ws);
 		wakeup_source_unregister(chg_drv->pps_data.pps_ws);
-
-		alarm_try_to_cancel(&chg_drv->chg_wakeup_alarm);
 
 		if (chg_drv->pps_data.log)
 			logbuffer_unregister(chg_drv->pps_data.log);
