@@ -4795,6 +4795,13 @@ dhd_prot_reset(dhd_pub_t *dhd)
 	 * so when stopping bus, flowrings shall be deleted
 	 */
 	if (dhd->flow_rings_inited) {
+		/* The DPC kthread walks dhd->flow_ring_table through
+		 * DHD_FLOW_RING(), which does no NULL test, and
+		 * dhd_flow_rings_deinit() leaves max_tx_flowid set, so the
+		 * DHD_FLOW_RING_INV_ID() guard still accepts the flowid after
+		 * the table is freed. Quiesce the DPC before the table goes.
+		 */
+		dhd_dpc_kill(dhd);
 		dhd_flow_rings_deinit(dhd);
 	}
 
