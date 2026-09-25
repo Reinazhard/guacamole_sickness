@@ -1083,6 +1083,8 @@ static int add_transaction_to_queue_locked(struct lwis_client *client,
 		list_add(&transaction->process_queue_node, &client->transaction_process_queue);
 		ret = lwis_bus_manager_add_high_priority_client(client);
 		if (ret) {
+			list_del(&transaction->process_queue_node);
+			INIT_LIST_HEAD(&transaction->process_queue_node);
 			dev_err(client->lwis_dev->dev, "Failed to add high priority transaction");
 			return ret;
 		}
@@ -1103,10 +1105,8 @@ static int queue_transaction_locked(struct lwis_client *client,
 
 	if (transaction->queue_immediately) {
 		ret = add_transaction_to_queue_locked(client, transaction);
-		if (ret) {
-			kfree(transaction->resp);
+		if (ret)
 			return ret;
-		}
 		lwis_queue_device_worker(client);
 	} else if (lwis_triggered_by_condition(transaction)) {
 		add_pending_transaction(client, transaction);
