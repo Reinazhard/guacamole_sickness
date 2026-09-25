@@ -58,10 +58,10 @@ static void nl_data_ready(struct sk_buff *__skb)
 	struct nlmsghdr *nlh;
 	char str[100];
 
-	skb = skb_get(__skb);
-	if (skb->len < NLMSG_SPACE(0))
+	if (__skb->len < NLMSG_SPACE(0))
 		return;
 
+	skb = skb_get(__skb);
 	nlh = nlmsg_hdr(skb);
 
 	memcpy(str, NLMSG_DATA(nlh), sizeof(str));
