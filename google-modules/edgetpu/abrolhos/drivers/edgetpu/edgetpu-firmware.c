@@ -854,7 +854,15 @@ void edgetpu_firmware_destroy(struct edgetpu_dev *etdev)
 
 	if (!et_fw)
 		return;
-	edgetpu_sw_wdt_destroy(etdev);
+	/*
+	 * Stop the heartbeat, but do not free the object here: the KCI and
+	 * reverse-KCI workers are still live and can reach
+	 * edgetpu_watchdog_bite() until edgetpu_device_remove() cancels
+	 * them, so the free belongs there.  The stop cannot be deferred
+	 * with it either -- the heartbeat pings the firmware through the
+	 * KCI, which edgetpu_mailbox_remove_all() is about to tear down.
+	 */
+	edgetpu_sw_wdt_stop(etdev);
 
 	if (et_fw->p) {
 		chip_fw = et_fw->p->chip_fw;

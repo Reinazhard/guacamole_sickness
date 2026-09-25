@@ -60,7 +60,15 @@ static void sw_wdt_modify_rate(struct edgetpu_sw_wdt *wdt, unsigned long rate)
 
 void edgetpu_watchdog_bite(struct edgetpu_dev *etdev, bool reset)
 {
-	if (!etdev->etdev_sw_wdt)
+	struct edgetpu_sw_wdt *wdt = READ_ONCE(etdev->etdev_sw_wdt);
+
+	/*
+	 * Validate the value that was read, and use only that value:
+	 * edgetpu_sw_wdt_destroy() clears the field before it frees the
+	 * object, so re-reading it after the check can observe NULL and
+	 * dereference that instead.
+	 */
+	if (!wdt)
 		return;
 	/*
 	 * Stop sw wdog delayed worker, to reduce chance this explicit call
@@ -69,10 +77,10 @@ void edgetpu_watchdog_bite(struct edgetpu_dev *etdev, bool reset)
 	 * and need a chip reset, hopefully the P-channel reset will fail
 	 * and the bigger hammer chip reset will kick in at that point.
 	 */
-	cancel_delayed_work(&etdev->etdev_sw_wdt->dwork);
+	cancel_delayed_work(&wdt->dwork);
 	etdev_err(etdev, "watchdog %s", reset ? "reset" : "restart");
 	etdev->reset_needed = reset;
-	schedule_work(&etdev->etdev_sw_wdt->et_action_work.work);
+	schedule_work(&wdt->et_action_work.work);
 }
 
 /*
