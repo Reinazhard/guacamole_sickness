@@ -792,7 +792,7 @@ static void eh_abort_incomplete_descriptors(struct eh_device *eh_dev)
 	}
 }
 
-static int __noreturn eh_comp_thread(void *data)
+static int eh_comp_thread(void *data)
 {
 	struct eh_device *eh_dev = data;
 
@@ -811,7 +811,7 @@ static int __noreturn eh_comp_thread(void *data)
 	 */
 	current->flags |= PF_NOFREEZE;
 
-	while (1) {
+	while (!kthread_should_stop()) {
 		int ret;
 
 #ifdef CONFIG_SOC_ZUMA
@@ -830,7 +830,10 @@ static int __noreturn eh_comp_thread(void *data)
 					       PM_QOS_DEFAULT_VALUE);
 		wait_event(eh_dev->comp_wq,
 			   atomic_read(&eh_dev->nr_request) ||
-			   !sw_fifo_empty(&eh_dev->sw_fifo));
+			   !sw_fifo_empty(&eh_dev->sw_fifo) ||
+			   kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req, 100);
 #ifdef CONFIG_SOC_ZUMA
 		exynos_update_ip_idle_status(eh_dev->ip_index, 0);
@@ -859,6 +862,7 @@ static int __noreturn eh_comp_thread(void *data)
 #ifdef CONFIG_SOC_ZUMA
 	exynos_update_ip_idle_status(eh_dev->ip_index, 1);
 #endif
+	return 0;
 }
 
 /* Initialize SW related stuff */
@@ -1290,7 +1294,8 @@ struct eh_device *eh_create(eh_cb_fn comp, eh_drain_fn drain, void *drain_priv)
 	if (!list_empty(&eh_dev_list)) {
 		ret = list_first_entry(&eh_dev_list, struct eh_device,
 				       eh_dev_list);
-		list_del(&ret->eh_dev_list);
+		/* _init, so a later removal of the same node is a no-op */
+		list_del_init(&ret->eh_dev_list);
 	}
 	spin_unlock(&eh_dev_list_lock);
 	if (IS_ERR(ret))
@@ -1413,10 +1418,28 @@ static int eh_of_remove(struct platform_device *pdev)
 {
 	struct eh_device *eh_dev = platform_get_drvdata(pdev);
 
+	/*
+	 * Undo eh_sw_init() in reverse: while the device is still
+	 * published the IRQs and the kthread can reach it, and the thread
+	 * has to be stopped before anything it touches is released.
+	 */
+	spin_lock(&eh_dev_list_lock);
+	list_del_init(&eh_dev->eh_dev_list);
+	spin_unlock(&eh_dev_list_lock);
+
+	wake_up(&eh_dev->comp_wq);
+	kthread_stop(eh_dev->comp_thread);
+	cpu_latency_qos_remove_request(&eh_dev->pm_qos_req);
+	free_irq(eh_dev->error_irq, eh_dev);
+	free_irq(eh_dev->comp_irq, eh_dev);
+	eh_hw_deinit(eh_dev);
+
 	clk_disable_unprepare(eh_dev->clk);
 	clk_put(eh_dev->clk);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	kfree(eh_dev);
 	return 0;
 }
 
