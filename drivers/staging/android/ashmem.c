@@ -241,21 +241,26 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 
 static int set_prot_mask(struct ashmem_area *asma, unsigned long prot)
 {
-	/* the user can only remove, not add, protection bits */
-	if (unlikely((READ_ONCE(asma->prot_mask) & prot) != prot))
-		return -EINVAL;
+	unsigned long old_prot;
 
 	/* does the application expect PROT_READ to imply PROT_EXEC? */
 	if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
 		prot |= PROT_EXEC;
 
-	WRITE_ONCE(asma->prot_mask, prot);
+	do {
+		old_prot = READ_ONCE(asma->prot_mask);
+		/* the user can only remove, not add, protection bits */
+		if (unlikely((old_prot & prot) != prot))
+			return -EINVAL;
+	} while (cmpxchg(&asma->prot_mask, old_prot, prot) != old_prot);
+
 	return 0;
 }
 
 static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct ashmem_area *asma = file->private_data;
+	int ret = 0;
 
 	switch (cmd) {
 	case ASHMEM_SET_NAME:
@@ -263,11 +268,16 @@ static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case ASHMEM_GET_NAME:
 		return 0;
 	case ASHMEM_SET_SIZE:
-		if (READ_ONCE(asma->file))
+		if (unlikely(READ_ONCE(asma->file)))
 			return -EINVAL;
 
-		WRITE_ONCE(asma->size, (size_t)arg);
-		return 0;
+		mutex_lock(&asma->mmap_lock);
+		if (likely(!asma->file))
+			WRITE_ONCE(asma->size, (size_t)arg);
+		else
+			ret = -EINVAL;
+		mutex_unlock(&asma->mmap_lock);
+		return ret;
 	case ASHMEM_GET_SIZE:
 		return READ_ONCE(asma->size);
 	case ASHMEM_SET_PROT_MASK:
