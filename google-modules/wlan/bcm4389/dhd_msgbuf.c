@@ -4704,6 +4704,13 @@ dhd_prot_reset(dhd_pub_t *dhd)
 
 	dhd->ring_attached = FALSE;
 
+	/* The DPC kthread parses a D2H ring outside ring_lock -- it drops the
+	 * lock in dhd_prot_get_read_addr()'s caller and then reads the message
+	 * the address points at -- so the ring buffers and their rd/wr/curr_rd
+	 * words must not be wiped underneath it.
+	 */
+	dhd_dpc_kill(dhd);
+
 	dhd_prot_flowrings_pool_reset(dhd);
 
 	/* Reset Common MsgBuf Rings */
