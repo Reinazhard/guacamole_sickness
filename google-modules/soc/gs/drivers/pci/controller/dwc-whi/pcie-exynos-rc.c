@@ -5042,6 +5042,16 @@ int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg)
 
 	if (pp) {
 		exynos_pcie->event_reg = NULL;
+		/*
+		 * Drain the event works after withdrawing the registration: any
+		 * invocation queued from here on sees event_reg == NULL, and the
+		 * cancels make sure an invocation that is already inside
+		 * exynos_pcie_notify_callback() has returned before the client is
+		 * told deregistration is done and may free its state.
+		 */
+		cancel_delayed_work_sync(&exynos_pcie->dislink_work);
+		cancel_delayed_work_sync(&exynos_pcie->cpl_timeout_work);
+		cancel_delayed_work_sync(&exynos_pcie->link_recovery_fail_work);
 		dev_info(pci->dev, "Event is deregistered for RC %d\n", exynos_pcie->ch_num);
 	} else {
 		pr_err("PCIe: did not find RC for pci endpoint device\n");
