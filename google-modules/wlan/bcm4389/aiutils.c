@@ -491,13 +491,21 @@ error:
 /* This function changes the logical "focus" to the indicated core.
  * Return the current core's virtual address.
  */
+/*
+ * The core switch itself.  @locked says the caller already holds
+ * sii->coreidx_lock, in which case the shared-state updates below
+ * must not take it again -- see ai_corereg(), which holds it across
+ * its whole switch / read-modify-write / restore sequence.
+ */
 static volatile void *
-BCMPOSTTRAPFN(_ai_setcoreidx)(si_t *sih, uint coreidx, uint use_wrapn)
+BCMPOSTTRAPFN(__ai_setcoreidx)(si_t *sih, uint coreidx, uint use_wrapn,
+			       bool locked)
 {
 	si_info_t *sii = SI_INFO(sih);
 	si_cores_info_t *cores_info = (si_cores_info_t *)sii->cores_info;
 	uint32 addr, wrap, wrap2, wrap3;
 	volatile void *regs;
+	unsigned long flags = 0;
 
 	if (coreidx >= MIN(sii->numcores, SI_MAXCORES))
 		return (NULL);
@@ -520,6 +528,17 @@ BCMPOSTTRAPFN(_ai_setcoreidx)(si_t *sih, uint coreidx, uint use_wrapn)
 		ASSERT((sii->intrsenabled_fn == NULL) ||
 			!(*(sii)->intrsenabled_fn)((sii)->intr_arg));
 	}
+
+	/*
+	 * The PCIe BAR0 window registers are shared: two contexts that
+	 * switch cores concurrently each reprogram cfg 0x80 / cfg 0x70
+	 * and then perform their register access through the other's
+	 * window.  Hold the lock across the switch and the sii->curidx
+	 * store below.  The SI_BUS branch is deliberately left outside
+	 * it -- it calls REG_MAP(), which can sleep.
+	 */
+	if (!locked && BUSTYPE(sih->bustype) == PCI_BUS)
+		flags = osl_spin_lock_irq(sii->coreidx_lock);
 
 	switch (BUSTYPE(sih->bustype)) {
 	case SI_BUS:
@@ -651,13 +670,26 @@ BCMPOSTTRAPFN(_ai_setcoreidx)(si_t *sih, uint coreidx, uint use_wrapn)
 		break;
 	}
 
+	/* non-PCI buses have no window registers, but curidx is shared */
+	if (!locked && BUSTYPE(sih->bustype) != PCI_BUS)
+		flags = osl_spin_lock_irq(sii->coreidx_lock);
+
 	sii->curidx = coreidx;
+
+	if (!locked)
+		osl_spin_unlock_irq(sii->coreidx_lock, flags);
 
 	if (regs) {
 		SI_MSG_DBG_REG(("%s: %d\n", __FUNCTION__, coreidx));
 	}
 
 	return regs;
+}
+
+static volatile void *
+BCMPOSTTRAPFN(_ai_setcoreidx)(si_t *sih, uint coreidx, uint use_wrapn)
+{
+	return __ai_setcoreidx(sih, coreidx, use_wrapn, FALSE);
 }
 
 volatile void *
@@ -954,6 +986,7 @@ BCMPOSTTRAPFN(ai_corereg)(si_t *sih, uint coreidx, uint regoff, uint mask, uint 
 	uint w;
 	bcm_int_bitmask_t intr_val;
 	bool fast = FALSE;
+	unsigned long flags = 0;
 	si_info_t *sii = SI_INFO(sih);
 	si_cores_info_t *cores_info = (si_cores_info_t *)sii->cores_info;
 
@@ -1000,13 +1033,23 @@ BCMPOSTTRAPFN(ai_corereg)(si_t *sih, uint coreidx, uint regoff, uint mask, uint 
 	}
 
 	if (!fast) {
+		/*
+		 * The switch, the read-modify-write and the readback are one
+		 * critical section: the window is only valid until another
+		 * context switches cores, and the lock is taken before
+		 * INTR_OFF() because the interrupt mask is written through
+		 * the same window.
+		 */
+		flags = osl_spin_lock_irq(sii->coreidx_lock);
+
 		INTR_OFF(sii, &intr_val);
 
 		/* save current core index */
 		origidx = si_coreidx(&sii->pub);
 
 		/* switch core */
-		r = (volatile uint32*) ((volatile uchar*) ai_setcoreidx(&sii->pub, coreidx) +
+		r = (volatile uint32*) ((volatile uchar*)
+			__ai_setcoreidx(&sii->pub, coreidx, 0, TRUE) +
 		               regoff);
 	}
 	ASSERT(r != NULL);
@@ -1023,9 +1066,11 @@ BCMPOSTTRAPFN(ai_corereg)(si_t *sih, uint coreidx, uint regoff, uint mask, uint 
 	if (!fast) {
 		/* restore core index */
 		if (origidx != coreidx)
-			ai_setcoreidx(&sii->pub, origidx);
+			__ai_setcoreidx(&sii->pub, origidx, 0, TRUE);
 
 		INTR_RESTORE(sii, &intr_val);
+
+		osl_spin_unlock_irq(sii->coreidx_lock, flags);
 	}
 
 	return (w);
@@ -1048,6 +1093,7 @@ ai_corereg_writeonly(si_t *sih, uint coreidx, uint regoff, uint mask, uint val)
 	uint w = 0;
 	bcm_int_bitmask_t intr_val;
 	bool fast = FALSE;
+	unsigned long flags = 0;
 	si_info_t *sii = SI_INFO(sih);
 	si_cores_info_t *cores_info = (si_cores_info_t *)sii->cores_info;
 
@@ -1094,13 +1140,23 @@ ai_corereg_writeonly(si_t *sih, uint coreidx, uint regoff, uint mask, uint val)
 	}
 
 	if (!fast) {
+		/*
+		 * The switch and the read-modify-write are one critical
+		 * section: the window is only valid until another context
+		 * switches cores, and the lock is taken before INTR_OFF()
+		 * because the interrupt mask is written through the same
+		 * window.
+		 */
+		flags = osl_spin_lock_irq(sii->coreidx_lock);
+
 		INTR_OFF(sii, &intr_val);
 
 		/* save current core index */
 		origidx = si_coreidx(&sii->pub);
 
 		/* switch core */
-		r = (volatile uint32*) ((volatile uchar*) ai_setcoreidx(&sii->pub, coreidx) +
+		r = (volatile uint32*) ((volatile uchar*)
+			__ai_setcoreidx(&sii->pub, coreidx, 0, TRUE) +
 		               regoff);
 	}
 	ASSERT(r != NULL);
@@ -1114,9 +1170,11 @@ ai_corereg_writeonly(si_t *sih, uint coreidx, uint regoff, uint mask, uint val)
 	if (!fast) {
 		/* restore core index */
 		if (origidx != coreidx)
-			ai_setcoreidx(&sii->pub, origidx);
+			__ai_setcoreidx(&sii->pub, origidx, 0, TRUE);
 
 		INTR_RESTORE(sii, &intr_val);
+
+		osl_spin_unlock_irq(sii->coreidx_lock, flags);
 	}
 
 	return (w);
