@@ -112,7 +112,7 @@ int sec_ts_wait_for_reset_done(struct sec_ts_data *ts)
 	    ts->probe_done == true) {
 		if (!completion_done(&ts->boot_completed) &&
 		    wait_for_completion_timeout(&ts->boot_completed,
-						msecs_to_jiffies(200) == 0))
+						msecs_to_jiffies(200)) == 0)
 			ret = -ETIME;
 	} else {
 		ret = sec_ts_wait_for_ready_with_count(ts,
