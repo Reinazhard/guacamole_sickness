@@ -733,6 +733,17 @@ gfspi_probe_clk_enable_failed:
 	gfspi_ioctl_clk_uninit(gf_dev);
 gfspi_probe_clk_init_failed:
 #endif
+	/*
+	 * Every path that reaches error_hw got here after
+	 * input_register_device() succeeded, so the input device is still
+	 * linked in input_dev_list and still has a sysfs node: it has to be
+	 * unregistered, not merely put.  Clearing the pointer keeps
+	 * error_input from putting it a second time.
+	 */
+	if (gf_dev->input) {
+		input_unregister_device(gf_dev->input);
+		gf_dev->input = NULL;
+	}
 
 error_input:
 	if (gf_dev->input != NULL)
