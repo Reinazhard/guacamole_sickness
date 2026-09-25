@@ -571,16 +571,6 @@ static int haptics_init(struct drv2624_data *drv2624)
 	int ret;
 
 	drv2624->vibrator_playing = false;
-	drv2624->led_dev.name = "vibrator";
-	drv2624->led_dev.max_brightness = LED_FULL;
-	drv2624->led_dev.brightness_set = vibrator_enable;
-
-	ret = devm_led_classdev_register(drv2624->dev, &drv2624->led_dev);
-	if (ret) {
-		dev_err(drv2624->dev,
-			"drv2624: fail to create led classdev\n");
-		return ret;
-	}
 
 	device_init_wakeup(drv2624->dev, false);
 	mutex_init(&drv2624->lock);
@@ -596,6 +586,18 @@ static int haptics_init(struct drv2624_data *drv2624)
 	INIT_WORK(&drv2624->vibrator_work, vibrator_work_routine);
 	INIT_WORK(&drv2624->work, drv2624_haptics_work);
 	INIT_WORK(&drv2624->stop_work, drv2624_haptics_stopwork);
+
+	drv2624->led_dev.name = "vibrator";
+	drv2624->led_dev.max_brightness = LED_FULL;
+	drv2624->led_dev.brightness_set = vibrator_enable;
+
+	ret = devm_led_classdev_register(drv2624->dev, &drv2624->led_dev);
+	if (ret) {
+		dev_err(drv2624->dev,
+			"drv2624: fail to create led classdev\n");
+		destroy_workqueue(drv2624->drv2624_wq);
+		return ret;
+	}
 
 	return 0;
 }
