@@ -8865,6 +8865,17 @@ static void p9221_charger_remove(struct i2c_client *client)
 	if (charger->rtx_log)
 		logbuffer_unregister(charger->rtx_log);
 
+	/*
+	 * Release the elections created in probe. They carry `charger` as
+	 * their callback data and are reachable by name from other drivers,
+	 * so leaving them behind lets a vote land on freed memory once
+	 * devres releases the charger.
+	 */
+	gvotable_destroy_election(charger->wlc_disable_votable);
+	gvotable_destroy_election(charger->tx_icl_votable);
+	gvotable_destroy_election(charger->defender_enabled_votable);
+	gvotable_destroy_election(charger->fan_level_votable);
+
 	wakeup_source_unregister(charger->align_ws);
 	wakeup_source_unregister(charger->det_status_ws);
 	wakeup_source_unregister(charger->icl_stable_ws);
