@@ -522,6 +522,7 @@ static int cs35l41_amp_reset_put(struct snd_kcontrol *kcontrol,
 		if (timeout == 0) {
 			dev_err(cs35l41->dev,
 				"Timeout waiting for OTP_BOOT_DONE\n");
+			enable_irq(cs35l41->irq);
 			return -EBUSY;
 		}
 		usleep_range(1000, 1100);
