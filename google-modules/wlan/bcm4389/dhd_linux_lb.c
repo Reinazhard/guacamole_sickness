@@ -323,6 +323,16 @@ dhd_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
 }
 #endif /* LINUX_VERSION_CODE < 4.10.0 */
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0))
+/*
+ * The state id handed out by cpuhp_setup_state().  CPUHP_AP_ONLINE_DYN is only
+ * the template that asks the hotplug core to reserve a dynamic slot, it is not
+ * the id this driver owns, so it must never be handed back to
+ * cpuhp_remove_state_nocalls().
+ */
+static enum cpuhp_state dhd_cpuhp_state = CPUHP_INVALID;
+#endif /* LINUX_VERSION_CODE < 4.10.0 */
+
 int dhd_register_cpuhp_callback(dhd_info_t *dhd)
 {
 	int cpuhp_ret = 0;
@@ -333,6 +343,8 @@ int dhd_register_cpuhp_callback(dhd_info_t *dhd)
 	if (cpuhp_ret < 0) {
 		DHD_ERROR(("%s(): cpuhp_setup_state failed %d RX LB won't happen \r\n",
 			__FUNCTION__, cpuhp_ret));
+	} else {
+		dhd_cpuhp_state = cpuhp_ret;
 	}
 #else
 	/*
@@ -351,7 +363,10 @@ int dhd_unregister_cpuhp_callback(dhd_info_t *dhd)
 	int ret = 0;
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0))
 	/* Don't want to call tear down while unregistering */
-	cpuhp_remove_state_nocalls(CPUHP_AP_ONLINE_DYN);
+	if (dhd_cpuhp_state != CPUHP_INVALID) {
+		cpuhp_remove_state_nocalls(dhd_cpuhp_state);
+		dhd_cpuhp_state = CPUHP_INVALID;
+	}
 #else
 	if (dhd->cpu_notifier.notifier_call != NULL) {
 		unregister_cpu_notifier(&dhd->cpu_notifier);
