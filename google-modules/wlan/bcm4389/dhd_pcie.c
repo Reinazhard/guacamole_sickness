@@ -1296,6 +1296,15 @@ dhdpcie_cto_recovery_handler(dhd_pub_t *dhd)
 		return;
 	}
 
+	/*
+	 * Serialize against runtime PM.  An RPM suspend that is already inside
+	 * the D3 handshake holds bus->pm_lock, so taking it here lets that
+	 * handshake finish before the backplane is reset below; a suspend that
+	 * is still waiting for the lock finds bus->is_linkdown set by the time
+	 * it is released and bails out in dhdpcie_bus_suspend().
+	 */
+	mutex_lock(&bus->pm_lock);
+
 	/* Disable PCIe Runtime PM to avoid D3_ACK timeout.
 	 */
 	DHD_DISABLE_RUNTIME_PM(dhd);
@@ -1334,6 +1343,7 @@ dhdpcie_cto_recovery_handler(dhd_pub_t *dhd)
 #endif /* CONFIG_ARCH_MSM */
 #endif /* SUPPORT_LINKDOWN_RECOVERY */
 	bus->is_linkdown = TRUE;
+	mutex_unlock(&bus->pm_lock);
 	bus->dhd->hang_reason = HANG_REASON_PCIE_CTO_DETECT;
 	/* Send HANG event */
 	dhd_os_send_hang_message(bus->dhd);
