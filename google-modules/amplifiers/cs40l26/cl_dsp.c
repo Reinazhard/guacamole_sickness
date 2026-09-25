@@ -494,6 +494,11 @@ int cl_dsp_coeff_file_parse(struct cl_dsp *dsp, const struct firmware *fw)
 
 	*wt_date = '\0';
 
+	if (fw->size < CL_DSP_COEFF_FILE_HEADER_SIZE) {
+		dev_err(dev, "Coefficient file is too small\n");
+		return ret;
+	}
+
 	memcpy(wmdr_header.data, fw->data, CL_DSP_COEFF_FILE_HEADER_SIZE);
 
 	if (fw->size % CL_DSP_BYTES_PER_WORD) {
@@ -506,11 +511,24 @@ int cl_dsp_coeff_file_parse(struct cl_dsp *dsp, const struct firmware *fw)
 		return ret;
 
 	while (pos < fw->size) {
+		if (fw->size - pos < CL_DSP_COEFF_DBLK_HEADER_SIZE) {
+			dev_err(dev, "Truncated coefficient block header\n");
+			return -EINVAL;
+		}
+
 		memcpy(data_block.header.data, &fw->data[pos],
 				CL_DSP_COEFF_DBLK_HEADER_SIZE);
 		pos += CL_DSP_COEFF_DBLK_HEADER_SIZE;
 
 		data_len = data_block.header.data_len;
+
+		if (data_len > fw->size - pos) {
+			dev_err(dev,
+				"Block length %u exceeds %zu bytes remaining\n",
+				data_len, fw->size - pos);
+			return -EINVAL;
+		}
+
 		data_block.payload = kvmalloc(data_len, GFP_KERNEL);
 		if (!data_block.payload)
 			return -ENOMEM;
@@ -1090,10 +1108,22 @@ int cl_dsp_firmware_parse(struct cl_dsp *dsp, const struct firmware *fw,
 	}
 
 	while (pos < fw->size) {
+		if (fw->size - pos < CL_DSP_DBLK_HEADER_SIZE) {
+			dev_err(dev, "Truncated firmware block header\n");
+			return -EINVAL;
+		}
+
 		memcpy(data_block.header.data, &fw->data[pos],
 				CL_DSP_DBLK_HEADER_SIZE);
 
 		pos += CL_DSP_DBLK_HEADER_SIZE;
+
+		if (data_block.header.data_len > fw->size - pos) {
+			dev_err(dev,
+				"Block length %u exceeds %zu bytes remaining\n",
+				data_block.header.data_len, fw->size - pos);
+			return -EINVAL;
+		}
 
 		data_block.payload =
 			kvmalloc(data_block.header.data_len, GFP_KERNEL);
