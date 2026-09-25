@@ -14296,7 +14296,12 @@ void dhd_detach(dhd_pub_t *dhdp)
 
 			dhd_if_del_sta_list(ifp);
 
+#ifdef DHD_4WAYM4_FAIL_DISCONNECT
+			cancel_delayed_work_sync(&ifp->m4state_work);
+#endif /* DHD_4WAYM4_FAIL_DISCONNECT */
+
 			MFREE(dhd->pub.osh, dhd->iflist[0], sizeof(*ifp));
+			dhd->iflist[0] = NULL;
 			ifp = NULL;
 #ifdef WL_CFG80211
 			if (cfg && cfg->wdev) {
