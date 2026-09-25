@@ -14165,6 +14165,13 @@ void dhd_detach(dhd_pub_t *dhdp)
 	 */
 	DHD_ERROR(("%s: making dhdpub up FALSE\n", __FUNCTION__));
 	dhd->pub.up = 0;
+	/*
+	 * Drain the hang work here, before the state its handler reads is
+	 * released further down: dhd_hang_process() walks dhd->iflist[0] and
+	 * the cfg80211 object, and both are freed before the cancel that
+	 * used to sit near the end of this function.
+	 */
+	cancel_work_sync(&dhd->dhd_hang_process_work);
 	if (!(dhd->dhd_state & DHD_ATTACH_STATE_DONE)) {
 		/* Give sufficient time for threads to start running in case
 		 * dhd_attach() has failed
@@ -14556,8 +14563,6 @@ void dhd_detach(dhd_pub_t *dhdp)
 		dhdp->pom_func_deregister(&dhdp->pom_wlan_handler);
 	}
 #endif /* DHD_ERPOM */
-
-	cancel_work_sync(&dhd->dhd_hang_process_work);
 
 	/* Prefer adding de-init code above this comment unless necessary.
 	 * The idea is to cancel work queue, sysfs and flags at the end.
