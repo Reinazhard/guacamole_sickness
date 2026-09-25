@@ -370,12 +370,11 @@ static int client_event_unsubscribe(struct lwis_client *lwis_client, int64_t eve
 	client_event_queue_clear_by_id(lwis_client, event_id);
 
 	/* Reset event counter */
-	event_state = lwis_device_event_state_find(lwis_dev, event_id);
-	if (event_state) {
-		spin_lock_irqsave(&lwis_dev->lock, flags);
+	spin_lock_irqsave(&lwis_dev->lock, flags);
+	event_state = device_event_state_find_locked(lwis_dev, event_id);
+	if (event_state)
 		event_state->event_counter = 0;
-		spin_unlock_irqrestore(&lwis_dev->lock, flags);
-	}
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
 
 	return ret;
 }
@@ -780,15 +779,25 @@ int lwis_device_event_flags_updated(struct lwis_device *lwis_dev, int64_t event_
 		}
 
 		/* Reset hw event counter if hw event has been disabled */
-		if (!event_enabled)
-			state->event_counter = 0;
+		if (!event_enabled) {
+			spin_lock_irqsave(&lwis_dev->lock, flags);
+			state = device_event_state_find_locked(lwis_dev, event_id);
+			if (state)
+				state->event_counter = 0;
+			spin_unlock_irqrestore(&lwis_dev->lock, flags);
+		}
 	}
 
 	/* Reset sw event counter when it's going to disable */
 	if ((event_id & LWIS_TRANSACTION_EVENT_FLAG ||
 	     event_id & LWIS_TRANSACTION_FAILURE_EVENT_FLAG) &&
-	    new_flags == 0)
-		state->event_counter = 0;
+	    new_flags == 0) {
+		spin_lock_irqsave(&lwis_dev->lock, flags);
+		state = device_event_state_find_locked(lwis_dev, event_id);
+		if (state)
+			state->event_counter = 0;
+		spin_unlock_irqrestore(&lwis_dev->lock, flags);
+	}
 
 	/* Check if our specialization cares about flags updates */
 	if (lwis_dev->vops.event_flags_updated) {
