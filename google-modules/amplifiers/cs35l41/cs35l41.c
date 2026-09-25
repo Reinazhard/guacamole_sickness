@@ -4461,6 +4461,8 @@ EXPORT_SYMBOL_GPL(cs35l41_probe);
 
 void cs35l41_remove(struct cs35l41_private *cs35l41)
 {
+	if (cs35l41->wq)
+		cancel_delayed_work_sync(&cs35l41->hb_work);
 #if IS_ENABLED(CONFIG_SND_SOC_CODEC_DETECT)
 	cs35l41_misc_exit(cs35l41);
 #endif
