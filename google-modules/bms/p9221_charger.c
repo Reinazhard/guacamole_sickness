@@ -912,6 +912,8 @@ static int p9221_reset_wlc_dc(struct p9221_charger_data *charger)
 
 	dev_dbg(&charger->client->dev, "%s start\n", __func__);
 	charger->wlc_dc_enabled = false;
+	charger->prop_mode_en = false;
+	charger->negotiation_complete = false;
 
 	usleep_range(500 * USEC_PER_MSEC, 510 * USEC_PER_MSEC);
 	p9xxx_gpio_set_value(charger, dc_sw_gpio, 0);
@@ -944,8 +946,6 @@ static int p9221_reset_wlc_dc(struct p9221_charger_data *charger)
 		gvotable_cast_bool_vote(charger->wlc_disable_votable,
 					P9221_HPP_VOTER, false);
 	} else {
-		charger->prop_mode_en = false;
-		charger->negotiation_complete = false;
 		p9221_write_fod(charger);
 	}
 	if (charger->pdata->gpp_cmfet > 0) {
