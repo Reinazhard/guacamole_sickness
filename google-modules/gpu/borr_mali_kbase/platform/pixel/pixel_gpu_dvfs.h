@@ -147,8 +147,8 @@ void gpu_dvfs_governor_term(struct kbase_device *kbdev);
 /**
  * struct gpu_dvfs_metrics_uid_stats - Stores time in state data for a UID
  *
- * @active_kctx_count:  Count of active kernel contexts operating under this UID. Should only be
- *                      accessed while holding the kctx_list lock.
+ * @active_kctx_count:  Count of active kernel contexts operating under this UID. Accessed
+ *                      atomically, so it is safe to read without the kctx_list lock.
  * @uid:                The UID for this stats block.
  * @active_work_count:  Count of currently executing units of work on the GPU from this UID. Should
  *                      only be accessed while holding the hwaccess lock if using a job manager GPU
@@ -167,7 +167,7 @@ void gpu_dvfs_governor_term(struct kbase_device *kbdev);
  *                      Should only be accessed while holding the kctx_list lock.
  */
 struct gpu_dvfs_metrics_uid_stats {
-	int active_kctx_count;
+	atomic_t active_kctx_count;
 	kuid_t uid;
 	int active_work_count;
 	u64 period_start;
