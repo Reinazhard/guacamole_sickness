@@ -4855,6 +4855,22 @@ dhd_rtt_event_handler(dhd_pub_t *dhd, wl_event_msg_t *event, void *event_data)
 		goto exit;
 	}
 
+	/*
+	 * The peer MAC alone does not identify the request: consecutive
+	 * requests to the same peer are the normal case.  target_info[]
+	 * holds the sid of the FTM session this request created, so an
+	 * event that carries a different sid belongs to a session that has
+	 * already been deleted - a trailing completion of a cancelled
+	 * request - and must not be attributed to the current one.  Skip
+	 * while no sid is armed, which is the responder role and the
+	 * window before the sessions are configured.
+	 */
+	if (target->sid && (ltoh16(p_event->sid) != target->sid)) {
+		DHD_RTT(("Ignore Proxd event for the stale session sid %d, "
+			"expected sid %d\n", ltoh16(p_event->sid), target->sid));
+		goto exit;
+	}
+
 #endif /* WL_CFG80211 */
 
 #ifdef WL_CFG80211
