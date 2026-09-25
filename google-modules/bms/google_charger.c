@@ -6246,7 +6246,6 @@ static void google_charger_init_work(struct work_struct *work)
 		      chg_drv->bd_state.dwell_state);
 	chg_drv->stop_charging = -1;
 	chg_drv->charging_policy = CHARGING_POLICY_DEFAULT;
-	mutex_init(&chg_drv->stats_lock);
 	thermal_stats_init(chg_drv);
 
 	/* reset override charging parameters */
@@ -6426,6 +6425,8 @@ static int google_charger_probe(struct platform_device *pdev)
 	}
 
 	mutex_init(&chg_drv->bd_lock);
+	/* before chg_init_fs() publishes the sysfs stats attributes */
+	mutex_init(&chg_drv->stats_lock);
 	chg_drv->bd_ws = wakeup_source_register(NULL, "defender");
 	if (!chg_drv->bd_ws) {
 		pr_err("Failed to register wakeup source\n");
