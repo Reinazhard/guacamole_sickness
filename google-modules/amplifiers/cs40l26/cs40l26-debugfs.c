@@ -80,7 +80,7 @@ static ssize_t cs40l26_active_seq_read(struct file *file, char __user *user_buf,
 
 	mutex_lock(&cs40l26->lock);
 
-	aseq_str_size = cs40l26_wseq_format_string(cs40l26, &aseq_params, &aseq_str);
+	aseq_str_size = cs40l26_wseq_format_string(cs40l26, &cs40l26->aseq_params, &aseq_str);
 	if (aseq_str_size < 0) {
 		error = aseq_str_size;
 		goto err_mutex;
@@ -111,7 +111,7 @@ static ssize_t cs40l26_power_on_seq_read(struct file *file, char __user *user_bu
 
 	mutex_lock(&cs40l26->lock);
 
-	pseq_str_size = cs40l26_wseq_format_string(cs40l26, &pseq_params, &pseq_str);
+	pseq_str_size = cs40l26_wseq_format_string(cs40l26, &cs40l26->pseq_params, &pseq_str);
 	if (pseq_str_size < 0) {
 		error = pseq_str_size;
 		goto err_mutex;
@@ -251,12 +251,12 @@ static ssize_t cs40l26_hw_val_write(struct file *file, const char __user *user_b
 		goto exit_mutex;
 
 	error = cs40l26_wseq_write(cs40l26, cs40l26->dbg_hw_reg, (val & GENMASK(31, 16)) >> 16,
-			true, CS40L26_WSEQ_OP_WRITE_H16, &pseq_params);
+			true, CS40L26_WSEQ_OP_WRITE_H16, &cs40l26->pseq_params);
 	if (error)
 		goto exit_mutex;
 
 	error = cs40l26_wseq_write(cs40l26, cs40l26->dbg_hw_reg, (val & GENMASK(15, 0)),
-			true, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			true, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 
 exit_mutex:
 	mutex_unlock(&cs40l26->lock);
