@@ -96,11 +96,14 @@ static void irq_safe_config(struct bcl_zone *zone, bool disabled)
 	if (smp_load_acquire(&zone->disabled) == disabled)
 		return;
 
+	if (!zone->irq_reg)
+		return;
+
 	smp_store_release(&zone->disabled, disabled);
 
 	if (disabled)
 		disable_irq_nosync(zone->bcl_irq);
-	else
+	else if (zone->bcl_pin != NOT_USED)
 		enable_irq(zone->bcl_irq);
 }
 
