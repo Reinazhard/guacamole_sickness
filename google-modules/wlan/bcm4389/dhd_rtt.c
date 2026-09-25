@@ -4503,6 +4503,7 @@ dhd_rtt_handle_directed_rtt_burst_end(dhd_pub_t *dhd, struct ether_addr *peer_ad
 	int err_at = 0;
 	rtt_status_info_t *rtt_status;
 	bool is_new = TRUE;
+	bool header_allocated = FALSE;
 	rtt_results_header_t *rtt_results_header = NULL;
 #endif /* WL_CFG80211 */
 
@@ -4521,6 +4522,7 @@ dhd_rtt_handle_directed_rtt_burst_end(dhd_pub_t *dhd, struct ether_addr *peer_ad
 				err_at = 1;
 				goto exit;
 			}
+			header_allocated = TRUE;
 			/* Initialize the head of list for rtt result */
 			INIT_LIST_HEAD(&rtt_results_header->result_list);
 			/* same src and header len */
@@ -4566,7 +4568,12 @@ exit:
 	if (ret != BCME_OK) {
 		DHD_RTT_ERR(("dhd_rtt_handle_directed_rtt_burst_end: failed, "
 			" ret = %d, err_at = %d\n", ret, err_at));
-		if (rtt_results_header) {
+		/*
+		 * Only the header this call allocated is ours to free.  When
+		 * the peer already had results, rtt_results_header points at
+		 * the cache's header, which is still linked and published.
+		 */
+		if (header_allocated) {
 			list_del(&rtt_results_header->list);
 			MFREE(dhd->osh, rtt_results_header,
 				sizeof(rtt_results_header_t));
