@@ -450,13 +450,27 @@ int dhd_tcpack_suppress_set(dhd_pub_t *dhdp, uint8 mode)
 			 * any remaining/pending packet or timer.
 			 */
 			if (tcpack_sup_module) {
+				/* Unpublish the module before dropping the lock,
+				 * so that a concurrent mode change allocates a
+				 * new one instead of reusing the one being freed.
+				 */
+				dhdp->tcpack_sup_module = NULL;
+
+				/* dhd_tcpack_send() takes the tcpack lock, so the
+				 * timers have to be drained with the lock released
+				 * and this function returns with it released:
+				 * del_timer_sync() would otherwise wait for a
+				 * callback that is itself waiting for this lock.
+				 */
+				dhd_os_tcpackunlock(dhdp, flags);
+
 				/* Check if previous mode is TCAPACK_SUP_HOLD */
 				if (prev_mode == TCPACK_SUP_HOLD) {
 					for (i = 0; i < TCPACK_INFO_MAXNUM; i++) {
 						tcpack_info_t *tcpack_info_tbl =
 							&tcpack_sup_module->tcpack_info_tbl[i];
 #ifndef TCPACK_SUPPRESS_HOLD_HRT
-						del_timer(&tcpack_info_tbl->timer);
+						del_timer_sync(&tcpack_info_tbl->timer);
 #else
 						hrtimer_cancel(&tcpack_info_tbl->timer.timer);
 #endif /* TCPACK_SUPPRESS_HOLD_HRT */
@@ -468,7 +482,8 @@ int dhd_tcpack_suppress_set(dhd_pub_t *dhdp, uint8 mode)
 					}
 				}
 				MFREE(dhdp->osh, tcpack_sup_module, sizeof(tcpack_sup_module_t));
-				dhdp->tcpack_sup_module = NULL;
+
+				return ret;
 			} else {
 				DHD_ERROR(("%s[%d]: tcpack_sup_module should not be NULL\n",
 					__FUNCTION__, __LINE__));
