@@ -5684,6 +5684,25 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 
 	del_timer_sync(&cs40l26->hibernate_timer);
 
+	/*
+	 * Clear the wave-sequence terminator while the device is still
+	 * powered: cs40l26_wseq_clear() issues regmap writes, and the
+	 * teardown below removes both supplies and then asserts the reset
+	 * line, after which the part cannot acknowledge a transaction.
+	 *
+	 * Keep the clears inside the fall-through. Returning on failure
+	 * here would skip the power-down and the reset assertion below
+	 * and leave the part powered and out of reset.
+	 */
+	error = cs40l26_wseq_clear(cs40l26, &pseq_params);
+	if (error)
+		goto out;
+
+	error = cs40l26_wseq_clear(cs40l26, &aseq_params);
+	if (error)
+		goto out;
+
+out:
 	if (vp_consumer)
 		regulator_disable(vp_consumer);
 
@@ -5695,14 +5714,6 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 	if (cs40l26->vibe_init_success)
 		sysfs_remove_groups(&cs40l26->dev->kobj, cs40l26_attr_groups);
 
-	error = cs40l26_wseq_clear(cs40l26, &pseq_params);
-	if (error)
-		return error;
-
-	error = cs40l26_wseq_clear(cs40l26, &aseq_params);
-	if (error)
-		return error;
-
 #ifdef CONFIG_DEBUG_FS
 	cs40l26_debugfs_cleanup(cs40l26);
 #endif
@@ -5710,7 +5721,7 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 	if (cs40l26->input)
 		input_unregister_device(cs40l26->input);
 
-	return 0;
+	return error;
 }
 EXPORT_SYMBOL_GPL(cs40l26_remove);
 
