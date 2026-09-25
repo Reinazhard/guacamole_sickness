@@ -768,6 +768,7 @@ static int dwc3_otg_pm_notifier(struct notifier_block *nb,
 int dwc3_exynos_otg_init(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 {
 	struct dwc3_otg *dotg;
+	bool pm_qos_added = false;
 	int ret = 0;
 
 	dotg = devm_kzalloc(dwc->dev, sizeof(struct dwc3_otg), GFP_KERNEL);
@@ -785,6 +786,7 @@ int dwc3_exynos_otg_init(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 	} else {
 		exynos_pm_qos_add_request(&dotg->pm_qos_int_req,
 					  PM_QOS_DEVICE_THROUGHPUT, 0);
+		pm_qos_added = true;
 	}
 
 	dotg->current_role = USB_ROLE_NONE;
@@ -817,9 +819,10 @@ int dwc3_exynos_otg_init(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 								    dwc3_otg_ssphy_restart_cb,
 								    dotg);
 	if (IS_ERR_OR_NULL(dotg->ssphy_restart_votable)) {
-		ret = PTR_ERR(dotg->ssphy_restart_votable);
+		ret = dotg->ssphy_restart_votable ?
+			PTR_ERR(dotg->ssphy_restart_votable) : -ENOMEM;
 		dev_err(dwc->dev, "failed to create ssphy_restart votable (%d)\n", ret);
-		return ret;
+		goto err_votable;
 	}
 	gvotable_set_vote2str(dotg->ssphy_restart_votable, gvotable_v2s_int);
 
@@ -827,15 +830,27 @@ int dwc3_exynos_otg_init(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 								dwc3_otg_usbdp_tca_cb,
 								dotg);
 	if (IS_ERR_OR_NULL(dotg->usbdp_tca_votable)) {
-		ret = PTR_ERR(dotg->usbdp_tca_votable);
+		ret = dotg->usbdp_tca_votable ?
+			PTR_ERR(dotg->usbdp_tca_votable) : -ENOMEM;
 		dev_err(dwc->dev, "failed to create usbdp_tca_votable votable (%d)\n", ret);
-		return ret;
+		gvotable_destroy_election(dotg->ssphy_restart_votable);
+		dotg->ssphy_restart_votable = NULL;
+		goto err_votable;
 	}
 	gvotable_set_vote2str(dotg->usbdp_tca_votable, gvotable_v2s_int);
 
 	dev_dbg(dwc->dev, "otg_init done\n");
 
 	return 0;
+
+err_votable:
+	exynos->dotg = NULL;
+	unregister_pm_notifier(&dotg->pm_nb);
+	unregister_reboot_notifier(&dwc3_otg_reboot_notifier);
+	wakeup_source_unregister(dotg->wakelock);
+	if (pm_qos_added)
+		exynos_pm_qos_remove_request(&dotg->pm_qos_int_req);
+	return ret;
 }
 
 void dwc3_exynos_otg_exit(struct dwc3 *dwc, struct dwc3_exynos *exynos)
