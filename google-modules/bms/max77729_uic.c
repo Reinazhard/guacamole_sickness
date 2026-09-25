@@ -549,6 +549,8 @@ static int max77729_uic_storage_read(gbms_tag_t tag, void *buff, size_t size,
 	struct max77729_uic_data *data = ptr;
 	int ret;
 
+	if (!data->probe_done)
+		return -ENODEV;
 	if (tag < GBMS_TAG_RRS0 || tag > GBMS_TAG_RRS7)
 		return -ENOENT;
 	if ((tag + size - 1) > GBMS_TAG_RRS7)
@@ -567,6 +569,8 @@ static int max77729_uic_storage_write(gbms_tag_t tag, const void *buff,
 	struct max77729_uic_data *data = ptr;
 	int ret;
 
+	if (!data->probe_done)
+		return -ENODEV;
 	if (tag < GBMS_TAG_RRS0 || tag > GBMS_TAG_RRS7)
 		return -ENOENT;
 	if ((tag + size - 1) > GBMS_TAG_RRS7)
@@ -684,6 +688,7 @@ static void max77729_uic_remove(struct i2c_client *client)
 {
 	struct max77729_uic_data *data = i2c_get_clientdata(client);
 
+	data->probe_done = false;
 	cancel_delayed_work_sync(&data->noautoibus_work);
 }
 
