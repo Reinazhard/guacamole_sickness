@@ -3497,6 +3497,18 @@ static void max77759_charger_remove(struct i2c_client *client)
 {
 	struct max77759_chgr_data *data = i2c_get_clientdata(client);
 
+	/*
+	 * Stop the works before devres releases `data`. wcin_inlim_work and
+	 * otg_fccm_worker re-arm themselves, so they are otherwise still
+	 * queued when the driver data is freed. This must also precede the
+	 * wakeup_source_unregister() calls below, because a work that is
+	 * still running releases the wakeup source it took.
+	 */
+	cancel_delayed_work_sync(&data->wcin_inlim_work);
+	cancel_delayed_work_sync(&data->wcin_charge_disable_work);
+	cancel_delayed_work_sync(&data->mode_rerun_work);
+	cancel_delayed_work_sync(&data->otg_fccm_worker);
+
 	if (data->de)
 		debugfs_remove(data->de);
 	disable_irq_wake(client->irq);
