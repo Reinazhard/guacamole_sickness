@@ -1416,7 +1416,8 @@ static ssize_t cs40l2x_cp_trigger_queue_show(struct device *dev,
 		len += scnprintf(pbq_str + len, PAGE_SIZE - len, "~\n");
 		break;
 	case 0:
-		len -= 2; // Remove ", " from end of string
+		if (len >= 2)
+			len -= 2; // Remove ", " from end of string
 		len += scnprintf(pbq_str + len, PAGE_SIZE - len, "\n");
 		break;
 	default:
