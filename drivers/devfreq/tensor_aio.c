@@ -2242,8 +2242,18 @@ static int exynos_devfreq_pm(struct device *dev, bool resume)
 	flags = data->nb_lock_fn(&data->nb_lock);
 	if (data->use_acpm) {
 		ret = exynos_acpm_pm(data, resume);
-		if (WARN_ON(ret))
+		if (WARN_ON(ret)) {
+			/*
+			 * A failed resume must not latch. Leaving `suspended`
+			 * set would suppress every later cal_dfs_set_rate()
+			 * from exynos_qos_notify() until the next
+			 * suspend/resume pair, freezing the domain at
+			 * suspend_freq for the rest of the uptime window.
+			 */
+			if (resume)
+				data->suspended = false;
 			goto unlock;
+		}
 	}
 
 	if (data == mif) {
