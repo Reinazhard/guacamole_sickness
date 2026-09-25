@@ -65,7 +65,8 @@ static int pktproc_send_pkt_to_cp(struct pktproc_queue_ul *q, struct sk_buff *sk
 	desc->hw_set = 0;
 	desc->lcid = skbpriv(skb)->sipc_ch;
 
-	barrier();
+	/* ensure the descriptor ordering */
+	smp_wmb();
 
 #if IS_ENABLED(CONFIG_EXYNOS_DIT)
 	if (use_dit) {
@@ -149,10 +150,8 @@ set_last:
 	}
 
 set_fore:
-	q->q_info->fore_ptr = fore_ptr;
-
 	/* ensure the fore_ptr ordering */
-	smp_mb();
+	smp_store_release(&q->q_info->fore_ptr, fore_ptr);
 
 error:
 	return 0;
