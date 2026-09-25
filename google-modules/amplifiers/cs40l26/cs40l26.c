@@ -5691,6 +5691,9 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 	struct regulator *va_consumer = cs40l26->reg_supplies[CS40L26_VA_SUPPLY].consumer;
 	int error;
 
+	if (cs40l26->vibe_init_success)
+		sysfs_remove_groups(&cs40l26->dev->kobj, cs40l26_attr_groups);
+
 	if (cs40l26->input)
 		input_unregister_device(cs40l26->input);
 
@@ -5737,9 +5740,6 @@ out:
 		regulator_disable(va_consumer);
 
 	gpiod_set_value_cansleep(cs40l26->reset_gpio, 1);
-
-	if (cs40l26->vibe_init_success)
-		sysfs_remove_groups(&cs40l26->dev->kobj, cs40l26_attr_groups);
 
 #ifdef CONFIG_DEBUG_FS
 	cs40l26_debugfs_cleanup(cs40l26);
