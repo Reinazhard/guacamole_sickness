@@ -2541,7 +2541,7 @@ static ssize_t fw_ctrl_name_store(struct device *dev, struct device_attribute *a
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 
-	if (strlen(buf) > CS40L26_COEFF_NAME_MAX_LEN) {
+	if (count > CS40L26_COEFF_NAME_MAX_LEN) {
 		dev_err(cs40l26->dev, "Control name %s longer than 64 char limit\n", buf);
 		return -E2BIG;
 	}
@@ -2550,7 +2550,7 @@ static ssize_t fw_ctrl_name_store(struct device *dev, struct device_attribute *a
 
 	memset(cs40l26->sysfs_fw.ctrl_name, 0, CS40L26_COEFF_NAME_MAX_LEN);
 
-	strscpy(cs40l26->sysfs_fw.ctrl_name, buf, count);
+	strscpy(cs40l26->sysfs_fw.ctrl_name, buf, sizeof(cs40l26->sysfs_fw.ctrl_name));
 
 	mutex_unlock(&cs40l26->lock);
 
