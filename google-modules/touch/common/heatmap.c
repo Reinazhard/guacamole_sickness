@@ -89,6 +89,14 @@ void heatmap_read(struct v4l2_heatmap *v4l2, uint64_t timestamp)
 		return;
 	}
 
+	/* heatmap_remove() may already have freed v4l2->frame */
+	spin_lock(&v4l2->heatmap_lock);
+	if (v4l2->removed) {
+		spin_unlock(&v4l2->heatmap_lock);
+		return;
+	}
+	spin_unlock(&v4l2->heatmap_lock);
+
 	/* Optimization */
 	if (consecutive_frames_dropped >= NUM_BUFFERS_BEFORE_DROP) {
 		spin_lock(&v4l2->heatmap_lock);
@@ -408,6 +416,8 @@ EXPORT_SYMBOL_GPL(heatmap_probe);
 
 void heatmap_remove(struct v4l2_heatmap *v4l2)
 {
+	unsigned long flags;
+
 	if (v4l2->frame) {
 		video_unregister_device(&v4l2->vdev);
 
@@ -416,8 +426,19 @@ void heatmap_remove(struct v4l2_heatmap *v4l2)
 		mutex_unlock(&v4l2->lock);
 
 		v4l2_device_unregister(&v4l2->device);
+
+		/*
+		 * heatmap_read() reads v4l2->frame under heatmap_lock
+		 * and can run from interrupt context, so the free has to
+		 * take the same lock with interrupts disabled.  The flag
+		 * stops a producer that has not yet entered read_frame();
+		 * one already inside it is the caller's to quiesce.
+		 */
+		spin_lock_irqsave(&v4l2->heatmap_lock, flags);
+		v4l2->removed = true;
 		devm_kfree(v4l2->parent_dev, v4l2->frame);
 		v4l2->frame = NULL;
+		spin_unlock_irqrestore(&v4l2->heatmap_lock, flags);
 	}
 }
 EXPORT_SYMBOL_GPL(heatmap_remove);
