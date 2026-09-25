@@ -3461,6 +3461,29 @@ int wm_halo_init(struct wm_adsp *dsp)
 }
 EXPORT_SYMBOL_GPL(wm_halo_init);
 
+/*
+ * Drop the kcontrol that a coefficient control registered with the card. The
+ * kcontrol keeps a pointer into struct wm_coeff_ctl through private_value, so it
+ * has to be gone before the block is freed.
+ */
+static void wm_adsp_remove_ctl(struct wm_adsp *dsp, struct wm_coeff_ctl *ctl)
+{
+	struct snd_ctl_elem_id id;
+	char name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
+
+	if (dsp->component->name_prefix)
+		snprintf(name, SNDRV_CTL_ELEM_ID_NAME_MAXLEN, "%s %s",
+			 dsp->component->name_prefix, ctl->name);
+	else
+		snprintf(name, SNDRV_CTL_ELEM_ID_NAME_MAXLEN, "%s", ctl->name);
+
+	memset(&id, 0, sizeof(id));
+	id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
+	memcpy(id.name, name, strlen(name) + 1);
+
+	snd_ctl_remove_id(dsp->component->card->snd_card, &id);
+}
+
 void wm_adsp2_remove(struct wm_adsp *dsp)
 {
 	struct wm_coeff_ctl *ctl;
@@ -3469,6 +3492,8 @@ void wm_adsp2_remove(struct wm_adsp *dsp)
 		ctl = list_first_entry(&dsp->ctl_list, struct wm_coeff_ctl,
 					list);
 		list_del(&ctl->list);
+		if (dsp->component && dsp->component->card)
+			wm_adsp_remove_ctl(dsp, ctl);
 		wm_adsp_free_ctl_blk(ctl);
 	}
 }
