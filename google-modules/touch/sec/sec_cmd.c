@@ -542,7 +542,7 @@ err_get_dev_name:
 	kfifo_free(&data->cmd_queue);
 err_alloc_queue:
 #endif
-	list_del(&data->cmd_list_head);
+	INIT_LIST_HEAD(&data->cmd_list_head);
 	return -ENODEV;
 }
 
@@ -576,7 +576,7 @@ void sec_cmd_exit(struct sec_cmd_data *data, int devt)
 	mutex_destroy(&data->fifo_lock);
 	kfifo_free(&data->cmd_queue);
 #endif
-	list_del(&data->cmd_list_head);
+	INIT_LIST_HEAD(&data->cmd_list_head);
 }
 
 MODULE_DESCRIPTION("Samsung factory command");
