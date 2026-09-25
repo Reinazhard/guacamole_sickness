@@ -235,7 +235,10 @@ static int bigo_release(struct inode *inode, struct file *file)
 	list_del(&inst->list);
 	if (list_empty(&core->instances))
 	{
-		kthread_stop(core->worker_thread);
+		if (core->worker_thread) {
+			kthread_stop(core->worker_thread);
+			core->worker_thread = NULL;
+		}
 		on_last_inst_close(core);
 	}
 	mutex_unlock(&core->lock);
@@ -915,6 +918,10 @@ static int bigo_remove(struct platform_device *pdev)
 {
 	struct bigo_core *core = (struct bigo_core *)platform_get_drvdata(pdev);
 
+	if (core->worker_thread) {
+		kthread_stop(core->worker_thread);
+		core->worker_thread = NULL;
+	}
 	bigo_uninit_debugfs(core);
 	platform_device_unregister(&bigo_sscd_dev);
 	bigo_pt_client_unregister(core);
