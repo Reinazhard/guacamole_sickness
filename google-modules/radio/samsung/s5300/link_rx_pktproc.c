@@ -1564,6 +1564,7 @@ int pktproc_init(struct pktproc_adaptor *ppa)
 	int i;
 	int ret = 0;
 	struct mem_link_device *mld;
+	unsigned long flags;
 
 	if (!ppa) {
 		mif_err("ppa is null\n");
@@ -1582,7 +1583,13 @@ int pktproc_init(struct pktproc_adaptor *ppa)
 
 		mif_info("Q%d\n", i);
 
-		napi_synchronize(&q->napi);
+		/*
+		 * q->napi is only netif_napi_add()ed when the queue owns its
+		 * own IRQ. Otherwise the NAPI that drains this ring is the
+		 * shared mld->mld_napi, and q->napi_ptr names whichever one
+		 * it is (pktproc_create()).
+		 */
+		napi_synchronize(q->napi_ptr);
 
 		switch (ppa->desc_mode) {
 		case DESC_MODE_SKTBUF:
@@ -1602,6 +1609,14 @@ int pktproc_init(struct pktproc_adaptor *ppa)
 			break;
 		}
 
+		/*
+		 * The consumer takes q->lock, so the index and base-address
+		 * reset has to hold it too: otherwise the ring can be reset
+		 * underneath a drain that has already passed its own
+		 * consistency check.
+		 */
+		spin_lock_irqsave(&q->lock, flags);
+
 		*q->fore_ptr = 0;
 		*q->rear_ptr = 0;
 		q->done_ptr = 0;
@@ -1615,6 +1630,8 @@ int pktproc_init(struct pktproc_adaptor *ppa)
 		}
 
 		q->q_info_ptr->num_desc = q->num_desc;
+
+		spin_unlock_irqrestore(&q->lock, flags);
 
 		memset(&q->stat, 0, sizeof(struct pktproc_statistics));
 
