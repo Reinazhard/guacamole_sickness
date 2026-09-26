@@ -267,6 +267,20 @@ struct lwis_device_event_state *lwis_device_event_state_find(struct lwis_device 
 							     int64_t event_id);
 
 /*
+ * lwis_device_event_state_get_counter: Reads the event counter for the given
+ * event id. Unlike lwis_device_event_state_find(), which returns a pointer that
+ * is already unprotected, this copies the counter while lwis_dev->lock is held,
+ * so the caller cannot race with lwis_device_event_states_clear().
+ *
+ * Locks: lwis_dev->lock
+ * Alloc: No
+ * Returns: 0 and the counter in *counter, or -ENOENT if the event has not been
+ *          encountered.
+ */
+int lwis_device_event_state_get_counter(struct lwis_device *lwis_dev, int64_t event_id,
+					int64_t *counter);
+
+/*
  * lwis_device_event_state_find_or_create: Looks through the provided device's
  * event state list and tries to find a lwis_device_event_state object with the
  * matching event_id. If not found, creates the object with 0 flags and adds it

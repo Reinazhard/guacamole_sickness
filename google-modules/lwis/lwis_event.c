@@ -224,6 +224,24 @@ struct lwis_device_event_state *lwis_device_event_state_find(struct lwis_device 
 	return state;
 }
 
+int lwis_device_event_state_get_counter(struct lwis_device *lwis_dev, int64_t event_id,
+					int64_t *counter)
+{
+	struct lwis_device_event_state *state;
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&lwis_dev->lock, flags);
+	state = device_event_state_find_locked(lwis_dev, event_id);
+	if (IS_ERR_OR_NULL(state))
+		ret = -ENOENT;
+	else
+		*counter = state->event_counter;
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
+
+	return ret;
+}
+
 struct lwis_device_event_state *lwis_device_event_state_find_or_create(struct lwis_device *lwis_dev,
 								       int64_t event_id)
 {
@@ -370,12 +388,11 @@ static int client_event_unsubscribe(struct lwis_client *lwis_client, int64_t eve
 	client_event_queue_clear_by_id(lwis_client, event_id);
 
 	/* Reset event counter */
-	event_state = lwis_device_event_state_find(lwis_dev, event_id);
-	if (event_state) {
-		spin_lock_irqsave(&lwis_dev->lock, flags);
+	spin_lock_irqsave(&lwis_dev->lock, flags);
+	event_state = device_event_state_find_locked(lwis_dev, event_id);
+	if (event_state)
 		event_state->event_counter = 0;
-		spin_unlock_irqrestore(&lwis_dev->lock, flags);
-	}
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
 
 	return ret;
 }
@@ -422,6 +439,16 @@ int lwis_client_event_control_set(struct lwis_client *lwis_client,
 	}
 
 	spin_lock_irqsave(&lwis_client->event_lock, flags);
+	/*
+	 * Re-resolve the state under the lock.  The pointer returned by
+	 * find_or_create() was unprotected the moment that call returned, and
+	 * lwis_client_event_states_clear() unlinks and frees the object.
+	 */
+	state = client_event_state_find_locked(lwis_client, control->event_id);
+	if (IS_ERR_OR_NULL(state)) {
+		spin_unlock_irqrestore(&lwis_client->event_lock, flags);
+		return -ENOENT;
+	}
 	old_flags = state->event_control.flags;
 	state->event_control.flags = new_flags;
 	spin_unlock_irqrestore(&lwis_client->event_lock, flags);
@@ -464,6 +491,7 @@ int lwis_client_event_control_get(struct lwis_client *lwis_client, int64_t event
 				  struct lwis_event_control *control)
 {
 	struct lwis_client_event_state *state;
+	unsigned long flags;
 
 	state = lwis_client_event_state_find_or_create(lwis_client, event_id);
 
@@ -472,7 +500,15 @@ int lwis_client_event_control_get(struct lwis_client *lwis_client, int64_t event
 		return -ENOMEM;
 	}
 
+	/* Re-resolve under the lock; see lwis_client_event_control_set(). */
+	spin_lock_irqsave(&lwis_client->event_lock, flags);
+	state = client_event_state_find_locked(lwis_client, event_id);
+	if (IS_ERR_OR_NULL(state)) {
+		spin_unlock_irqrestore(&lwis_client->event_lock, flags);
+		return -ENOENT;
+	}
 	control->flags = state->event_control.flags;
+	spin_unlock_irqrestore(&lwis_client->event_lock, flags);
 
 	return 0;
 }
@@ -780,15 +816,25 @@ int lwis_device_event_flags_updated(struct lwis_device *lwis_dev, int64_t event_
 		}
 
 		/* Reset hw event counter if hw event has been disabled */
-		if (!event_enabled)
-			state->event_counter = 0;
+		if (!event_enabled) {
+			spin_lock_irqsave(&lwis_dev->lock, flags);
+			state = device_event_state_find_locked(lwis_dev, event_id);
+			if (state)
+				state->event_counter = 0;
+			spin_unlock_irqrestore(&lwis_dev->lock, flags);
+		}
 	}
 
 	/* Reset sw event counter when it's going to disable */
 	if ((event_id & LWIS_TRANSACTION_EVENT_FLAG ||
 	     event_id & LWIS_TRANSACTION_FAILURE_EVENT_FLAG) &&
-	    new_flags == 0)
-		state->event_counter = 0;
+	    new_flags == 0) {
+		spin_lock_irqsave(&lwis_dev->lock, flags);
+		state = device_event_state_find_locked(lwis_dev, event_id);
+		if (state)
+			state->event_counter = 0;
+		spin_unlock_irqrestore(&lwis_dev->lock, flags);
+	}
 
 	/* Check if our specialization cares about flags updates */
 	if (lwis_dev->vops.event_flags_updated) {
@@ -1090,13 +1136,22 @@ void lwis_device_external_event_emit(struct lwis_device *lwis_dev, int64_t event
 
 	INIT_LIST_HEAD(&pending_events);
 
-	device_event_state = lwis_device_event_state_find(lwis_dev, event_id);
+	/*
+	 * Look the state up under the device lock and write it before dropping
+	 * that lock.  lwis_device_event_states_clear() does hash_del() followed
+	 * by kfree() on the same hashtable under the same lock, so a pointer
+	 * taken by lwis_device_event_state_find() - which drops the lock again
+	 * before returning - can be freed by a concurrent DEVICE_DISABLE before
+	 * the write lands.
+	 */
+	spin_lock_irqsave(&lwis_dev->lock, flags);
+
+	device_event_state = device_event_state_find_locked(lwis_dev, event_id);
 	if (IS_ERR_OR_NULL(device_event_state)) {
+		spin_unlock_irqrestore(&lwis_dev->lock, flags);
 		dev_err(lwis_dev->dev, "Device external event state not found %llx\n", event_id);
 		return;
 	}
-	/* Lock and disable to prevent event_states from changing */
-	spin_lock_irqsave(&lwis_dev->lock, flags);
 
 	/* Update event counter */
 	device_event_state->event_counter = event_counter;
