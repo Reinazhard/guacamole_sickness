@@ -1388,7 +1388,7 @@ static ssize_t cs40l2x_cp_trigger_queue_show(struct device *dev,
 		return -EPERM;
 	}
 
-	pbq_str = kzalloc(cs40l2x->pbq_str_size + 1, GFP_KERNEL);
+	pbq_str = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!pbq_str)
 		return -ENOMEM;
 
@@ -1396,31 +1396,31 @@ static ssize_t cs40l2x_cp_trigger_queue_show(struct device *dev,
 
 	for (i = 0; i < cs40l2x->pbq_comp.nsections; i++, section++) {
 		if (section->repeat == WT_REPEAT_LOOP_MARKER)
-			len += snprintf(pbq_str + len, PAGE_SIZE - len, "!!, ");
+			len += scnprintf(pbq_str + len, PAGE_SIZE - len, "!!, ");
 
 		if (section->amplitude)
-			len += snprintf(pbq_str + len, PAGE_SIZE - len, "%d.%d, ",
+			len += scnprintf(pbq_str + len, PAGE_SIZE - len, "%d.%d, ",
 					section->index, section->amplitude);
 
 		if (section->delay)
-			len += snprintf(pbq_str + len, PAGE_SIZE - len, "%d, ",
+			len += scnprintf(pbq_str + len, PAGE_SIZE - len, "%d, ",
 					section->delay);
 
 		if (section->repeat && section->repeat != WT_REPEAT_LOOP_MARKER)
-			len += snprintf(pbq_str + len, PAGE_SIZE - len, "%d!!, ",
+			len += scnprintf(pbq_str + len, PAGE_SIZE - len, "%d!!, ",
 					section->repeat);
 	}
 
 	switch (cs40l2x->pbq_comp.repeat) {
 	case WT_REPEAT_LOOP_MARKER:
-		len += snprintf(pbq_str + len, PAGE_SIZE - len, "~\n");
+		len += scnprintf(pbq_str + len, PAGE_SIZE - len, "~\n");
 		break;
 	case 0:
 		len -= 2; // Remove ", " from end of string
-		len += snprintf(pbq_str + len, PAGE_SIZE - len, "\n");
+		len += scnprintf(pbq_str + len, PAGE_SIZE - len, "\n");
 		break;
 	default:
-		len += snprintf(pbq_str + len, PAGE_SIZE - len, "%d!\n",
+		len += scnprintf(pbq_str + len, PAGE_SIZE - len, "%d!\n",
 				cs40l2x->pbq_comp.repeat);
 	}
 
