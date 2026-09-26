@@ -11713,6 +11713,7 @@ wl_cfgvendor_ota_download(struct wiphy *wiphy,
 	int rem, type;
 	const struct nlattr *iter;
 	char* buf[1];
+	uint8 *new_buf = NULL;
 	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
 	dhd_pub_t *dhdp = cfg->pub;
 #if defined(WLAN_ACCEL_BOOT)
@@ -11736,18 +11737,20 @@ wl_cfgvendor_ota_download(struct wiphy *wiphy,
 				}
 				memcpy_s(buf, sizeof(*buf),
 						(void *)nla_data(iter), nla_len(iter));
-				ota_info->clm_buf = MALLOCZ(cfg->osh, ota_info->clm_len);
-				if (ota_info->clm_buf == NULL) {
+				new_buf = MALLOCZ(cfg->osh, ota_info->clm_len);
+				if (new_buf == NULL) {
 					err = -ENOMEM;
 					WL_ERR(("Allocte fail size [%d]\n", ota_info->clm_len));
 					goto exit;
 				}
-				err = copy_from_user(ota_info->clm_buf, buf[0],
+				err = copy_from_user(new_buf, buf[0],
 						ota_info->clm_len);
 				if (err) {
 					WL_ERR(("Failed copy_from_user for ota_clm_buf.\n"));
+					MFREE(cfg->osh, new_buf, ota_info->clm_len);
 					goto exit;
 				}
+				ota_info->clm_buf = new_buf;
 				break;
 			case OTA_DOWNLOAD_NVRAM_LENGTH_ATTR:
 				ota_info->nvram_len = nla_get_u32(iter);
@@ -11762,18 +11765,20 @@ wl_cfgvendor_ota_download(struct wiphy *wiphy,
 				}
 				memcpy_s(buf, sizeof(*buf),
 						(void *)nla_data(iter), nla_len(iter));
-				ota_info->nvram_buf = MALLOCZ(cfg->osh, ota_info->nvram_len);
-				if (ota_info->nvram_buf  == NULL) {
+				new_buf = MALLOCZ(cfg->osh, ota_info->nvram_len);
+				if (new_buf == NULL) {
 					err = -ENOMEM;
 					WL_ERR(("Allocte fail size [%d]\n", ota_info->nvram_len));
 					goto exit;
 				}
-				err = copy_from_user(ota_info->nvram_buf, buf[0],
+				err = copy_from_user(new_buf, buf[0],
 						ota_info->nvram_len);
 				if (err) {
 					WL_ERR(("Failed copy_from_user for ota_nvram_buf.\n"));
+					MFREE(cfg->osh, new_buf, ota_info->nvram_len);
 					goto exit;
 				}
+				ota_info->nvram_buf = new_buf;
 				break;
 			case OTA_SET_FORCE_REG_ON:
 				{
