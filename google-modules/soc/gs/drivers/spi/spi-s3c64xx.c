@@ -1864,6 +1864,8 @@ static int s3c64xx_spi_remove(struct platform_device *pdev)
 	struct spi_master *master = spi_master_get(platform_get_drvdata(pdev));
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(master);
 
+	list_del_init(&sdd->cntrlr_info->node);
+
 #ifdef CONFIG_PM
 	pm_runtime_disable(&pdev->dev);
 #endif
