@@ -485,8 +485,10 @@ static int vclk_get_dfs_info(struct vclk *vclk, unsigned int minmax_idx)
 	return ret;
 err_nomem2:
 	kfree(vclk->lut);
+	vclk->lut = NULL;
 err_nomem1:
 	kfree(vclk->list);
+	vclk->list = NULL;
 
 	return ret;
 }
