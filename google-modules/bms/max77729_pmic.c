@@ -1362,6 +1362,8 @@ static void max77729_pmic_remove(struct i2c_client *client)
 {
 	struct max77729_pmic_data *data = i2c_get_clientdata(client);
 
+	cancel_delayed_work_sync(&data->storage_init_work);
+
 	if (data->pmic_id == MAX77759_PMIC_PMIC_ID_MW)
 		maxq_remove(data->maxq);
 }
