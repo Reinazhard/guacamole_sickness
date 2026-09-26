@@ -1212,6 +1212,7 @@ dhd_lb_rx_napi_dispatch(dhd_pub_t *dhdp)
 	int curr_cpu;
 	int rx_napi_cpu;
 	int prev_dpc_cpu;
+	bool hotplug_locked;
 
 	if (dhd->rx_napi_netdev == NULL) {
 		DHD_ERROR(("%s: dhd->rx_napi_netdev is NULL\n", __FUNCTION__));
@@ -1234,9 +1235,25 @@ dhd_lb_rx_napi_dispatch(dhd_pub_t *dhdp)
 	}
 
 	/*
-	 * Get cpu will disable pre-ermption and will not allow any cpu to go offline
-	 * and call put_cpu() only after scheduling rx_napi_dispatcher_work.
+	 * The candidacy decision below rewrites the shared cpumasks and the
+	 * published cpu ids, which the cpu hotplug callbacks touch from the
+	 * hotplug thread. Hold the hotplug read lock across it so a concurrent
+	 * online/offline notification cannot be lost. get_cpu() is kept for
+	 * curr_cpu: percpu_down_read() disables preemption only inside itself,
+	 * so cpus_read_lock() does not pin this task to a cpu.
+	 *
+	 * Only in process context. The DPC is a kthread when dhd_dpc_prio >= 0
+	 * but a tasklet when it is negative (dhd_linux.c:9418-9427 picks the
+	 * mode, dhd_sched_dpc() at :5101 takes the tasklet branch), and
+	 * cpus_read_lock() opens with might_sleep(), so it is not legal in
+	 * softirq. The file's own comment above dhd_rx_napi_dispatcher_work()
+	 * records the same split: the hotplug exclusion is not required from
+	 * tasklet context. The candidacy read-modify-write is therefore left
+	 * unsynchronised in that mode rather than taking a sleeping lock there.
 	 */
+	hotplug_locked = in_task();
+	if (hotplug_locked)
+		cpus_read_lock();
 	curr_cpu = get_cpu();
 
 	prev_dpc_cpu = atomic_read(&dhd->prev_dpc_cpu);
@@ -1274,6 +1291,9 @@ dhd_lb_rx_napi_dispatch(dhd_pub_t *dhdp)
 	DHD_LB_STATS_INCR(dhd->napi_sched_cnt);
 
 	put_cpu();
+
+	if (hotplug_locked)
+		cpus_read_unlock();
 }
 
 /**
