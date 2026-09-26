@@ -3223,19 +3223,35 @@ static ssize_t set_charge_stop_level(struct device *dev,
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Validate and store under bd_lock so the pair stays consistent with
+	 * set_charge_start_level(); chg_run_defender() takes the same lock, so
+	 * it is called after it is dropped.
+	 */
+	mutex_lock(&chg_drv->bd_lock);
+
 	if (!chg_drv->bat_psy) {
 		pr_err("chg_drv->bat_psy is not ready");
-		return -ENODATA;
+		ret = -ENODATA;
+		goto unlock;
 	}
 
 	if ((val == chg_drv->charge_stop_level) ||
 	    (val <= chg_drv->charge_start_level) ||
-	    (val > DEFAULT_CHARGE_STOP_LEVEL))
-		return -EINVAL;
+	    (val > DEFAULT_CHARGE_STOP_LEVEL)) {
+		ret = -EINVAL;
+		goto unlock;
+	}
 
 	gbms_logbuffer_prlog(chg_drv->bd_state.bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
 			     "CHG_LEVEL: stop %d -> %d", chg_drv->charge_stop_level, val);
 	chg_drv->charge_stop_level = val;
+
+unlock:
+	mutex_unlock(&chg_drv->bd_lock);
+
+	if (ret < 0)
+		return ret;
 
 	/* Dwell v1.5: Sync charge stop level to battery for dynamic spoofing */
 	ret = GPSY_SET_PROP(chg_drv->bat_psy, GBMS_PROP_CHARGE_STOP_LEVEL, val);
@@ -3274,19 +3290,35 @@ static ssize_t set_charge_start_level(struct device *dev,
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Validate and store under bd_lock so the pair stays consistent with
+	 * set_charge_stop_level(); chg_run_defender() takes the same lock, so
+	 * it is called after it is dropped.
+	 */
+	mutex_lock(&chg_drv->bd_lock);
+
 	if (!chg_drv->bat_psy) {
 		pr_err("chg_drv->bat_psy is not ready");
-		return -ENODATA;
+		ret = -ENODATA;
+		goto unlock;
 	}
 
 	if ((val == chg_drv->charge_start_level) ||
 	    (val >= chg_drv->charge_stop_level) ||
-	    (val < DEFAULT_CHARGE_START_LEVEL))
-		return -EINVAL;
+	    (val < DEFAULT_CHARGE_START_LEVEL)) {
+		ret = -EINVAL;
+		goto unlock;
+	}
 
 	gbms_logbuffer_prlog(chg_drv->bd_state.bd_log, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
 			     "CHG_LEVEL: start %d -> %d", chg_drv->charge_start_level, val);
 	chg_drv->charge_start_level = val;
+
+unlock:
+	mutex_unlock(&chg_drv->bd_lock);
+
+	if (ret < 0)
+		return ret;
 
 	/* Dwell v1.5: Sync charge start level to battery for dynamic spoofing */
 	ret = GPSY_SET_PROP(chg_drv->bat_psy, GBMS_PROP_CHARGE_START_LEVEL, val);
