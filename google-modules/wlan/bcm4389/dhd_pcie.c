@@ -2768,13 +2768,12 @@ dhdpcie_bus_remove_prep(dhd_bus_t *bus)
 	bus->dhd->busstate = DHD_BUS_DOWN;
 	DHD_GENERAL_UNLOCK(bus->dhd, flags);
 
-#ifdef PCIE_INB_DW
-	/* De-Initialize the lock to serialize Device Wake Inband activities */
-	if (bus->inb_lock) {
-		osl_spin_lock_deinit(bus->dhd->osh, bus->inb_lock);
-		bus->inb_lock = NULL;
-	}
-#endif
+	/*
+	 * bus->inb_lock is deliberately NOT de-initialized here: the DPC thread
+	 * takes it while draining the D2H ring and is still running at this
+	 * point.  dhdpcie_bus_release() frees it once dhd_detach() has stopped
+	 * the DPC.
+	 */
 
 	dhd_os_sdlock(bus->dhd);
 
@@ -2944,13 +2943,6 @@ dhdpcie_bus_release(dhd_bus_t *bus)
 			}
 			dhd_deinit_dpc_histos(bus->dhd);
 
-			dhd_deinit_bus_lp_state_lock(bus);
-			dhd_deinit_bar1_switch_lock(bus);
-			dhd_deinit_backplane_access_lock(bus);
-			dhd_deinit_pwr_req_lock(bus);
-#ifdef PCIE_INB_DW
-			dhd_deinit_dongle_ds_lock(bus);
-#endif /* PCIE_INB_DW */
 #ifdef BCMQT
 			if (IDMA_ACTIVE(bus->dhd)) {
 			/**
@@ -2970,6 +2962,25 @@ dhdpcie_bus_release(dhd_bus_t *bus)
 			 * So dhdpcie_bus_release_dongle should be called only after the dhd_detach.
 			 */
 			dhd_detach(bus->dhd);
+			/*
+			 * dhd_detach() has stopped the DPC thread, which is the last
+			 * context that takes the transport spinlocks.  Freeing them any
+			 * earlier leaves the DPC running against NULL (i.e. unlocked)
+			 * locks, silently dropping the in-band device-wake mutual
+			 * exclusion, and leaves a window where the DPC reads a lock
+			 * pointer that has already been de-initialized.
+			 */
+			dhd_deinit_bus_lp_state_lock(bus);
+			dhd_deinit_bar1_switch_lock(bus);
+			dhd_deinit_backplane_access_lock(bus);
+			dhd_deinit_pwr_req_lock(bus);
+#ifdef PCIE_INB_DW
+			dhd_deinit_dongle_ds_lock(bus);
+			if (bus->inb_lock) {
+				osl_spin_lock_deinit(bus->dhd->osh, bus->inb_lock);
+				bus->inb_lock = NULL;
+			}
+#endif /* PCIE_INB_DW */
 			dhdpcie_bus_release_dongle(bus, osh, dongle_isolation, TRUE);
 #if defined(__linux__)
 			DHD_ERROR(("%s: disable pcie dev\n", __FUNCTION__));
