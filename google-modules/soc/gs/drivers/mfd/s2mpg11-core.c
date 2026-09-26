@@ -361,12 +361,13 @@ static int s2mpg11_i2c_probe(struct i2c_client *i2c,
 					   &s2mpg11_regmap_config);
 	if (IS_ERR(s2mpg11->regmap)) {
 		dev_err(s2mpg11->dev, "regmap_init failed!\n");
-		return PTR_ERR(s2mpg11->regmap);
+		ret = PTR_ERR(s2mpg11->regmap);
+		goto err_w_lock;
 	}
 
 	ret = s2mpg11_irq_init(s2mpg11);
 	if (ret < 0)
-		goto err_irq_init;
+		goto err_w_lock;
 
 	ret = mfd_add_devices(s2mpg11->dev, -1, s2mpg11_devs,
 			      ARRAY_SIZE(s2mpg11_devs), NULL, 0, NULL);
@@ -379,8 +380,6 @@ static int s2mpg11_i2c_probe(struct i2c_client *i2c,
 
 err_mfd:
 	mfd_remove_devices(s2mpg11->dev);
-err_irq_init:
-	i2c_unregister_device(s2mpg11->i2c);
 err_w_lock:
 	mutex_destroy(&s2mpg11->i2c_lock);
 err:
@@ -393,7 +392,6 @@ static void s2mpg11_i2c_remove(struct i2c_client *i2c)
 	struct s2mpg11_dev *s2mpg11 = i2c_get_clientdata(i2c);
 
 	mfd_remove_devices(s2mpg11->dev);
-	i2c_unregister_device(s2mpg11->i2c);
 	kfree(s2mpg11);
 }
 

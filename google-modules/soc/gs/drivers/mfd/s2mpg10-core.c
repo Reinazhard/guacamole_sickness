@@ -509,12 +509,13 @@ static int s2mpg10_i2c_probe(struct i2c_client *i2c,
 					   &s2mpg10_regmap_config);
 	if (IS_ERR(s2mpg10->regmap)) {
 		dev_err(s2mpg10->dev, "regmap_init failed!\n");
-		return PTR_ERR(s2mpg10->regmap);
+		ret = PTR_ERR(s2mpg10->regmap);
+		goto err_w_lock;
 	}
 
 	ret = s2mpg10_irq_init(s2mpg10);
 	if (ret < 0)
-		goto err_irq_init;
+		goto err_w_lock;
 
 	ret = mfd_add_devices(s2mpg10->dev, -1, s2mpg10_devs,
 			      ARRAY_SIZE(s2mpg10_devs), NULL, 0, NULL);
@@ -527,8 +528,6 @@ static int s2mpg10_i2c_probe(struct i2c_client *i2c,
 
 err_mfd:
 	mfd_remove_devices(s2mpg10->dev);
-err_irq_init:
-	i2c_unregister_device(s2mpg10->i2c);
 err_w_lock:
 	mutex_destroy(&s2mpg10->i2c_lock);
 err:
@@ -541,7 +540,6 @@ static void s2mpg10_i2c_remove(struct i2c_client *i2c)
 	struct s2mpg10_dev *s2mpg10 = i2c_get_clientdata(i2c);
 
 	mfd_remove_devices(s2mpg10->dev);
-	i2c_unregister_device(s2mpg10->i2c);
 	kfree(s2mpg10);
 }
 
