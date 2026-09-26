@@ -2103,6 +2103,7 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 					dev_err(info->dev, "Limits dimension expected by Host is less than actual size: expected = %d, real = %d\n",
 						byteToRead, fileSize);
 					res = ERROR_OP_NOT_ALLOW;
+					goto ERROR;
 				}
 
 				size += (addr * sizeof(u8));
@@ -2147,6 +2148,7 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 					dev_err(info->dev, "FW dimension expected by Host is less than actual size: expected = %d, real = %d\n",
 						byteToRead, fileSize);
 					res = ERROR_OP_NOT_ALLOW;
+					goto ERROR;
 				}
 
 				size += (addr * sizeof(u8));	/* return always
