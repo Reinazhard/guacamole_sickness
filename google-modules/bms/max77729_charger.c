@@ -1224,9 +1224,6 @@ static void max77729_charger_remove(struct i2c_client *client)
 
 	gvotable_destroy_election(data->mode_votable);
 
-	if (data->psy)
-		power_supply_unregister(data->psy);
-
 	dbg_cleanup_fs(data);
 }
 
