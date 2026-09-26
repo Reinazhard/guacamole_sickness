@@ -7265,6 +7265,14 @@ int dw3000_disable(struct dw3000 *dw)
 		   enable/disable_irq are nested! */
 		return 0;
 	}
+	/*
+	 * The chip is awake, so the idle timer may still be armed for the
+	 * whole idle duration. Cancel it and wait for a callback that is
+	 * already running: this context is freed once the state machine
+	 * thread returns, and dw3000_idle_timeout() must not run past
+	 * that point.
+	 */
+	hrtimer_cancel(&dw->idle_timer);
 	/* No IRQs after this point */
 	disable_irq(dw->spi->irq);
 	/* Disable further interrupt generation */
