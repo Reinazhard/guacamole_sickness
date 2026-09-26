@@ -231,18 +231,11 @@ static int drv2624_get_mode(struct drv2624_data *drv2624)
 
 static int drv2624_stop(struct drv2624_data *drv2624)
 {
-	int nResult = 0, mode = 0;
+	int nResult = 0;
 
 	nResult = drv2624_reg_read(drv2624, DRV2624_REG_MODE);
 	if (nResult < 0)
 		return 0;
-
-	mode =  nResult & WORKMODE_MASK;
-	if (mode == MODE_WAVEFORM_SEQUENCER)
-	{
-		dev_dbg(drv2624->dev, "In sequence play, ignore stop\n");
-		return 0;
-	}
 
 	if (drv2624->vibrator_playing) {
 		dev_dbg(drv2624->dev, "%s\n", __func__);
