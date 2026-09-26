@@ -14,6 +14,7 @@
 #include <linux/sync_file.h>
 #include <linux/delay.h>
 #include <linux/dma-buf.h>
+#include <linux/irq_work.h>
 #include <linux/mm.h>
 #include <linux/preempt.h>
 #include <linux/slab.h>
@@ -116,9 +117,45 @@ static void save_transaction_to_history(struct lwis_client *client,
 		client->debug_info.cur_transaction_hist_idx = 0;
 }
 
+/*
+ * dma_fence_remove_callback() takes fence->lock, while a fence callback
+ * (fence_signal_transaction_cb()) takes the submitting client's
+ * transaction_lock. lwis_transaction_free() runs with transaction_lock held,
+ * so removing the trigger-fence callbacks from there inverts that lock order.
+ * Queue the entries and let an irq_work do the removal off the lock.
+ *
+ * deferred_fence_release_lock is taken from hardirq context by that irq_work,
+ * and also by lwis_transaction_free() when it is reached from the fence
+ * callback (lwis_transaction_fence_trigger -> cancel_transaction), so every
+ * acquisition of it must disable interrupts.
+ */
+static LIST_HEAD(deferred_fence_release);
+static DEFINE_SPINLOCK(deferred_fence_release_lock);
+
+static void deferred_fence_release_work(struct irq_work *work)
+{
+	struct lwis_pending_transaction_id *pend_id, *pend_id_tmp;
+	LIST_HEAD(local);
+
+	spin_lock(&deferred_fence_release_lock);
+	list_splice_init(&deferred_fence_release, &local);
+	spin_unlock(&deferred_fence_release_lock);
+
+	list_for_each_entry_safe(pend_id, pend_id_tmp, &local, node) {
+		list_del(&pend_id->node);
+		if (!pend_id->triggered)
+			dma_fence_remove_callback(pend_id->fence, &pend_id->fence_cb);
+		dma_fence_put(pend_id->fence);
+		kfree(pend_id);
+	}
+}
+
+static DEFINE_IRQ_WORK(deferred_fence_release_irq_work, deferred_fence_release_work);
+
 void lwis_transaction_free(struct lwis_device *lwis_dev, struct lwis_transaction **lwis_tx)
 {
 	int i;
+	unsigned long flags;
 	struct lwis_fence_pending_signal *pending_fence;
 	struct list_head *it_fence, *it_fence_tmp;
 	struct lwis_pending_transaction_id *pend_id, *pend_id_tmp;
@@ -142,12 +179,15 @@ void lwis_transaction_free(struct lwis_device *lwis_dev, struct lwis_transaction
 		}
 	}
 
-	list_for_each_entry_safe(pend_id, pend_id_tmp, &transaction->trigger_fences, node) {
-		list_del(&pend_id->node);
-		if (!pend_id->triggered)
-			dma_fence_remove_callback(pend_id->fence, &pend_id->fence_cb);
-		dma_fence_put(pend_id->fence);
-		kfree(pend_id);
+	if (!list_empty(&transaction->trigger_fences)) {
+		spin_lock_irqsave(&deferred_fence_release_lock, flags);
+		list_for_each_entry_safe(pend_id, pend_id_tmp,
+						 &transaction->trigger_fences, node) {
+			list_del(&pend_id->node);
+			list_add_tail(&pend_id->node, &deferred_fence_release);
+		}
+		spin_unlock_irqrestore(&deferred_fence_release_lock, flags);
+		irq_work_queue(&deferred_fence_release_irq_work);
 	}
 
 	if (bundle) {
