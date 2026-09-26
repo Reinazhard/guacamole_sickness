@@ -37,6 +37,11 @@ struct v4l2_heatmap {
 	spinlock_t heatmap_lock;
 	/* guarded by heatmap_lock */
 	struct list_head heatmap_buffer_list;
+	/*
+	 * guarded by heatmap_lock; set by heatmap_remove() before it
+	 * frees 'frame', so heatmap_read() can refuse to touch it.
+	 */
+	bool removed;
 
 	/*
 	 * Function read_frame must be provided by the driver.
