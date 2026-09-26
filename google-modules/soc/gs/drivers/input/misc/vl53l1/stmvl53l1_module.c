@@ -4476,9 +4476,29 @@ void stmvl53l1_cleanup(struct stmvl53l1_data *data)
 	if (rc < 0)
 		dev_err(dev, "stop failed %d aborting anyway\n", rc);
 
+	/* be sure device is put under reset */
+	data->force_device_on_enable = false;
+	reset_hold(data);
+	stmvl53l1_module_func_tbl.power_down(data->client_object);
+
+	/* no new work may start from here on */
+	data->is_device_remove = true;
+
+	/* input_unregister_device() and misc_deregister() both end in
+	 * device_del(), which drains the sysfs stores already in flight.  Those
+	 * stores take work_mutex, so it has to be dropped around them: the
+	 * removal thread would otherwise wait for a store that is itself waiting
+	 * for work_mutex.  The sensor is stopped and the device is flagged
+	 * removed, so a store that runs in the gap does not start it again.
+	 * work_mutex is taken again before returning, because the callers hold
+	 * it across this call and unlock it themselves.
+	 */
+	mutex_unlock(&data->work_mutex);
+
 	if (data->input_dev_ps) {
 		dev_dbg(dev, "to unregister input dev\n");
 		input_unregister_device(data->input_dev_ps);
+		data->input_dev_ps = NULL;
 	}
 
 	if (!IS_ERR(data->miscdev.this_device) &&
@@ -4487,13 +4507,9 @@ void stmvl53l1_cleanup(struct stmvl53l1_data *data)
 		misc_deregister(&data->miscdev);
 	}
 
-	/* be sure device is put under reset */
-	data->force_device_on_enable = false;
-	reset_hold(data);
-	stmvl53l1_module_func_tbl.power_down(data->client_object);
+	mutex_lock(&data->work_mutex);
 
 	deallocate_dev_id(data->id);
-	data->is_device_remove = true;
 }
 
 #ifdef CONFIG_PM_SLEEP
