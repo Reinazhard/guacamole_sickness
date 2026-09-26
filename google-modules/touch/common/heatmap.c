@@ -394,12 +394,13 @@ err_video_device_release:
 	mutex_lock(&v4l2->lock);
 	vb2_queue_release(&v4l2->queue);
 	mutex_unlock(&v4l2->lock);
-	video_device_release(&v4l2->vdev);
+	video_device_release_empty(&v4l2->vdev);
 
 err_unreg_v4l2:
 	v4l2_device_unregister(&v4l2->device);
 err_free_frame_storage:
-	kfree(v4l2->frame);
+	devm_kfree(v4l2->parent_dev, v4l2->frame);
+	v4l2->frame = NULL;
 err_probe:
 	return error;
 }
