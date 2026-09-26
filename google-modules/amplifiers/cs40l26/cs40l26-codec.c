@@ -628,7 +628,7 @@ static int cs40l26_i2s_atten_get(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	error = cl_dsp_get_reg(cs40l26->dsp, "I2S_ATTENUATION", CL_DSP_XM_UNPACKED_TYPE,
 			cs40l26->fw_id, &reg);
 	if (error)
-		goto pm_err;
+		return error;
 
 	error = cs40l26_pm_enter(dev);
 	if (error)
