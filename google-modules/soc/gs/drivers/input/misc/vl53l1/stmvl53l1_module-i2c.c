@@ -609,6 +609,11 @@ static int stmvl53l1_probe(struct i2c_client *client,
 	i2c_data->client = client;
 	i2c_data->vl53l1_data = vl53l1_data;
 	i2c_data->irq = -1; /* init to no irq */
+	/* init the refcount before stmvl53l1_setup() misc_register()s the
+	 * device, otherwise an open() landing in the window kref_get()s an
+	 * uninitialised counter
+	 */
+	kref_init(&i2c_data->ref);
 
 	shared_i2c_data = kzalloc(sizeof(struct shared_i2c_data), GFP_KERNEL);
 	if (!shared_i2c_data)
@@ -627,8 +632,6 @@ static int stmvl53l1_probe(struct i2c_client *client,
 	rc = stmvl53l1_setup(vl53l1_data);
 	if (rc)
 		goto release_gpios;
-
-	kref_init(&i2c_data->ref);
 
 	return rc;
 
