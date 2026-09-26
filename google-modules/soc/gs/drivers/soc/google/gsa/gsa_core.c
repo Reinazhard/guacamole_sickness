@@ -639,6 +639,7 @@ static long gsa_cdev_handle_load_app(struct gsa_dev_state *s, unsigned long arg)
 	u32 gsa_mbox_req[APP_PKG_LOAD_REQ_ARGC];
 	dma_addr_t outbuf_dma;
 	void *outbuf_va = NULL;
+	bool mapped = false;
 	int rc = 0;
 
 	if (copy_from_user(&req, (const void __user *)arg, sizeof(req))) {
@@ -659,6 +660,7 @@ static long gsa_cdev_handle_load_app(struct gsa_dev_state *s, unsigned long arg)
 		rc = -ENOMEM;
 		goto out;
 	}
+	mapped = true;
 
 	gsa_mbox_req[APP_PKG_ADDR_LO_IDX] = (u32)outbuf_dma;
 	gsa_mbox_req[APP_PKG_ADDR_HI_IDX] = (u32)(outbuf_dma >> 32);
@@ -672,7 +674,7 @@ static long gsa_cdev_handle_load_app(struct gsa_dev_state *s, unsigned long arg)
 	}
 
 out:
-	if (outbuf_dma)
+	if (mapped)
 		dma_unmap_single(s->dev, outbuf_dma, req.len, DMA_TO_DEVICE);
 	kfree(outbuf_va);
 	return rc;
