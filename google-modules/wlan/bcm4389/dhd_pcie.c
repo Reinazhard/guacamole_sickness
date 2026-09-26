@@ -1296,9 +1296,28 @@ dhdpcie_cto_recovery_handler(dhd_pub_t *dhd)
 		return;
 	}
 
-	/* Disable PCIe Runtime PM to avoid D3_ACK timeout.
+	/*
+	 * Disable PCIe Runtime PM before taking pm_lock.  This is not just a
+	 * flag store: dhd_runtime_pm_disable() also wakes the RPM thread when
+	 * the bus is already suspended and then waits (bounded by
+	 * RPM_WAKE_UP_TIMEOUT) for bus->runtime_resume_done, i.e. for an
+	 * in-flight suspend/resume to finish.  The resume it waits for takes
+	 * bus->pm_lock itself, so this call must not be made while holding it.
 	 */
 	DHD_DISABLE_RUNTIME_PM(dhd);
+
+	/*
+	 * Serialize against runtime PM.  Runtime PM is disabled and any
+	 * suspend/resume that was in flight has drained above, so a suspend
+	 * that was sampled before the disable can now only enter the D3
+	 * handshake by waiting here.  Such a suspend is refused for the whole
+	 * CTO episode by dhd_query_bus_erros(), which reads bus->cto_triggered --
+	 * set by the ISR before it scheduled this handler -- and returns from
+	 * dhdpcie_bus_suspend() before that function reaches its own
+	 * is_linkdown test.  is_linkdown is assigned only at the end of this
+	 * recovery, so it is not what covers the window.
+	 */
+	mutex_lock(&bus->pm_lock);
 
 	/* Sleep for 1 seconds so that any AXI timeout
 	 * if running on ALP clock also will be captured
@@ -1334,6 +1353,7 @@ dhdpcie_cto_recovery_handler(dhd_pub_t *dhd)
 #endif /* CONFIG_ARCH_MSM */
 #endif /* SUPPORT_LINKDOWN_RECOVERY */
 	bus->is_linkdown = TRUE;
+	mutex_unlock(&bus->pm_lock);
 	bus->dhd->hang_reason = HANG_REASON_PCIE_CTO_DETECT;
 	/* Send HANG event */
 	dhd_os_send_hang_message(bus->dhd);
