@@ -17434,8 +17434,8 @@ wl_enq_event(struct bcm_cfg80211 *cfg, struct net_device *ndev, u32 event,
 	if (data)
 		memcpy(e->edata, data, data_len);
 	e->datalen = data_len;
-	e->id = cfg->eidx.enqd++;
 	flags = wl_lock_eq(cfg);
+	e->id = cfg->eidx.enqd++;
 	list_add_tail(&e->eq_list, &cfg->eq_list);
 	wl_unlock_eq(cfg, flags);
 
