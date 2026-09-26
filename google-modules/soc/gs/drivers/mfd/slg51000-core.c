@@ -722,8 +722,9 @@ static int slg51000_i2c_probe(struct i2c_client *client,
 			ARRAY_SIZE(slg51000_devs), NULL, 0, NULL);
 
 out:
-	mutex_destroy(&slg51000->pwr_lock);
 	del_timer_sync(&slg51000->timer);
+	cancel_work_sync(&slg51000->timeout_work);
+	mutex_destroy(&slg51000->pwr_lock);
 	return ret;
 }
 
@@ -736,8 +737,9 @@ static void slg51000_i2c_remove(struct i2c_client *client)
 	sysfs_remove_group(&slg51000->dev->kobj, &attr_group);
 
 	mfd_remove_devices(slg51000->dev);
-	mutex_destroy(&slg51000->pwr_lock);
 	del_timer_sync(&slg51000->timer);
+	cancel_work_sync(&slg51000->timeout_work);
+	mutex_destroy(&slg51000->pwr_lock);
 
 	if (gpio_is_valid(slg51000->chip_pu_pin)) {
 		desc = gpio_to_desc(slg51000->chip_pu_pin);
