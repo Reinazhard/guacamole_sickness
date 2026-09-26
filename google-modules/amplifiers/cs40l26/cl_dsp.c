@@ -303,7 +303,7 @@ static int cl_dsp_read_wt(struct cl_dsp *dsp, int pos, int size)
 	struct cl_dsp_owt_header *entry = dsp->wt_desc->owt.waves;
 	void *buf = (void *)(dsp->wt_desc->owt.raw_data + pos);
 	struct cl_dsp_memchunk md_ch, ch = cl_dsp_memchunk_create(buf, size);
-	u32 *wbuf = buf, *max = buf, word = 0;
+	u32 *wbuf = buf, *max = buf;
 	int i, ret;
 
 	for (i = 0; i < ARRAY_SIZE(dsp->wt_desc->owt.waves); i++, entry++) {
@@ -334,6 +334,8 @@ static int cl_dsp_read_wt(struct cl_dsp *dsp, int pos, int size)
 		entry->data = wbuf + entry->offset;
 
 		if (entry->flags & CL_DSP_MD_PRESENT) {
+			u32 word = 0;
+
 			/*
 			 * In the RAM wavetable, the metadata is appended to the end
 			 * of the waveform data section. Skip to metadata location
