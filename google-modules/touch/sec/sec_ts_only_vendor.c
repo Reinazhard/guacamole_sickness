@@ -353,7 +353,8 @@ static ssize_t sec_ts_regread_show(struct device *dev,
 
 	input_info(true, &ts->client->dev, "%s: lv1_readsize = %d\n",
 		    __func__, lv1_readsize);
-	memcpy(buf, read_lv1_buff + lv1_readoffset, lv1_readsize);
+	memcpy(buf, read_lv1_buff + lv1_readoffset,
+		min_t(unsigned int, lv1_readsize, PAGE_SIZE));
 
 i2c_err:
 	kfree(read_lv1_buff);
@@ -396,6 +397,11 @@ static ssize_t sec_ts_regreadsize_store(struct device *dev,
 			((unsigned int)buf[3] << 16) |
 			((unsigned int) buf[2] << 8) |
 			((unsigned int)buf[1] << 0);
+	if (lv1_readsize < 1 || lv1_readsize > PAGE_SIZE) {
+		lv1_readsize = 0;
+		mutex_unlock(&ts->device_mutex);
+		return -EINVAL;
+	}
 	lv1_readoffset = 0;
 	lv1_readremain = 0;
 
