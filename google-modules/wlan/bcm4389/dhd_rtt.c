@@ -1836,6 +1836,32 @@ dhd_rtt_set_target_list_mode(dhd_pub_t *dhd)
 	}
 }
 
+/* Release the LCI/LCR IEs cached for the current request.  Call this
+ * before target_info[] is reset, so the pointers are still valid.
+ */
+static void
+dhd_rtt_free_target_lci_lcr(dhd_pub_t *dhd, rtt_config_params_t *rtt_config)
+{
+#ifdef WL_RTT_LCI
+	int i;
+
+	for (i = 0; i < RTT_MAX_TARGET_CNT; i++) {
+		if (rtt_config->target_info[i].LCI) {
+			MFREE(dhd->osh, rtt_config->target_info[i].LCI,
+				rtt_config->target_info[i].LCI->len +
+				BCM_XTLV_HDR_SIZE);
+			rtt_config->target_info[i].LCI = NULL;
+		}
+		if (rtt_config->target_info[i].LCR) {
+			MFREE(dhd->osh, rtt_config->target_info[i].LCR,
+				rtt_config->target_info[i].LCR->len +
+				BCM_XTLV_HDR_SIZE);
+			rtt_config->target_info[i].LCR = NULL;
+		}
+	}
+#endif /* WL_RTT_LCI */
+}
+
 int
 dhd_rtt_set_cfg(dhd_pub_t *dhd, rtt_config_params_t *params)
 {
@@ -1884,6 +1910,7 @@ dhd_rtt_set_cfg(dhd_pub_t *dhd, rtt_config_params_t *params)
 		goto exit;
 	}
 
+	dhd_rtt_free_target_lci_lcr(dhd, &rtt_status->rtt_config);
 	memset(rtt_status->rtt_config.target_info, 0, TARGET_INFO_SIZE(RTT_MAX_TARGET_CNT));
 	rtt_status->rtt_config.rtt_target_cnt = params->rtt_target_cnt;
 	memcpy(rtt_status->rtt_config.target_info,
@@ -2719,6 +2746,7 @@ dhd_rtt_stop(dhd_pub_t *dhd, struct ether_addr *mac_list, int mac_cnt)
 		INIT_LIST_HEAD(&rtt_status->rtt_results_cache);
 		/* clear information for rtt_config */
 		rtt_status->rtt_config.rtt_target_cnt = 0;
+		dhd_rtt_free_target_lci_lcr(dhd, &rtt_status->rtt_config);
 		memset(rtt_status->rtt_config.target_info, 0,
 			TARGET_INFO_SIZE(RTT_MAX_TARGET_CNT));
 		rtt_status->cur_idx = 0;
@@ -4313,6 +4341,7 @@ dhd_rtt_handle_rtt_session_end(dhd_pub_t *dhd)
 			dhd_rtt_ftm_enable(dhd, FALSE);
 		}
 		rtt_config->rtt_target_cnt = 0;
+		dhd_rtt_free_target_lci_lcr(dhd, rtt_config);
 		(void)memset_s(rtt_config->target_info, TARGET_INFO_SIZE(RTT_MAX_TARGET_CNT),
 			0, TARGET_INFO_SIZE(RTT_MAX_TARGET_CNT));
 		rtt_status->cur_idx = 0;
