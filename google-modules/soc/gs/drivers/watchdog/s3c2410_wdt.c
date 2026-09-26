@@ -1598,7 +1598,24 @@ static void vh_scheduler_tick(void *data, struct rq *unused)
 	if (!rt_prio(current->prio))
 		return;
 
-	this_cpu_ptr(wdt->schedstat)->rt_load += NSEC_PER_SEC / HZ;
+	/*
+	 * android_vh_scheduler_tick is a GKI restricted hook and cannot be
+	 * unregistered: include/trace/hooks/vendor_hooks.h defines
+	 * DECLARE_HOOK as DECLARE_RESTRICTED_HOOK, and
+	 * __DECLARE_RESTRICTED_HOOK emits only register_trace_*, followed by
+	 * the comment "vendor hooks cannot be unregistered". This callback
+	 * therefore outlives s3c2410wdt_remove(), which frees both `wdt` and
+	 * the percpu block below. Compare the data pointer against the
+	 * driver's own registry, which s3c2410wdt_remove() clears, before
+	 * dereferencing anything: an invocation left over from a removed
+	 * device returns without touching freed memory. The read-side section
+	 * is what lets that remove path wait for an invocation that is
+	 * already past the comparison.
+	 */
+	rcu_read_lock();
+	if (wdt == READ_ONCE(s3c_wdt[LITTLE_CLUSTER]))
+		this_cpu_ptr(wdt->schedstat)->rt_load += NSEC_PER_SEC / HZ;
+	rcu_read_unlock();
 }
 
 static int s3c2410wdt_probe(struct platform_device *pdev)
@@ -1914,6 +1931,31 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 	wdt->gate_clock = NULL;
 
 	unregister_pm_notifier(&s3c2410wdt_pm_nb);
+
+	/*
+	 * Unpublish, in the reverse order of publication, what
+	 * s3c2410wdt_probe() published for this cluster. Clearing s3c_wdt[]
+	 * first is also what stops vh_scheduler_tick() and the entry points
+	 * exported to debug-snapshot from using this object once it is
+	 * released.
+	 */
+	s3c_wdt[wdt->cluster] = NULL;
+
+	if (wdt->cluster == LITTLE_CLUSTER) {
+		unregister_syscore_ops(&s3c2410wdt_syscore_ops);
+		atomic_notifier_chain_unregister(&panic_notifier_list,
+						 &wdt_block.nb_panic_block);
+
+		/*
+		 * The tick hook cannot be unregistered, so make it stop using
+		 * this device instead: the store above makes vh_scheduler_tick()
+		 * bail out, and the grace period waits for an invocation that
+		 * already read the pointer. Without it the percpu block freed
+		 * below could still be written after the allocator has handed
+		 * it to someone else.
+		 */
+		synchronize_rcu();
+	}
 
 	if (wdt->schedstat)
 		free_percpu(wdt->schedstat);
