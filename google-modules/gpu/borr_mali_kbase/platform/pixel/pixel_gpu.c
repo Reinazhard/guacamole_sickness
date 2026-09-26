@@ -72,17 +72,26 @@ static int gpu_pixel_kctx_init(struct kbase_context *kctx)
 	err = gpu_dvfs_kctx_init(kctx);
 	if (err) {
 		dev_err(kbdev->dev, "pixel: DVFS kctx init failed\n");
-		goto done;
+		goto err_free_platform_data;
 	}
 
 	err = gpu_slc_kctx_init(kctx);
 	if (err) {
 		dev_err(kbdev->dev, "pixel: SLC kctx init failed\n");
-		goto done;
+		goto err_free_platform_data;
 	}
 
 done:
 	return err;
+
+err_free_platform_data:
+	/*
+	 * kbase_create_context() only unwinds the entries before the one
+	 * that failed, so this allocation is not released by the caller.
+	 */
+	kfree(platform_data);
+	kctx->platform_data = NULL;
+	goto done;
 }
 
 /**
