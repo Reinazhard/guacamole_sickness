@@ -4695,6 +4695,7 @@ dhd_prot_reset(dhd_pub_t *dhd)
 	int i = 0;
 #endif /* FLOW_RING_PREALLOC */
 	struct dhd_prot *prot = dhd->prot;
+	bool ring_attached;
 
 	DHD_TRACE(("%s\n", __FUNCTION__));
 
@@ -4702,7 +4703,44 @@ dhd_prot_reset(dhd_pub_t *dhd)
 		return;
 	}
 
+	/* dhd_prot_detach() reaches this function on dhd_prot_attach()'s own
+	 * failure path (dhd_msgbuf.c:3806-3809), where the DPC work items are
+	 * still the memset from dhd_linux.c:9067 -- the INIT_DELAYED_WORK and
+	 * INIT_WORK that give them a func run at dhd_linux.c:9503 and :9553,
+	 * AFTER the attach call.  dhd_dpc_kill() would then cancel_work_sync()
+	 * a zeroed work_struct and reach WARN_ON(!work->func)
+	 * (kernel/workqueue.c:3444, via __cancel_work_timer -> __flush_work at
+	 * :3533).  DHD_LB and DHD_LB_RXP are both defined for this object, so
+	 * the rx_napi cancel that reaches it is compiled in.
+	 *
+	 * ring_attached is TRUE only between dhd_prot_init() (:4444) and the
+	 * store below, which is exactly while there is a ring for the DPC to
+	 * parse, so capture it before clearing it and drain only when it was
+	 * set.  It cannot be read after the store: the store is the first
+	 * statement of the region this correction edits.
+	 */
+	ring_attached = dhd->ring_attached;
 	dhd->ring_attached = FALSE;
+
+	if (ring_attached) {
+		/* The DPC kthread parses a D2H ring outside ring_lock -- it drops
+		 * the lock in dhd_prot_get_read_addr()'s caller and then reads the
+		 * message the address points at -- so the ring buffers and their
+		 * rd/wr/curr_rd words must not be wiped underneath it.
+		 * dhd_dpc_kill() only cancels the dispatcher work, and in kthread
+		 * mode that does not wait for a DPC that is already inside
+		 * dhd_bus_dpc(), so drain the bus-busy bit the DPC sets around its
+		 * parse as well.  The wait is bounded and only reports; it never
+		 * aborts the reset.
+		 */
+		dhd_dpc_kill(dhd);
+		dhd_os_busbusy_wait_bitmask(dhd, &dhd->dhd_bus_busy_state,
+			DHD_BUS_BUSY_IN_DPC, 0);
+		if (dhd->dhd_bus_busy_state & DHD_BUS_BUSY_IN_DPC) {
+			DHD_ERROR(("%s: DPC still in dhd_bus_dpc(), state 0x%x\n",
+				__FUNCTION__, dhd->dhd_bus_busy_state));
+		}
+	}
 
 	dhd_prot_flowrings_pool_reset(dhd);
 
