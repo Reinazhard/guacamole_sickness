@@ -273,6 +273,10 @@ static void sh_mem_doorbell_service_handler(struct aoc_service_dev *dev)
 {
 	struct aocc_device_entry *aocc_device =
 		(struct aocc_device_entry*) dev->prvdata;
+
+	if (!aocc_device)
+		return;
+
 	schedule_work(&(aocc_device->sh_mem_doorbell_work));
 }
 
@@ -392,6 +396,8 @@ static int create_character_device(struct aoc_service_dev *dev)
 	new_entry->service = dev;
 	aocc_next_minor++;
 	kref_init(&new_entry->refcount);
+	INIT_WORK(&new_entry->sh_mem_doorbell_work,
+		  aocc_sh_mem_handle_doorbell);
 	list_add(&new_entry->list, &aocc_devices_list);
 	mutex_unlock(&aocc_devices_lock);
 	return 0;
@@ -741,8 +747,12 @@ static void aocc_sh_mem_doorbell_probe(struct aoc_service_dev *dev)
 	}
 
 	/* Use the first channel device with the shared memory doorbell. */
-	sh_mem_doorbell_channel_device =
-		list_entry(aocc_devices_list.next, struct aocc_device_entry, list);
+	if (list_empty(&aocc_devices_list))
+		sh_mem_doorbell_channel_device = NULL;
+	else
+		sh_mem_doorbell_channel_device =
+			list_entry(aocc_devices_list.next,
+				   struct aocc_device_entry, list);
 
 	/*
 	 * If both a shared memory doorbell service device and a channel device
@@ -754,10 +764,6 @@ static void aocc_sh_mem_doorbell_probe(struct aoc_service_dev *dev)
 		sh_mem_doorbell_service_dev->handler =
 			sh_mem_doorbell_service_handler;
 		sh_mem_doorbell_service_dev->prvdata = sh_mem_doorbell_channel_device;
-
-		/* Initialize the shared memory transport doorbell work task. */
-		INIT_WORK(&(sh_mem_doorbell_channel_device->sh_mem_doorbell_work),
-			  aocc_sh_mem_handle_doorbell);
 
 		/*
 		 * Initialize the shared memory doorbell count and mark the
@@ -838,7 +844,36 @@ static int aocc_remove(struct aoc_service_dev *dev)
 
 			/* Disable shared memory transport doorbell. */
 			if (entry == sh_mem_doorbell_channel_device) {
+				/*
+				 * Order matters.  aoc.c:1667 gates the handler on
+				 * service_dev->handler alone, and the handler loads
+				 * dev->prvdata (sh_mem_doorbell_service_handler,
+				 * :272-277), so clearing handler first is what makes the
+				 * clear of prvdata sufficient: a doorbell arriving
+				 * after handler is cleared never reaches the load, and
+				 * one that already passed the gate is caught by the
+				 * NULL test the handler now carries.
+				 *
+				 * The service device is tested because it is NOT
+				 * implied: sh_mem_doorbell_service_dev is assigned only
+				 * by the usf_sh_mem_doorbell probe (:740-742), while
+				 * sh_mem_doorbell_channel_device is assigned by EVERY
+				 * probe from the head of aocc_devices_list (:744-745).
+				 * So a channel probed before the service -- or after the
+				 * service was already removed at :821-823 -- can be the
+				 * one this branch matches with the service pointer NULL.
+				 */
 				sh_mem_doorbell_channel_device = NULL;
+				if (sh_mem_doorbell_service_dev) {
+					sh_mem_doorbell_service_dev->handler = NULL;
+					sh_mem_doorbell_service_dev->prvdata = NULL;
+				}
+				/*
+				 * The work item is embedded in entry and the
+				 * handler can still schedule it, so drain it
+				 * before entry is released.
+				 */
+				cancel_work_sync(&entry->sh_mem_doorbell_work);
 			}
 			entry->sh_mem_doorbell_available = false;
 
