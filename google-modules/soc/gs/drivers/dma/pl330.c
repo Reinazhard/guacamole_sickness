@@ -2713,7 +2713,6 @@ static void pl330_free_chan_resources(struct dma_chan *chan)
 	tasklet_kill(&pch->task);
 
 	pm_runtime_get_sync(pch->dmac->ddma.dev);
-	spin_lock(&pch->lock);
 	raw_spin_lock_irqsave(&pl330->lock, flags);
 
 	pl330_release_channel(pch->thread, &flags);
@@ -2723,7 +2722,6 @@ static void pl330_free_chan_resources(struct dma_chan *chan)
 		list_splice_tail_init(&pch->work_list, &pch->dmac->desc_pool);
 
 	raw_spin_unlock_irqrestore(&pl330->lock, flags);
-	spin_unlock(&pch->lock);
 	pm_runtime_mark_last_busy(pch->dmac->ddma.dev);
 	pm_runtime_put_autosuspend(pch->dmac->ddma.dev);
 	pl330_unprep_slave_fifo(pch);
