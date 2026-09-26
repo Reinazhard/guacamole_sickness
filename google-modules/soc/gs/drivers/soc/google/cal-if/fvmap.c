@@ -195,7 +195,13 @@ static void fvmap_copy_from_sram(void *map_base, void __iomem *sram_base)
 		if (margin)
 			cal_dfs_set_volt_margin(i | ACPM_VCLK_TYPE, margin);
 
-		for (j = 0; j < fvmap_header[i].num_of_members; j++) {
+		if (fvmap_header[i].num_of_members > vclk->num_list)
+			pr_err("fvmap[%d] num_of_members %u > num_list %u\n",
+			       i, fvmap_header[i].num_of_members,
+			       vclk->num_list);
+
+		for (j = 0; j < fvmap_header[i].num_of_members &&
+			    j < vclk->num_list; j++) {
 			clks = sram_base + fvmap_header[i].o_members;
 
 			if (j < fvmap_header[i].num_of_pll) {
