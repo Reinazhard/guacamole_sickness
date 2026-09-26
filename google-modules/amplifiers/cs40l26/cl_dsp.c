@@ -1097,6 +1097,11 @@ int cl_dsp_firmware_parse(struct cl_dsp *dsp, const struct firmware *fw,
 
 		data_block.payload =
 			kvmalloc(data_block.header.data_len, GFP_KERNEL);
+		if (!data_block.payload) {
+			ret = -ENOMEM;
+			goto err_free;
+		}
+
 		memcpy(data_block.payload, &fw->data[pos],
 				data_block.header.data_len);
 
