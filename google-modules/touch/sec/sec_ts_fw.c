@@ -813,6 +813,13 @@ static int sec_ts_firmware_update(struct sec_ts_data *ts, const u8 *data,
 	input_info(true, &ts->client->dev,
 			"%s: firmware update retry: %d\n", __func__, retry);
 
+	if (size < sizeof(fw_header)) {
+		input_err(true, &ts->client->dev,
+				"%s: firmware is smaller than a header, size = %zu\n",
+				__func__, size);
+		return -1;
+	}
+
 	fw_hd = (fw_header *)fd;
 	fd += sizeof(fw_header);
 
@@ -827,6 +834,12 @@ static int sec_ts_firmware_update(struct sec_ts_data *ts, const u8 *data,
 			__func__, fw_hd->num_chunk);
 
 	for (i = 0; i < fw_hd->num_chunk; i++) {
+		if (size - (size_t)(fd - (u8 *)data) < sizeof(fw_chunk)) {
+			input_err(true, &ts->client->dev,
+					"%s: chunk header out of firmware range\n",
+					__func__);
+			return -1;
+		}
 		fw_ch = (fw_chunk *)fd;
 
 		input_info(true, &ts->client->dev,
@@ -841,6 +854,29 @@ static int sec_ts_firmware_update(struct sec_ts_data *ts, const u8 *data,
 			return -1;
 		}
 		fd += sizeof(fw_chunk);
+
+		if ((size_t)(fd - (u8 *)data) + fw_ch->size > size) {
+			input_err(true, &ts->client->dev,
+					"%s: chunk data out of firmware range, addr = %08X, size = %d\n",
+					__func__, fw_ch->addr, fw_ch->size);
+			return -1;
+		}
+
+		if (fw_ch->addr > ts->crc_addr ||
+		    fw_ch->size > ts->crc_addr - fw_ch->addr) {
+			input_err(true, &ts->client->dev,
+					"%s: chunk data out of flash range, addr = %08X, size = %d\n",
+					__func__, fw_ch->addr, fw_ch->size);
+			return -1;
+		}
+
+		if (fw_ch->addr % ts->flash_page_size) {
+			input_err(true, &ts->client->dev,
+					"%s: chunk is not page aligned, addr = %08X\n",
+					__func__, fw_ch->addr);
+			return -1;
+		}
+
 		ret = sec_ts_chunk_update(ts, fw_ch->addr, fw_ch->size, fd,
 						retry);
 		if (ret < 0) {
