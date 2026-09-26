@@ -5667,6 +5667,9 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 	struct regulator *va_consumer = cs40l26->reg_supplies[CS40L26_VA_SUPPLY].consumer;
 	int error;
 
+	if (cs40l26->input)
+		input_unregister_device(cs40l26->input);
+
 	disable_irq(cs40l26->irq);
 	mutex_destroy(&cs40l26->lock);
 	mutex_destroy(&cs40l26->cl_dsp_lock);
@@ -5717,9 +5720,6 @@ out:
 #ifdef CONFIG_DEBUG_FS
 	cs40l26_debugfs_cleanup(cs40l26);
 #endif
-
-	if (cs40l26->input)
-		input_unregister_device(cs40l26->input);
 
 	return error;
 }
