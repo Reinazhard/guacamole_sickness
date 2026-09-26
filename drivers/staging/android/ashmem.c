@@ -217,8 +217,21 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 		int ret = 0;
 
 		mutex_lock(&asma->mmap_lock);
-		if (!asma->file)
-			ret = ashmem_file_setup(asma, size, vma);
+		if (!asma->file) {
+			/*
+			 * asma->size was sampled before this lock was taken,
+			 * and ASHMEM_SET_SIZE takes the same lock, so a size
+			 * that changed in between would otherwise create a
+			 * backing file sized differently from asma->size.
+			 * Re-read it here and re-validate the vma against it.
+			 */
+			size = READ_ONCE(asma->size);
+			if (unlikely(!size) ||
+			    vma->vm_end - vma->vm_start > PAGE_ALIGN(size))
+				ret = -EINVAL;
+			else
+				ret = ashmem_file_setup(asma, size, vma);
+		}
 		mutex_unlock(&asma->mmap_lock);
 
 		if (ret)
