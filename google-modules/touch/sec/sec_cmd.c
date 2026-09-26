@@ -163,9 +163,9 @@ static ssize_t cmd_store(struct device *dev,
 	}
 
 	sec_cmd_ptr->cmd_func(data);
-	sec_cmd_set_cmd_exit(data);
 
 err_out:
+	sec_cmd_set_cmd_exit(data);
 	return count;
 }
 
