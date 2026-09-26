@@ -162,7 +162,8 @@ static int bigo_open(struct inode *inode, struct file *file)
 	INIT_LIST_HEAD(&inst->buffers);
 	kref_init(&inst->refcount);
 	mutex_init(&inst->lock);
-	init_completion(&inst->job_comp);
+	mutex_init(&inst->job_lock);
+	init_waitqueue_head(&inst->job_wait);
 	file->private_data = inst;
 	inst->height = DEFAULT_WIDTH;
 	inst->width = DEFAULT_HEIGHT;
@@ -427,10 +428,29 @@ static long bigo_unlocked_ioctl(struct file *file, unsigned int cmd,
 		u32 hbd;
 		u32 bpp;
 
+		/* inst->job and inst->job.regs are a single per-instance slot
+		 * shared with the worker, so only one request may be in flight
+		 * on it at a time.
+		 */
+		mutex_lock(&inst->job_lock);
+
+		/* A request that timed out earlier may have left the worker
+		 * still running this slot. Its completion has to arrive before
+		 * the slot can be written again.
+		 */
+		if (READ_ONCE(inst->job_done_seq) != inst->job_seq &&
+		    !wait_event_timeout(inst->job_wait,
+					READ_ONCE(inst->job_done_seq) == inst->job_seq,
+					msecs_to_jiffies(JOB_COMPLETE_TIMEOUT_MS * 16))) {
+			pr_err("previous job is still running\n");
+			rc = -EBUSY;
+			goto process_out;
+		}
+
 		if (copy_regs_from_user(core, &desc, user_desc, job)) {
 			pr_err("Failed to copy regs from user\n");
 			rc = -EFAULT;
-			break;
+			goto process_out;
 		}
 
 		hbd = (((u32*)job->regs)[3]) & BIGO_HBD_BIT;
@@ -445,34 +465,44 @@ static long bigo_unlocked_ioctl(struct file *file, unsigned int cmd,
 #else
 		inst->is_decoder_usage = true;
 #endif
+		/* The worker reports completion by sequence number, so a
+		 * completion left behind by an earlier job cannot satisfy this
+		 * request's wait.
+		 */
+		job->seq = ++inst->job_seq;
+
 		kref_get(&inst->refcount);
 		if(enqueue_prioq(core, inst)) {
 			pr_err("Failed enqueue frame\n");
 			kref_put(&inst->refcount, bigo_close);
+			inst->job_done_seq = job->seq;
 			rc = -EFAULT;
-			break;
+			goto process_out;
 		}
 
-		ret = wait_for_completion_timeout(
-			&inst->job_comp,
-			msecs_to_jiffies(JOB_COMPLETE_TIMEOUT_MS * 16));
+		ret = wait_event_timeout(inst->job_wait,
+					 READ_ONCE(inst->job_done_seq) == job->seq,
+					 msecs_to_jiffies(JOB_COMPLETE_TIMEOUT_MS * 16));
 		if (!ret) {
 			pr_err("timed out waiting for HW: %d\n", rc);
-			if (clear_job_from_prioq(core, inst))
+			if (clear_job_from_prioq(core, inst)) {
+				/* The worker never took the job, so it will
+				 * never report it; account for it here.
+				 */
+				inst->job_done_seq = job->seq;
 				kref_put(&inst->refcount, bigo_close);
+			}
 			rc = -ETIMEDOUT;
-		} else {
-			rc = (ret > 0) ? 0 : ret;
+			goto process_out;
 		}
-
-		if (rc)
-			break;
 
 		rc = job->status;
 		if(copy_regs_to_user(&desc, job)) {
 			pr_err("Failed to copy regs to user\n");
 			rc = -EFAULT;
 		}
+process_out:
+		mutex_unlock(&inst->job_lock);
 		break;
 	}
 	case BIGO_IOCX_MAP:
@@ -751,7 +781,8 @@ static int bigo_worker_thread(void *data)
 
 	done:
 		job->status = rc;
-		complete(&inst->job_comp);
+		WRITE_ONCE(inst->job_done_seq, job->seq);
+		wake_up_all(&inst->job_wait);
 		kref_put(&inst->refcount, bigo_close);
 	}
 	return 0;
