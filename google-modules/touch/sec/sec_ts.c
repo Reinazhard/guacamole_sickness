@@ -284,7 +284,12 @@ static int sec_ts_read_internal(struct sec_ts_data *ts, u8 reg,
 	}
 #endif
 
+#ifndef I2C_INTERFACE
+	if (((len + SEC_TS_SPI_READ_HEADER_SIZE + SEC_TS_SPI_CHECKSUM_SIZE + 3) &
+	     ~3) > sizeof(ts->io_read_buf)) {
+#else
 	if (len > sizeof(ts->io_read_buf) && dma_safe == false) {
+#endif
 		input_err(true, &ts->client->dev,
 			"%s: len %d over pre-allocated size %d\n",
 			__func__, len, IO_PREALLOC_READ_BUF_SZ);
@@ -846,7 +851,12 @@ static int sec_ts_read_bulk_internal(struct sec_ts_data *ts,
 	int retry_msg = 0;
 #endif
 
+#ifndef I2C_INTERFACE
+	if (((len + SEC_TS_SPI_READ_HEADER_SIZE + SEC_TS_SPI_CHECKSUM_SIZE + 3) &
+	     ~3) > sizeof(ts->io_read_buf)) {
+#else
 	if (len > sizeof(ts->io_read_buf) && dma_safe == false) {
+#endif
 		input_err(true, &ts->client->dev,
 			  "%s: len %d over pre-allocated size %d\n", __func__,
 			  len, sizeof(ts->io_read_buf));
