@@ -432,6 +432,16 @@ void g2d_destroy_tasks(struct g2d_device *g2d_dev)
 	struct g2d_task *task, *next;
 	unsigned long flags;
 
+	/*
+	 * Flush and stop both workers before anything is freed. Their work
+	 * items are embedded in the tasks freed below, and
+	 * kthread_destroy_worker() waits for a running work item, so a
+	 * pending completion_work or sched_work is guaranteed to run
+	 * against a task that is still allocated.
+	 */
+	kthread_destroy_worker(g2d_dev->completion_workq);
+	kthread_destroy_worker(g2d_dev->schedule_workq);
+
 	spin_lock_irqsave(&g2d_dev->lock_task, flags);
 
 	task = g2d_dev->tasks;
@@ -452,9 +462,6 @@ void g2d_destroy_tasks(struct g2d_device *g2d_dev)
 	}
 
 	spin_unlock_irqrestore(&g2d_dev->lock_task, flags);
-
-	kthread_destroy_worker(g2d_dev->completion_workq);
-	kthread_destroy_worker(g2d_dev->schedule_workq);
 }
 
 static struct g2d_task *g2d_create_task(struct g2d_device *g2d_dev, int id)
