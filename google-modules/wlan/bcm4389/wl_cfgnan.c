@@ -7024,7 +7024,7 @@ wl_cfgnan_data_add_peer(struct bcm_cfg80211 *cfg,
 			break;
 		}
 	}
-	if (i == NAN_MAX_NDP_PEER) {
+	if (i == cfg->nancfg->max_ndp_count) {
 		WL_DBG(("DP Peer list full, Droopping add peer req\n"));
 		goto end;
 	}
