@@ -4467,10 +4467,12 @@ void cs35l41_remove(struct cs35l41_private *cs35l41)
 #if IS_ENABLED(CONFIG_SND_SOC_CODEC_DETECT)
 	cs35l41_misc_exit(cs35l41);
 #endif
-	destroy_workqueue(cs35l41->wq);
+	if (cs35l41->wq)
+		destroy_workqueue(cs35l41->wq);
 	mutex_destroy(&cs35l41->hb_lock);
 	mutex_destroy(&cs35l41->hb_forcewake_lock);
-	destroy_workqueue(cs35l41->vol_ctl.ramp_wq);
+	if (cs35l41->vol_ctl.ramp_wq)
+		destroy_workqueue(cs35l41->vol_ctl.ramp_wq);
 	mutex_destroy(&cs35l41->vol_ctl.vol_mutex);
 	regmap_write(cs35l41->regmap, CS35L41_IRQ1_MASK1, 0xFFFFFFFF);
 	if (cs35l41->pdata.shared_boost == SHARED_BOOST_PASSIVE)
