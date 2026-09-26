@@ -983,7 +983,7 @@ static ssize_t braking_time_ms_show(struct device *dev, struct device_attribute 
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	u32 index = cs40l26->braking_time_index;
 	unsigned int braking_time = 0;
-	int error;
+	int error, num_waves;
 
 	error = cs40l26_pm_enter(cs40l26->dev);
 	if (error)
@@ -993,7 +993,8 @@ static ssize_t braking_time_ms_show(struct device *dev, struct device_attribute 
 
 	switch (cs40l26->braking_time_bank) {
 	case CS40L26_RAM_BANK_ID:
-		if (index > (cs40l26_num_ram_waves(cs40l26) - 1)) {
+		if (!cs40l26->dsp->wt_desc ||
+				index >= cs40l26->dsp->wt_desc->owt.nwaves) {
 			dev_err(cs40l26->dev, "Index exceeds number of RAM effects\n");
 			error = -EINVAL;
 			goto err_mutex;
@@ -1002,7 +1003,8 @@ static ssize_t braking_time_ms_show(struct device *dev, struct device_attribute 
 		braking_time = cs40l26->dsp->wt_desc->owt.waves[index].braking_time;
 		break;
 	case CS40L26_OWT_BANK_ID:
-		if (index > (cs40l26_num_owt_waves(cs40l26) - 1)) {
+		num_waves = cs40l26_num_owt_waves(cs40l26);
+		if (num_waves <= 0 || index >= (u32)num_waves) {
 			dev_err(cs40l26->dev, "Index exceeds number of OWT effects\n");
 			error = -EINVAL;
 			goto err_mutex;
