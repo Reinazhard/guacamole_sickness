@@ -1047,6 +1047,8 @@ static int wm_coeff_write_ctrl_raw(struct wm_coeff_ctl *ctl,
 	int ret;
 	unsigned int reg;
 
+	lockdep_assert_held(&dsp->pwr_lock);
+
 	ret = wm_coeff_base_reg(ctl, &reg);
 	if (ret)
 		return ret;
@@ -1154,6 +1156,8 @@ static int wm_coeff_read_ctrl_raw(struct wm_coeff_ctl *ctl,
 	void *scratch;
 	int ret;
 	unsigned int reg;
+
+	lockdep_assert_held(&dsp->pwr_lock);
 
 	ret = wm_coeff_base_reg(ctl, &reg);
 	if (ret)
@@ -2067,14 +2071,29 @@ int wm_adsp_write_ctl(struct wm_adsp *dsp, const char *name, int type,
 	char ctl_name[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 	int ret;
 
-	ctl = wm_adsp_get_ctl(dsp, name, type, alg);
-	if (!ctl)
-		return -EINVAL;
+	/*
+	 * The list walk, the cache update and the register transaction
+	 * have to be one critical section: a firmware download holds the
+	 * same lock and rewrites both the control list and the DSP memory
+	 * underneath it.
+	 */
+	mutex_lock(&dsp->pwr_lock);
 
-	if (len > ctl->len)
+	ctl = wm_adsp_get_ctl(dsp, name, type, alg);
+	if (!ctl) {
+		mutex_unlock(&dsp->pwr_lock);
 		return -EINVAL;
+	}
+
+	if (len > ctl->len) {
+		mutex_unlock(&dsp->pwr_lock);
+		return -EINVAL;
+	}
 
 	ret = wm_coeff_write_ctrl(ctl, buf, len);
+
+	mutex_unlock(&dsp->pwr_lock);
+
 	if (ret)
 		return ret;
 
@@ -2105,15 +2124,26 @@ int wm_adsp_read_ctl(struct wm_adsp *dsp, const char *name, int type,
 		     unsigned int alg, void *buf, size_t len)
 {
 	struct wm_coeff_ctl *ctl;
+	int ret;
+
+	mutex_lock(&dsp->pwr_lock);
 
 	ctl = wm_adsp_get_ctl(dsp, name, type, alg);
-	if (!ctl)
+	if (!ctl) {
+		mutex_unlock(&dsp->pwr_lock);
 		return -EINVAL;
+	}
 
-	if (len > ctl->len)
+	if (len > ctl->len) {
+		mutex_unlock(&dsp->pwr_lock);
 		return -EINVAL;
+	}
 
-	return wm_coeff_read_ctrl(ctl, buf, len);
+	ret = wm_coeff_read_ctrl(ctl, buf, len);
+
+	mutex_unlock(&dsp->pwr_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(wm_adsp_read_ctl);
 
@@ -3320,6 +3350,13 @@ int wm_adsp_event(struct snd_soc_dapm_widget *w,
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
+		/*
+		 * The shutdown event walks the control list and writes to a
+		 * control, so it belongs in the same critical section that
+		 * publishes running = false rather than before it.
+		 */
+		mutex_lock(&dsp->pwr_lock);
+
 		/* Tell the firmware to cleanup */
 		wm_adsp_signal_event_controls(dsp, WM_ADSP_FW_EVENT_SHUTDOWN);
 
@@ -3329,8 +3366,6 @@ int wm_adsp_event(struct snd_soc_dapm_widget *w,
 		/* Log firmware state, it can be useful for analysis */
 		if (dsp->ops->show_fw_status)
 			dsp->ops->show_fw_status(dsp);
-
-		mutex_lock(&dsp->pwr_lock);
 
 		dsp->running = false;
 
