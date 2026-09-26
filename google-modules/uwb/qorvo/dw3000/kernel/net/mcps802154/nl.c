@@ -402,7 +402,12 @@ static int mcps802154_nl_close_scheduler(struct sk_buff *skb,
 					 struct genl_info *info)
 {
 	struct mcps802154_local *local = info->user_ptr[0];
+
 	mutex_lock(&local->fsm_lock);
+	if (local->started) {
+		mutex_unlock(&local->fsm_lock);
+		return -EBUSY;
+	}
 	local->cur_cmd_info = info;
 	mcps802154_ca_close(local);
 	local->cur_cmd_info = NULL;
