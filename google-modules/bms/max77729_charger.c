@@ -1223,6 +1223,8 @@ static void max77729_charger_remove(struct i2c_client *client)
 	struct max77729_chgr_data *data = i2c_get_clientdata(client);
 
 	gvotable_destroy_election(data->mode_votable);
+	gvotable_destroy_election(data->dc_suspend_votable);
+	gvotable_destroy_election(data->dc_icl_votable);
 
 	dbg_cleanup_fs(data);
 }
