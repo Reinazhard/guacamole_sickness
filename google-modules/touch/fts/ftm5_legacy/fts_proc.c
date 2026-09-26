@@ -448,6 +448,13 @@
 
 
 /************************ SEQUENTIAL FILE UTILITIES **************************/
+
+/* Serialises the seq_file readers against fts_driver_test_write(), which
+ * kfree()s and re-allocates info->driver_test_buff. Without it a reader can
+ * copy out of the buffer while it is freed or resized under it.
+ */
+static DEFINE_MUTEX(fts_diag_buff_lock);
+
 /**
   * This function is called at the beginning of the stream to a sequential file
   * or every time into the sequential were already written PAGE_SIZE bytes and
@@ -464,6 +471,8 @@ static void *fts_seq_start(struct seq_file *s, loff_t *pos)
 	dev_info(info->dev, "%s: Entering start(), pos = %lld limit = %d printed = %d\n",
 		__func__, *pos, info->limit, info->printed);
 
+	mutex_lock(&fts_diag_buff_lock);
+
 	if (info->driver_test_buff == NULL && *pos == 0) {
 		int size = 13 * sizeof(u8);
 
@@ -478,9 +487,11 @@ static void *fts_seq_start(struct seq_file *s, loff_t *pos)
 		if (*pos != 0)
 			*pos = info->printed;
 
-		if (*pos >= info->limit)
+		if (*pos >= info->limit) {
 			/* dev_err(info->dev, "%s: Apparently, we're done.\n", __func__); */
+			mutex_unlock(&fts_diag_buff_lock);
 			return NULL;
+		}
 	}
 
 	info->chunk = CHUNK_PROC;
@@ -491,6 +502,8 @@ static void *fts_seq_start(struct seq_file *s, loff_t *pos)
 	 *	__func__, *pos, info->limit, info->printed, info->chunk); */
 	memset(info->buf_chunk, 0, CHUNK_PROC);
 	memcpy(info->buf_chunk, &info->driver_test_buff[(int)*pos], info->chunk);
+
+	mutex_unlock(&fts_diag_buff_lock);
 
 	return info->buf_chunk;
 }
@@ -530,17 +543,22 @@ static void *fts_seq_next(struct seq_file *s, void *v, loff_t *pos)
 	(*pos) += info->chunk;/* increase my position counter */
 	info->chunk = CHUNK_PROC;
 
+	mutex_lock(&fts_diag_buff_lock);
+
 	/* dev_err(info->dev, "%s: In next(),
 	 *	updated pos = %Ld limit = %d printed = %d\n",
 	 *	__func__, *pos, info->limit, info->printed); */
-	if (*pos >= info->limit)	/* are we done? */
+	if (*pos >= info->limit) {	/* are we done? */
+		mutex_unlock(&fts_diag_buff_lock);
 		return NULL;
-	else if (info->limit - *pos < CHUNK_PROC)
+	} else if (info->limit - *pos < CHUNK_PROC)
 		info->chunk = info->limit - *pos;
-
 
 	memset(info->buf_chunk, 0, CHUNK_PROC);
 	memcpy(info->buf_chunk, &info->driver_test_buff[(int)*pos], info->chunk);
+
+	mutex_unlock(&fts_diag_buff_lock);
+
 	return info->buf_chunk;
 }
 
@@ -557,6 +575,8 @@ static void fts_seq_stop(struct seq_file *s, void *v)
 	struct fts_ts_info *info = pde_data(file_inode(s->file));
 
 	/* dev_err(info->dev, "%s: Entering stop().\n", __func__); */
+
+	mutex_lock(&fts_diag_buff_lock);
 
 	if (v) {
 		/* dev_err(info->dev, "%s: v is %X.\n", __func__, v); */
@@ -575,6 +595,8 @@ static void fts_seq_stop(struct seq_file *s, void *v)
 		 *   __func__); */
 		}
 	}
+
+	mutex_unlock(&fts_diag_buff_lock);
 }
 
 /**
@@ -727,6 +749,13 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 		count =  -ENODEV;
 		goto exit;
 	}
+
+	/* Hold off the seq_file readers for the whole command: the reporting
+	 * phase below replaces info->driver_test_buff, and a concurrent
+	 * pread()/pwrite() pair on this fd would otherwise copy out of the old
+	 * buffer while it is freed and re-allocated.
+	 */
+	mutex_lock(&fts_diag_buff_lock);
 
 	info->mess.dummy = 0;
 	info->mess.action = 0;
@@ -3702,6 +3731,8 @@ ERROR:
 	kfree(pbuf);
 
 	fts_set_bus_ref(info, FTS_BUS_REF_SYSFS, false);
+
+	mutex_unlock(&fts_diag_buff_lock);
 
 exit:
 	return count;
