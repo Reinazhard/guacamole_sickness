@@ -1208,10 +1208,6 @@ static int cs40l26_codec_driver_probe(struct platform_device *pdev)
 	struct cs40l26_codec *codec;
 	int error;
 
-	if (cs40l26->cs40l26_not_probed) {
-		return cs40l26_codec_register_nop_codec(&pdev->dev);
-	}
-
 	codec = devm_kzalloc(&pdev->dev, sizeof(struct cs40l26_codec), GFP_KERNEL);
 	if (!codec)
 		return -ENOMEM;
@@ -1221,6 +1217,9 @@ static int cs40l26_codec_driver_probe(struct platform_device *pdev)
 	codec->dev = &pdev->dev;
 
 	platform_set_drvdata(pdev, codec);
+
+	if (cs40l26->cs40l26_not_probed)
+		return cs40l26_codec_register_nop_codec(&pdev->dev);
 
 	pm_runtime_enable(&pdev->dev);
 
