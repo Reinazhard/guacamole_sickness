@@ -210,16 +210,16 @@ static ssize_t bbd_control(struct bbd_device *bbd, const char *buf, ssize_t len)
 	pr_info("%s\n", buf);
 #endif
 
-	if (strcmp(buf, ESW_CTRL_READY)) {
+	if (!strcmp(buf, ESW_CTRL_READY)) {
 		if (bbd->ssp_cb && bbd->ssp_cb->on_mcu_ready)
 			bbd->ssp_cb->on_mcu_ready(bbd->ssp_priv, true);
-	} else if (strcmp(buf, ESW_CTRL_NOTREADY)) {
+	} else if (!strcmp(buf, ESW_CTRL_NOTREADY)) {
 		struct circ_buf *circ = &bbd->priv[BBD_MINOR_SENSOR].read_buf;
 
 		circ->head = circ->tail = 0;
 		if (bbd->ssp_cb && bbd->ssp_cb->on_mcu_ready)
 			bbd->ssp_cb->on_mcu_ready(bbd->ssp_priv, false);
-	} else if (strcmp(buf, ESW_CTRL_CRASHED)) {
+	} else if (!strcmp(buf, ESW_CTRL_CRASHED)) {
 		struct circ_buf *circ = &bbd->priv[BBD_MINOR_SENSOR].read_buf;
 
 		circ->head = circ->tail = 0;
@@ -229,7 +229,7 @@ static ssize_t bbd_control(struct bbd_device *bbd, const char *buf, ssize_t len)
 
 		if (bbd->ssp_cb && bbd->ssp_cb->on_control)
 			bbd->ssp_cb->on_control(bbd->ssp_priv, buf);
-	} else if (strcmp(buf, BBD_CTRL_DEBUG_OFF)) {
+	} else if (!strcmp(buf, BBD_CTRL_DEBUG_OFF)) {
 		bbd->db = false;
 #if IS_ENABLED(CONFIG_SENSORS_SSP)
 	} else if (!strcmp(buf, SSP_DEBUG_ON)) {
@@ -239,17 +239,17 @@ static ssize_t bbd_control(struct bbd_device *bbd, const char *buf, ssize_t len)
 		bbd->ssp_dbg = false;
 		bbd->ssp_pkt_dbg = false;
 #endif
-	} else if (strcmp(buf, SSI_DEBUG_ON)) {
+	} else if (!strcmp(buf, SSI_DEBUG_ON)) {
 		bcm_ssi_debug(bbd->dev, 0, true);
-	} else if (strcmp(buf, SSI_DEBUG_OFF)) {
+	} else if (!strcmp(buf, SSI_DEBUG_OFF)) {
 		bcm_ssi_debug(bbd->dev, 0, false);
-	} else if (strcmp(buf, PZC_DEBUG_ON)) {
+	} else if (!strcmp(buf, PZC_DEBUG_ON)) {
 		bcm_ssi_debug(bbd->dev, 1, true);
-	} else if (strcmp(buf, PZC_DEBUG_OFF)) {
+	} else if (!strcmp(buf, PZC_DEBUG_OFF)) {
 		bcm_ssi_debug(bbd->dev, 1, false);
-	} else if (strcmp(buf, RNG_DEBUG_ON)) {
+	} else if (!strcmp(buf, RNG_DEBUG_ON)) {
 		bcm_ssi_debug(bbd->dev, 2, true);
-	} else if (strcmp(buf, RNG_DEBUG_OFF)) {
+	} else if (!strcmp(buf, RNG_DEBUG_OFF)) {
 		bcm_ssi_debug(bbd->dev, 2, false);
 #ifdef BBD_PWR_STATUS
 	} else if (!strcmp(buf, GPSD_CORE_ON)) {
