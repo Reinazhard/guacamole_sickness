@@ -754,9 +754,18 @@ static int cl_dsp_algo_parse(struct cl_dsp *dsp, const unsigned char *data)
 		coeff_desc->block_offset = block_offset;
 		coeff_desc->block_type = block_type;
 
-		memcpy(coeff_desc->name, data + pos + 1, *(data + pos));
-		coeff_desc->name[*(data + pos)] = '\0';
+		coeff_name_len = *(data + pos);
+		if (coeff_name_len >= sizeof(coeff_desc->name)) {
+			dev_err(dsp->dev, "Control name too long: %u\n",
+					coeff_name_len);
+			ret = -EINVAL;
+			goto err_free;
+		}
 
+		memcpy(coeff_desc->name, data + pos + 1, coeff_name_len);
+		coeff_desc->name[coeff_name_len] = '\0';
+
+		/* Re-read the on-disk length: it sets the position advance. */
 		ret = cl_dsp_process_data_be(&data[pos],
 				CL_DSP_COEFF_NAME_LEN_SIZE, &coeff_name_len);
 		if (ret) {
