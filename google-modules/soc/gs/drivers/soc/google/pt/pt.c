@@ -1225,7 +1225,7 @@ static int pt_sysctl_command(struct ctl_table *ctl, int write,
 	case PT_FN_RESIZE:
 		if (retscanf < 3)
 			return -EINVAL;
-		if ((!handle) || (id >= handle->id_cnt))
+		if ((!handle) || (id < 0) || (id >= handle->id_cnt))
 			return -ENOENT;
 		pt_resize_internal(&handle->pts[id], size_newid);
 		break;
