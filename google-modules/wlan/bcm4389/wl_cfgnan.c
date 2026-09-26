@@ -10279,15 +10279,17 @@ void
 wl_cfgnan_detach(struct bcm_cfg80211 *cfg)
 {
 	if (cfg && cfg->nancfg) {
-		if (delayed_work_pending(&cfg->nancfg->nan_disable)) {
-			WL_DBG(("Cancel nan_disable work\n"));
-			DHD_NAN_WAKE_UNLOCK(cfg->pub);
-			cancel_delayed_work_sync(&cfg->nancfg->nan_disable);
-		}
-		if (delayed_work_pending(&cfg->nancfg->nan_nmi_rand)) {
-			WL_DBG(("Cancel nan_nmi_rand workq\n"));
-			cancel_delayed_work_sync(&cfg->nancfg->nan_nmi_rand);
-		}
+		/*
+		 * The workqueue core clears the pending bit before it invokes
+		 * the handler, so delayed_work_pending() is already false while
+		 * the handler is running and must not gate the cancel.  Cancel
+		 * unconditionally: on a work that is not queued this is a no-op,
+		 * and on a work that is running it waits for the handler, which
+		 * is what keeps the free below from racing it.
+		 */
+		DHD_NAN_WAKE_UNLOCK(cfg->pub);
+		cancel_delayed_work_sync(&cfg->nancfg->nan_disable);
+		cancel_delayed_work_sync(&cfg->nancfg->nan_nmi_rand);
 
 #ifdef WL_NMI_IF
 		/* Unregister NMI ndev */
