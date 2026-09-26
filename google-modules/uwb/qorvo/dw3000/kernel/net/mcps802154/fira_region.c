@@ -78,6 +78,15 @@ static void fira_close(struct mcps802154_region *region)
 	struct fira_local *local = region_to_local(region);
 	struct fira_session *session, *s;
 
+	/*
+	 * A region can be closed while sessions are still running, as close
+	 * is not preceded by a notify_stop when the region is replaced or
+	 * when the device is stopped.  Freeing a session leaves the active
+	 * list safely, whatever its state.
+	 */
+	list_for_each_entry_safe (session, s, &local->active_sessions, entry) {
+		fira_session_free(local, session);
+	}
 	list_for_each_entry_safe (session, s, &local->inactive_sessions,
 				  entry) {
 		fira_session_free(local, session);
