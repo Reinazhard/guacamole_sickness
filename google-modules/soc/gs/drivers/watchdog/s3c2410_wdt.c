@@ -1926,9 +1926,7 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 
 	s3c2410wdt_cpufreq_deregister(wdt);
 
-	clk_disable_unprepare(wdt->rate_clock);
-	wdt->rate_clock = NULL;
-	wdt->gate_clock = NULL;
+	clk_disable_unprepare(wdt->gate_clock);
 
 	unregister_pm_notifier(&s3c2410wdt_pm_nb);
 
