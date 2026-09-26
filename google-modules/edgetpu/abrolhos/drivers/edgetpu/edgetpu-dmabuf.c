@@ -801,9 +801,9 @@ int edgetpu_map_bulk_dmabuf(struct edgetpu_device_group *group,
 				ret = PTR_ERR(dmabuf);
 				goto err_release_bmap;
 			}
+			bmap->dmabufs[i] = dmabuf;
 			if (arg->size > dmabuf->size)
 				goto err_release_bmap;
-			bmap->dmabufs[i] = dmabuf;
 		}
 	}
 	bmap->size = PAGE_ALIGN(arg->size);
