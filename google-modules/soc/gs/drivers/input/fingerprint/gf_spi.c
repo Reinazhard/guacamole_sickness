@@ -347,8 +347,12 @@ static int irq_setup(struct gf_dev *gf_dev)
 
 static void irq_cleanup(struct gf_dev *gf_dev)
 {
+	if (!gf_dev->irq)
+		return;
+
 	gf_disable_irq(gf_dev);
 	free_irq(gf_dev->irq, gf_dev);
+	gf_dev->irq = 0;
 }
 
 static void gf_kernel_key_input(struct gf_dev *gf_dev, struct gf_key *gf_key)
@@ -394,6 +398,9 @@ static long gf_ioctl_handler(struct file *filp, unsigned int cmd, unsigned long 
 	struct gf_ioc_chip_info info;
 
 	if (_IOC_TYPE(cmd) != GF_IOC_MAGIC)
+		return -ENODEV;
+
+	if (!gf_dev->device_available)
 		return -ENODEV;
 
 	if (_IOC_DIR(cmd) & _IOC_READ)
@@ -744,16 +751,30 @@ static int gf_remove(struct platform_device *pdev)
 {
 	struct gf_dev *gf_dev = &gf;
 
-	wakeup_source_unregister(fp_wakeup_source);
-	if (gf_dev->input)
-		input_unregister_device(gf_dev->input);
-	input_free_device(gf_dev->input);
-
-	/* prevent new opens */
 	mutex_lock(&gf_spi_lock);
+
+	/* prevent new opens and reject ioctls on a file that is still open */
+	gf_dev->device_available = 0;
 	list_del(&gf_dev->device_entry);
 	device_destroy(gf_class, gf_dev->devt);
 	clear_bit(MINOR(gf_dev->devt), minors);
+
+	/*
+	 * free_irq() waits for the threaded handler to finish, so the IRQ must
+	 * go away before the wakeup source that gf_irq() reports to is freed.
+	 * gf_dev->users is non-zero only while the IRQ is registered.
+	 */
+	if (gf_dev->users)
+		irq_cleanup(gf_dev);
+
+	wakeup_source_unregister(fp_wakeup_source);
+	fp_wakeup_source = NULL;
+
+	if (gf_dev->input) {
+		input_unregister_device(gf_dev->input);
+		gf_dev->input = NULL;
+	}
+
 	mutex_unlock(&gf_spi_lock);
 
 	return 0;
