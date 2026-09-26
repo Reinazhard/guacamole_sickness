@@ -95,20 +95,20 @@ read_otp_from_bp(dhd_bus_t *bus, uint32 *data_buf)
 
 	for (bp_idx = 0; bp_idx < ARRAYSIZE(boardtype_backplane_addr); bp_idx++) {
 		/* Read OTP Control 1 and PMU min_rsrc_mask before writing */
-		if (si_backplane_access(bus->sih, boardtype_backplane_addr[bp_idx], sizeof(int),
+		if (serialized_backplane_access(bus, boardtype_backplane_addr[bp_idx], sizeof(int),
 				&org_boardtype_backplane_data[bp_idx], TRUE) != BCME_OK) {
 			DHD_ERROR(("invalid size/addr combination\n"));
 			return BCME_ERROR;
 		}
 
 		/* Write new OTP and PMU configuration */
-		if (si_backplane_access(bus->sih, boardtype_backplane_addr[bp_idx], sizeof(int),
+		if (serialized_backplane_access(bus, boardtype_backplane_addr[bp_idx], sizeof(int),
 				&boardtype_backplane_data[bp_idx], FALSE) != BCME_OK) {
 			DHD_ERROR(("invalid size/addr combination\n"));
 			return BCME_ERROR;
 		}
 
-		if (si_backplane_access(bus->sih, boardtype_backplane_addr[bp_idx], sizeof(int),
+		if (serialized_backplane_access(bus, boardtype_backplane_addr[bp_idx], sizeof(int),
 				&int_val, TRUE) != BCME_OK) {
 			DHD_ERROR(("invalid size/addr combination\n"));
 			return BCME_ERROR;
@@ -120,7 +120,7 @@ read_otp_from_bp(dhd_bus_t *bus, uint32 *data_buf)
 
 	/* read tuple raw data */
 	for (i = 0; i < CIS_TUPLE_MAX_COUNT; i++) {
-		if (si_backplane_access(bus->sih, cis_start_addr + i * sizeof(uint32),
+		if (serialized_backplane_access(bus, cis_start_addr + i * sizeof(uint32),
 				sizeof(uint32),	&data_buf[i], TRUE) != BCME_OK) {
 			break;
 		}
@@ -129,13 +129,13 @@ read_otp_from_bp(dhd_bus_t *bus, uint32 *data_buf)
 
 	for (bp_idx = 0; bp_idx < ARRAYSIZE(boardtype_backplane_addr); bp_idx++) {
 		/* Write original OTP and PMU configuration */
-		if (si_backplane_access(bus->sih, boardtype_backplane_addr[bp_idx], sizeof(int),
+		if (serialized_backplane_access(bus, boardtype_backplane_addr[bp_idx], sizeof(int),
 				&org_boardtype_backplane_data[bp_idx], FALSE) != BCME_OK) {
 			DHD_ERROR(("invalid size/addr combination\n"));
 			return BCME_ERROR;
 		}
 
-		if (si_backplane_access(bus->sih, boardtype_backplane_addr[bp_idx], sizeof(int),
+		if (serialized_backplane_access(bus, boardtype_backplane_addr[bp_idx], sizeof(int),
 				&int_val, TRUE) != BCME_OK) {
 			DHD_ERROR(("invalid size/addr combination\n"));
 			return BCME_ERROR;
