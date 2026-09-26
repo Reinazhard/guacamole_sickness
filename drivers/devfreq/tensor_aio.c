@@ -2206,13 +2206,17 @@ static int exynos_df_target(struct device *dev, unsigned long *freq, u32 flags)
 	if (unlikely(!df))
 		return 0;
 
-	/* Update the user requested frequency limits */
+	/*
+	 * Update the user requested frequency limits. The PM QoS values are
+	 * in kHz, which is also the unit of data->tbl, so they are snapped to
+	 * a table entry as-is.
+	 */
 	min = dev_pm_qos_read_value(df->dev.parent, DEV_PM_QOS_MIN_FREQUENCY);
-	min = find_freq_l(data, min * HZ_PER_KHZ);
+	min = find_freq_l(data, min);
 	update_qos_req(data, &data->umin_req, min);
 
 	max = dev_pm_qos_read_value(df->dev.parent, DEV_PM_QOS_MAX_FREQUENCY);
-	max = find_freq_h(data, max * HZ_PER_KHZ);
+	max = find_freq_h(data, max);
 	update_qos_req(data, &data->umax_req, max);
 
 	*freq = clamp_t(u32, *freq, min, max);
