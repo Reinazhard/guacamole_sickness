@@ -378,13 +378,16 @@ static ssize_t f0_offset_store(struct device *dev, struct device_attribute *attr
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	unsigned int reg, val;
-	int error;
+	int error, s_val;
 
 	error = kstrtou32(buf, 10, &val);
 	if (error)
 		return -EINVAL;
 
-	if (val > CS40L26_F0_OFFSET_MAX && val < CS40L26_F0_OFFSET_MIN)
+	val &= GENMASK(23, 0);
+	s_val = (val & BIT(23)) ? (val | GENMASK(31, 24)) : val;
+
+	if (abs(s_val) > CS40L26_F0_OFFSET_MAX)
 		return -EINVAL;
 
 	error = cs40l26_pm_enter(cs40l26->dev);
