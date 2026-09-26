@@ -336,6 +336,8 @@ typedef struct rtt_status_info {
 	int		pm; /* to save current value of pm */
 	int8		pm_restore; /* flag to reset the old value of pm */
 	int8		cur_idx; /* current entry to do RTT */
+	uint16		sid_base; /* first FTM session id of the current request */
+	uint16		sid_next; /* first FTM session id of the next request */
 	int8		start_idx; /* start index for RTT */
 	bool		all_cancel; /* cancel all request once we got the cancel requet */
 	uint32		flags; /* indicate whether device is configured as initiator or target */

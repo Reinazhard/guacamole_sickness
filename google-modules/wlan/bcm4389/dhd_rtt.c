@@ -1923,6 +1923,36 @@ dhd_rtt_set_cfg(dhd_pub_t *dhd, rtt_config_params_t *params)
 
 	dhd_rtt_set_target_list_mode(dhd);
 
+	/*
+	 * Hand this request its own block of FTM session ids.  The sid is
+	 * the only request identity a proxd event carries, so a request
+	 * must not reuse the sids of its predecessor: a trailing event of
+	 * a cancelled request would otherwise be indistinguishable from
+	 * one of this request's and would be attributed to it.  Sessions
+	 * are numbered from WL_PROXD_SID_HOST_START, inside the block the
+	 * firmware reserves for the host, and the block is rotated once
+	 * per request.  Only a pure legacy target list numbers its
+	 * sessions this way; the nan list leaves target_info[].sid at
+	 * zero, and a mixed list keeps using FTM_DEFAULT_SESSION.
+	 */
+	if (rtt_status->rtt_config.target_list_mode ==
+			RNG_TARGET_LIST_MODE_LEGACY) {
+		int i;
+
+		rtt_status->sid_base = rtt_status->sid_next;
+		if ((rtt_status->sid_base < WL_PROXD_SID_HOST_START) ||
+				(rtt_status->sid_base + params->rtt_target_cnt - 1) >
+				WL_PROXD_SID_HOST_END) {
+			rtt_status->sid_base = WL_PROXD_SID_HOST_START;
+		}
+		rtt_status->sid_next = rtt_status->sid_base +
+			params->rtt_target_cnt;
+		for (i = 0; i < params->rtt_target_cnt; i++) {
+			rtt_status->rtt_config.target_info[i].sid =
+				rtt_status->sid_base + i;
+		}
+	}
+
 	if (rtt_status->cur_idx < rtt_status->rtt_config.rtt_target_cnt) {
 #ifdef WL_NAN
 		if (rtt_status->rtt_config.target_list_mode == RNG_TARGET_LIST_MODE_NAN) {
@@ -3321,7 +3351,7 @@ dhd_rtt_start(dhd_pub_t *dhd)
 	mutex_lock(&rtt_status->rtt_mutex);
 	if (rtt_status->rtt_config.target_list_mode ==
 		RNG_TARGET_LIST_MODE_LEGACY) {
-		uint16 sid = WL_PROXD_SID_HOST_START;
+		uint16 sid = rtt_status->sid_base;
 		DHD_RTT_MEM(("Configuring RTT sessions, count %d\n",
 			rtt_status->rtt_config.rtt_target_cnt));
 		for (i = 0; i < rtt_status->rtt_config.rtt_target_cnt; i++) {
@@ -4852,6 +4882,31 @@ dhd_rtt_event_handler(dhd_pub_t *dhd, wl_event_msg_t *event, void *event_data)
 		DHD_RTT(("Ignore Proxd event for the unexpected peer "MACDBG
 			" expected peer "MACDBG"\n", MAC2STRDBG(&event->addr),
 			MAC2STRDBG(&target->addr)));
+		goto exit;
+	}
+
+	/*
+	 * The peer MAC alone does not identify the request: consecutive
+	 * requests to the same peer are the normal case.  target_info[]
+	 * holds the sid of the FTM session this request created - the
+	 * request's sid block is handed out in dhd_rtt_set_cfg(), under
+	 * rtt_mutex, before this work thread configures the sessions, and
+	 * it is disjoint from the predecessor request's block - and the
+	 * firmware echoes that sid in every event it generates for the
+	 * session.  So an event whose sid is not this target's sid is not
+	 * this request's: either it is a trailing completion of an older
+	 * or cancelled request, or it belongs to another target of this
+	 * request, which the driver has already moved past.  Both are
+	 * dropped.  The check is skipped while the target holds no sid at
+	 * all, which covers the nan target list; it does NOT cover a mixed
+	 * list (that arm reuses FTM_DEFAULT_SESSION for every target), a
+	 * responder enabled after a legacy request (rtt_status->flags is
+	 * never cleared), or reuse of the 256-id host block once the base
+	 * wraps.
+	 */
+	if (target->sid && (ltoh16(p_event->sid) != target->sid)) {
+		DHD_RTT(("Ignore Proxd event for the stale session sid %d, "
+			"expected sid %d\n", ltoh16(p_event->sid), target->sid));
 		goto exit;
 	}
 
