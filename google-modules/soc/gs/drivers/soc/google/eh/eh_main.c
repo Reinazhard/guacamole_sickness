@@ -792,7 +792,7 @@ static void eh_abort_incomplete_descriptors(struct eh_device *eh_dev)
 	}
 }
 
-static int __noreturn eh_comp_thread(void *data)
+static int eh_comp_thread(void *data)
 {
 	struct eh_device *eh_dev = data;
 
@@ -811,7 +811,7 @@ static int __noreturn eh_comp_thread(void *data)
 	 */
 	current->flags |= PF_NOFREEZE;
 
-	while (1) {
+	while (!kthread_should_stop()) {
 		int ret;
 
 #ifdef CONFIG_SOC_ZUMA
@@ -830,7 +830,10 @@ static int __noreturn eh_comp_thread(void *data)
 					       PM_QOS_DEFAULT_VALUE);
 		wait_event(eh_dev->comp_wq,
 			   atomic_read(&eh_dev->nr_request) ||
-			   !sw_fifo_empty(&eh_dev->sw_fifo));
+			   !sw_fifo_empty(&eh_dev->sw_fifo) ||
+			   kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		cpu_latency_qos_update_request(&eh_dev->pm_qos_req, 100);
 #ifdef CONFIG_SOC_ZUMA
 		exynos_update_ip_idle_status(eh_dev->ip_index, 0);
@@ -859,6 +862,7 @@ static int __noreturn eh_comp_thread(void *data)
 #ifdef CONFIG_SOC_ZUMA
 	exynos_update_ip_idle_status(eh_dev->ip_index, 1);
 #endif
+	return 0;
 }
 
 /* Initialize SW related stuff */
@@ -1290,7 +1294,8 @@ struct eh_device *eh_create(eh_cb_fn comp, eh_drain_fn drain, void *drain_priv)
 	if (!list_empty(&eh_dev_list)) {
 		ret = list_first_entry(&eh_dev_list, struct eh_device,
 				       eh_dev_list);
-		list_del(&ret->eh_dev_list);
+		/* _init, so a later removal of the same node is a no-op */
+		list_del_init(&ret->eh_dev_list);
 	}
 	spin_unlock(&eh_dev_list_lock);
 	if (IS_ERR(ret))
@@ -1412,11 +1417,63 @@ disable_pm_runtime:
 static int eh_of_remove(struct platform_device *pdev)
 {
 	struct eh_device *eh_dev = platform_get_drvdata(pdev);
+	bool claimed;
+
+	/*
+	 * Unlink first. eh_dev_list is the pool eh_create() hands devices
+	 * out of, so taking the node out of it is what stops a new
+	 * claimant appearing while the teardown below runs. A node that
+	 * is self-linked instead was checked out by an upper layer and is
+	 * still referenced by it.
+	 */
+	spin_lock(&eh_dev_list_lock);
+	claimed = list_empty(&eh_dev->eh_dev_list);
+	list_del_init(&eh_dev->eh_dev_list);
+	spin_unlock(&eh_dev_list_lock);
+
+	/*
+	 * Drain before stopping the thread, as eh_suspend() does and for
+	 * the same reason: only the thread retires requests, so stopping
+	 * it first abandons whatever is still in the hardware ring or the
+	 * software FIFO, and the submitter waits on a BIO nothing will
+	 * ever complete.
+	 *
+	 * remove() cannot refuse the teardown the way eh_suspend()
+	 * refuses the suspend, so a timeout is reported and the teardown
+	 * proceeds. Reaching it means the pipeline is wedged, which the
+	 * thread's own error path already treats as a hardware fault.
+	 */
+	if (eh_dev->drain_cb)
+		(*eh_dev->drain_cb)(eh_dev->drain_priv);
+
+	if (!wait_event_timeout(eh_dev->idle_wq,
+				!atomic_read(&eh_dev->nr_inflight),
+				msecs_to_jiffies(EH_SUSPEND_DRAIN_MS)))
+		pr_warn("eh: %d request(s) still in flight at remove\n",
+			atomic_read(&eh_dev->nr_inflight));
+
+	wake_up(&eh_dev->comp_wq);
+	kthread_stop(eh_dev->comp_thread);
+	cpu_latency_qos_remove_request(&eh_dev->pm_qos_req);
+	free_irq(eh_dev->error_irq, eh_dev);
+	free_irq(eh_dev->comp_irq, eh_dev);
+	eh_hw_deinit(eh_dev);
 
 	clk_disable_unprepare(eh_dev->clk);
 	clk_put(eh_dev->clk);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	/*
+	 * eh_destroy() is exported and writes through the pointer it is
+	 * handed, so a device an upper layer still holds has to outlive
+	 * this remove: freeing it would turn that call, and any later
+	 * eh_compress_page(), into a write to freed memory. The fifo, the
+	 * completions and the bounce buffers are released by
+	 * eh_hw_deinit() above either way; only the struct is held back.
+	 */
+	if (!claimed)
+		kfree(eh_dev);
 	return 0;
 }
 
