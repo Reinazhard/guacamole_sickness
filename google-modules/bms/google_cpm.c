@@ -4762,9 +4762,49 @@ static int google_cpm_remove(struct platform_device *pdev)
 	if (!gcpm)
 		return 0;
 
+	/*
+	 * gcpm_init_work() is the registrant of chg_nb and the creator of the
+	 * MDIS cooling device and the mdis election, and it re-arms itself while it
+	 * still has power supply retries left, so it has to be drained first:
+	 * cancel_delayed_work_sync() waits for a running instance rather than
+	 * aborting it, and an instance left running past the unregister below would
+	 * re-register chg_nb against a gcpm that devres is about to free.
+	 */
+	cancel_delayed_work_sync(&gcpm->init_work);
+
 	power_supply_unreg_notifier(&gcpm->chg_nb);
 
+	/*
+	 * gcpm_psy_changed() re-arms pps_work from the notifier, so the notifier has
+	 * to be gone before the remaining work items are drained, or a peer's
+	 * power_supply_changed() can re-queue pps_work behind the cancel and have it
+	 * run against the freed gcpm.
+	 */
+	cancel_delayed_work_sync(&gcpm->select_work);
+	cancel_delayed_work_sync(&gcpm->pps_work);
+	cancel_delayed_work_sync(&gcpm->fcc_retry_work);
+	cancel_delayed_work_sync(&gcpm->cop_warn_work);
+
+	if (gcpm->thermal_device.tcd)
+		thermal_cooling_device_unregister(gcpm->thermal_device.tcd);
+
 	gvotable_destroy_election(gcpm->dc_fcc_votable);
+	gvotable_destroy_election(gcpm->cp_votable);
+	/*
+	 * mdis_votable and dc_chg_avail_votable are deliberately left
+	 * registered: both are published by name and their handles are
+	 * fetched once and never re-validated by their consumers --
+	 * google_charger holds VOTABLE_MDIS, and max77759_charger,
+	 * pca9468_charger, hl7132_charger and ln8411_driver each hold
+	 * VOTABLE_DC_CHG_AVAIL -- while a gvotable election carries no
+	 * reference count, so destroying either here would turn the
+	 * consumer's next vote into a use-after-free.  Keeping them is a
+	 * choice between two use-after-frees, not a closed one: their
+	 * callbacks stay armed against the gcpm that devres is about to
+	 * free, and cancelling gcpm's own work does not stop the four
+	 * voters, which are independent drivers.  Closing that needs the
+	 * gvotable layer to invalidate handles, which it does not do.
+	 */
 
 	for (i = 0; i < gcpm->chg_psy_count; i++) {
 		if (!gcpm->chg_psy_avail[i])
