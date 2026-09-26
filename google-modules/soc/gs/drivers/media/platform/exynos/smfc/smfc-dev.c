@@ -292,6 +292,7 @@ static int smfc_vb2_buf_init(struct vb2_buffer *vb)
 
 	for (plane = 0; plane < vb->num_planes; ++plane) {
 		dbuf = dma_buf_get(vb->planes[plane].m.fd);
+		sbuf->info[plane].dbuf = dbuf;
 		sbuf->info[plane].dba = dma_buf_attach(dbuf, smfc->dev);
 		sbuf->info[plane].dba->dma_map_attrs = DMA_ATTR_PRIVILEGED;
 		sbuf->info[plane].sgt = dma_buf_map_attachment(sbuf->info[plane].dba,
@@ -404,15 +405,26 @@ static void smfc_vb2_buf_cleanup(struct vb2_buffer *vb)
 		return;
 
 	for (plane = 0; plane < vb->num_planes; ++plane) {
-		if (!sbuf->info[plane].sgt)
-			continue;
-		dma_buf_unmap_attachment(sbuf->info[plane].dba,
-					 sbuf->info[plane].sgt,
-					 vb->vb2_queue->dma_dir);
-		dma_buf_detach(sbuf->info[plane].dba->dmabuf,
-			       sbuf->info[plane].dba);
-		sbuf->info[plane].dba = NULL;
-		sbuf->info[plane].sgt = NULL;
+		if (sbuf->info[plane].sgt) {
+			dma_buf_unmap_attachment(sbuf->info[plane].dba,
+						 sbuf->info[plane].sgt,
+						 vb->vb2_queue->dma_dir);
+			dma_buf_detach(sbuf->info[plane].dba->dmabuf,
+				       sbuf->info[plane].dba);
+			sbuf->info[plane].dba = NULL;
+			sbuf->info[plane].sgt = NULL;
+		}
+
+		/*
+		 * dma_buf_detach() drops the attachment, not the reference
+		 * dma_buf_get() took on the import path. The put cannot live
+		 * inside the sgt test above: an import that never produced
+		 * an sgt still holds the get().
+		 */
+		if (!IS_ERR_OR_NULL(sbuf->info[plane].dbuf)) {
+			dma_buf_put(sbuf->info[plane].dbuf);
+			sbuf->info[plane].dbuf = NULL;
+		}
 	}
 }
 
