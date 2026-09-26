@@ -188,6 +188,16 @@ static void fvmap_copy_from_sram(void *map_base, void __iomem *sram_base)
 		pr_debug("  num_of_lv      : %u\n", fvmap_header[i].num_of_lv);
 		pr_debug("  num_of_members : %u\n", fvmap_header[i].num_of_members);
 
+		if (fvmap_header[i].o_ratevolt > FVMAP_SIZE ||
+		    fvmap_header[i].num_of_lv >
+			(FVMAP_SIZE - fvmap_header[i].o_ratevolt) /
+			sizeof(struct rate_volt)) {
+			pr_err("fvmap[%d] rate/volt out of range: off %u lv %u\n",
+			       i, fvmap_header[i].o_ratevolt,
+			       fvmap_header[i].num_of_lv);
+			continue;
+		}
+
 		old = sram_base + fvmap_header[i].o_ratevolt;
 		new = map_base + fvmap_header[i].o_ratevolt;
 
