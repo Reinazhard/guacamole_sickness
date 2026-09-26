@@ -414,7 +414,8 @@ static u32 adjust_tx_power(u16 frame_duration_us, u32 ref_tx_power, u8 channel,
 		best_boost_abs = TXPOWER_ADJUSTMENT_MARGIN;
 
 		if (target_boost < TXPOWER_ADJUSTMENT_MARGIN &&
-		    target_boost < lut[i + 1] - TXPOWER_ADJUSTMENT_MARGIN) {
+		    (i >= LUT_COMP_SIZE - 1 ||
+		     target_boost < lut[i + 1] - TXPOWER_ADJUSTMENT_MARGIN)) {
 			if (k == 0 && applied_boost)
 				*applied_boost = 0;
 			adj_tx_power_byte[k] = ref_tx_power_byte[k];
