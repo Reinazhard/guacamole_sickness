@@ -181,7 +181,7 @@ static void fvmap_copy_from_sram(void *map_base, void __iomem *sram_base)
 	for (i = 0; i < size; i++) {
 		/* load fvmap info */
 		vclk = cmucal_get_node(ACPM_VCLK_TYPE | i);
-		if (vclk == NULL)
+		if (!vclk || !vclk->list)
 			continue;
 		pr_debug("dvfs_type : %s - id : %x\n",
 			 vclk->name, fvmap_header[i].dvfs_type);
