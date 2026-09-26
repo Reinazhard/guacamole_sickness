@@ -122,6 +122,7 @@ static void __mfc_deinit_dec_ctx(struct mfc_ctx *ctx)
 
 	mfc_mem_cleanup_user_shared_handle(ctx, &dec->sh_handle_dpb);
 	mfc_mem_cleanup_user_shared_handle(ctx, &dec->sh_handle_hdr);
+	mfc_mem_cleanup_user_shared_handle(ctx, &dec->sh_handle_av1_film_grain);
 
 	if (dec->ref_info)
 		vfree(dec->ref_info);
@@ -214,6 +215,7 @@ static int __mfc_init_dec_ctx(struct mfc_ctx *ctx)
 		dec->ref_info[i].dpb[0].fd[0] = MFC_INFO_INIT_FD;
 
 	dec->sh_handle_hdr.fd = -1;
+	dec->sh_handle_av1_film_grain.fd = -1;
 
 	/* Init videobuf2 queue for OUTPUT */
 	ctx->vq_src.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
