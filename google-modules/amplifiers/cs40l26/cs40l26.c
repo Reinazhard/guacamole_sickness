@@ -4786,15 +4786,15 @@ int cs40l26_fw_swap(struct cs40l26_private *cs40l26, const u32 id)
 
 	error = cs40l26_pm_state_transition(cs40l26, CS40L26_PM_STATE_PREVENT_HIBERNATE);
 	if (error)
-		return error;
+		goto err;
 
 	error = cs40l26_wseq_clear(cs40l26, &pseq_params);
 	if (error)
-		return error;
+		goto err;
 
 	error = cs40l26_wseq_clear(cs40l26, &aseq_params);
 	if (error)
-		return error;
+		goto err;
 
 	if (id == CS40L26_FW_CALIB_ID)
 		cs40l26->calib_fw = true;
@@ -4803,18 +4803,41 @@ int cs40l26_fw_swap(struct cs40l26_private *cs40l26, const u32 id)
 
 	error = cs40l26_fw_upload(cs40l26);
 	if (error)
-		return error;
+		goto err;
 
 	if (cs40l26->fw_defer && cs40l26->fw_loaded) {
 		error = cs40l26_request_irq(cs40l26);
 		if (error)
-			return error;
+			goto err;
 
 		cs40l26->fw_defer = false;
 	}
 
-	if (re_enable)
+err:
+	if (re_enable) {
+		/*
+		 * The teardown above has two halves and the IRQ is only
+		 * one of them: cs40l26_pm_runtime_teardown() also clears
+		 * use_autosuspend and disables runtime PM.  Putting the
+		 * IRQ back without putting that back would leave an
+		 * interrupt the driver cannot service, which is the side
+		 * effect this finding calls out -- and the sibling path in
+		 * swap_wavetable_store() restores the pair together for
+		 * the same reason (cs40l26-sysfs.c, err_setup).
+		 *
+		 * Only while it is still torn down.  On the two paths
+		 * below cs40l26_fw_upload() has reached
+		 * cs40l26_dsp_config(), which calls
+		 * cs40l26_pm_runtime_setup() itself, and
+		 * pm_runtime_enable() is not idempotent -- a second call
+		 * warns "Unbalanced" and does nothing else.  So the
+		 * restore is conditional on the state, not on the path.
+		 */
+		if (!pm_runtime_enabled(cs40l26->dev))
+			cs40l26_pm_runtime_setup(cs40l26);
+
 		enable_irq(cs40l26->irq);
+	}
 
 	return error;
 }
