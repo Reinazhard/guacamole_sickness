@@ -1023,7 +1023,8 @@ static int uid_time_in_state_h_show(struct seq_file *file, void *data)
 	/* Grab the lock before reading the entries upon debugfs read. */
 	spin_lock_irqsave(&pc->dvfs.metrics.lock, flags);
 	hash_for_each(pc->dvfs.metrics.uid_stats_table, bkt, entry, uid_list_node) {
-		seq_printf(file, "%6d (%2d) | ", __kuid_val(entry->uid), entry->active_kctx_count);
+		seq_printf(file, "%6d (%2d) | ", __kuid_val(entry->uid),
+			   atomic_read(&entry->active_kctx_count));
 		for (i=0; i < pc->dvfs.table_size; i++) {
 			totals[i] += entry->tis_stats[i].time_total;
 			seq_printf(file, "%9llu  ", entry->tis_stats[i].time_total / NSEC_PER_MSEC);

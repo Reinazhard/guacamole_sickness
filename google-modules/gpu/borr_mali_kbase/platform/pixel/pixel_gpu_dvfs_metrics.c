@@ -309,7 +309,7 @@ int gpu_dvfs_kctx_init(struct kbase_context *kctx)
 		spin_unlock_irqrestore(&pc->dvfs.metrics.lock, flags);
 	}
 
-	stats->active_kctx_count++;
+	atomic_inc(&stats->active_kctx_count);
 
 	/* Store a direct link in the kctx */
 	pd->stats = stats;
@@ -329,15 +329,11 @@ done:
  */
 void gpu_dvfs_kctx_term(struct kbase_context *kctx)
 {
-	struct kbase_device *kbdev = kctx->kbdev;
 	struct pixel_platform_data *pd = kctx->platform_data;
 	struct gpu_dvfs_metrics_uid_stats *stats = pd->stats;
-	unsigned long flags;
 
-	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-	stats->active_kctx_count--;
-	WARN_ON(stats->active_kctx_count < 0);
-	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+	atomic_dec(&stats->active_kctx_count);
+	WARN_ON(atomic_read(&stats->active_kctx_count) < 0);
 }
 
 int gpu_dvfs_metrics_init(struct kbase_device *kbdev)
