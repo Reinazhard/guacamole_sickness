@@ -1092,6 +1092,17 @@ static void st21nfc_remove(struct i2c_client *client)
 	if (!IS_ERR(st21nfc_dev->gpiod_pidle)) {
 		sysfs_remove_file(&client->dev.kobj,
 				  &dev_attr_power_stats.attr);
+		/*
+		 * The pidle interrupt is requested with devm_request_irq(), so it
+		 * is released by devres after remove() returns, and its handler
+		 * queues st_p_work unconditionally. Free it here: otherwise an
+		 * edge arriving in that window queues work onto the workqueue
+		 * destroy_workqueue() is about to release.
+		 */
+		devm_free_irq(&client->dev, st21nfc_dev->irq_pw_stats_idle,
+			      st21nfc_dev);
+		cancel_work_sync(&st21nfc_dev->st_p_work);
+		destroy_workqueue(st21nfc_dev->st_p_wq);
 		mutex_destroy(&st21nfc_dev->pidle_mutex);
 	}
 	sysfs_remove_group(&client->dev.kobj, &st21nfc_attr_grp);
