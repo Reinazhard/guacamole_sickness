@@ -1279,20 +1279,29 @@ static int max77759_enable_sw_recharge(struct max77759_chgr_data *data,
 static int max77759_higher_headroom_enable(struct max77759_chgr_data *data, bool flag)
 {
 	int ret = 0;
-	u8 reg, reg_rd;
+	u8 reg = 0, reg_rd = 0;
 	const u8 val = flag ? CHGR_CHG_CNFG_12_VREG_4P7V : CHGR_CHG_CNFG_12_VREG_4P6V;
 
-	ret = max77759_reg_read(data->regmap, MAX77759_CHG_CNFG_12, &reg);
-	if (ret < 0)
-		return ret;
-
-	reg_rd = reg;
 	ret = max77759_chg_prot(data->regmap, false);
 	if (ret < 0)
 		return ret;
 
-	reg = _chg_cnfg_12_vchgin_reg_set(reg, val);
-	ret = max77759_reg_write(data->regmap, MAX77759_CHG_CNFG_12, reg);
+	/*
+	 * CHG_CNFG_12 holds VCHGIN_REG together with WCIN_REG, CHGINSEL and
+	 * WCINSEL, and those other fields are written by max77759_set_insel()
+	 * and by the use case machine (gs101_cpout_mode(),
+	 * gs101_force_standby()). The whole-byte write below must therefore
+	 * be serialised with them, as every other setter in this file is, or
+	 * it commits a byte read before their update and reverts it.
+	 */
+	mutex_lock(&data->io_lock);
+	ret = max77759_reg_read(data->regmap, MAX77759_CHG_CNFG_12, &reg);
+	if (ret == 0) {
+		reg_rd = reg;
+		reg = _chg_cnfg_12_vchgin_reg_set(reg, val);
+		ret = max77759_reg_write(data->regmap, MAX77759_CHG_CNFG_12, reg);
+	}
+	mutex_unlock(&data->io_lock);
 	if (ret)
 		dev_info(data->dev, "%s: error setting headroom to %d (%d)\n",
 			 __func__, val, ret);
