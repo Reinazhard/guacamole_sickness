@@ -2285,7 +2285,24 @@ static int bts_probe(struct platform_device *pdev)
 
 static int bts_remove(struct platform_device *pdev)
 {
+	/*
+	 * Unpublish everything bts_probe() published before the object it
+	 * points into is released. The syscore hook and the PM-QoS
+	 * requests both dereference btsdev from contexts that can run
+	 * long after remove() returns.
+	 */
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
+	exynos_pm_qos_remove_request(&exynos_int_qos);
+	exynos_pm_qos_remove_request(&exynos_mif_qos);
+#else
+	pm_qos_remove_request(&exynos_int_qos);
+	pm_qos_remove_request(&exynos_mif_qos);
+#endif
+
+	unregister_syscore_ops(&exynos_bts_syscore_ops);
+
 	devm_kfree(&pdev->dev, btsdev);
+	btsdev = NULL;
 	platform_set_drvdata(pdev, NULL);
 
 	return 0;
