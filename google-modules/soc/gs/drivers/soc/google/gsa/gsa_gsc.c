@@ -180,6 +180,12 @@ static int gsc_nos_call(struct gsc_state *s, unsigned int cmd, unsigned long arg
 	nos_req.call_status = rsp[GSC_NOS_CALL_RSP_STATUS_IDX];
 	nos_req.reply_len = rsp[GSC_NOS_CALL_RSP_REPLY_LEN_IDX];
 
+	/* the reply length is firmware-controlled: re-bound it before the copy */
+	if (nos_req.reply_len > s->bbuf_sz) {
+		ret = -EIO;
+		goto out;
+	}
+
 	/* copy out nos_req to caller */
 	if (copy_to_user((void __user *)arg, &nos_req, sizeof(nos_req))) {
 		ret = -EFAULT;
