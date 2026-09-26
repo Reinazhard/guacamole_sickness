@@ -1511,15 +1511,19 @@ static ssize_t __sysfs_store_eom_res(struct device *dev,
 	struct platform_device *pdev =
 		container_of(dev, struct platform_device, dev);
 	struct exynos_ufs *ufs = dev_get_platdata(&pdev->dev);
-	int value, offset;
-	int ret;
+	unsigned int value, offset;
 
-	ret = sscanf(buf, "%d %d", &value, &offset);
+	if (sscanf(buf, "%u %u", &value, &offset) != 2)
+		return -EINVAL;
+
 	if (value >= ufs->num_lanes) {
 		dev_err(ufs->dev, "Fail set lane to %u. Its max is %u\n", value,
 				ufs->num_lanes);
 		return -EINVAL;
 	}
+
+	if (offset >= EOM_MAX_SIZE / EOM_DEF_VREF_MAX)
+		return -EINVAL;
 
 	ufs->params[UFS_SYSFS_EOM_LANE] = value;
 	ufs->params[UFS_SYSFS_EOM_OFS] = offset * EOM_DEF_VREF_MAX;
