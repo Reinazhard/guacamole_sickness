@@ -14360,6 +14360,26 @@ void dhd_detach(dhd_pub_t *dhdp)
 	}
 #endif /* WL_NATOE */
 
+#if defined(DHD_LB) && defined(DHD_LB_RXP)
+	/*
+	 * dhd_napi_poll() re-arms dhd_dpc_dispatcher_work, and napi is only
+	 * disabled from dhd_stop(), which the unbind path does not reach.
+	 * Quiesce the poll before draining the work it feeds.
+	 *
+	 * Only while the instance is live.  napi_disable() is not
+	 * idempotent -- it spins until NAPI_STATE_SCHED clears, and only
+	 * napi_enable() clears it -- and it must not run before
+	 * netif_napi_add(), which is what initialises the napi hrtimer,
+	 * because hrtimer_cancel() dereferences the clock base before it
+	 * tests the timer state.  rx_napi_netdev is the liveness flag the
+	 * two other napi_disable() sites in this file already use:
+	 * dhd_open() sets it before netif_napi_add(), dhd_stop() clears it
+	 * after napi_disable().
+	 */
+	if (dhd->rx_napi_netdev)
+		napi_disable(&dhd->rx_napi_struct);
+#endif /* DHD_LB && DHD_LB_RXP */
+
 	cancel_delayed_work_sync(&dhd->dhd_dpc_dispatcher_work);
 #ifdef DHD_LB
 	if (dhd->dhd_state & DHD_ATTACH_STATE_LB_ATTACH_DONE) {
