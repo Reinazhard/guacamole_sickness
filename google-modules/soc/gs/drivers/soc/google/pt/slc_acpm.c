@@ -351,6 +351,8 @@ static ptid_t slc_acpm_alloc(void *data, int property_index, void *resize_data,
 		return ret;
 
 	pt_ptid_data_decode(ret, &ptid, &retnb);
+	if (ptid < 0 || ptid >= PT_PTID_MAX)
+		return PT_PTID_INVALID;
 
 
 	spin_lock_irqsave(&driver_data->sl, flags);
