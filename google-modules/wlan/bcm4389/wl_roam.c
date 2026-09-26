@@ -550,7 +550,7 @@ void wl_update_roamscan_cache_by_band(struct net_device *dev, int band)
 		int n = 0;
 		chanlist_before.n = n_roam_cache;
 
-		for (n = 0; n < n_roam_cache; n++) {
+		for (n = 0; n < MIN(n_roam_cache, MAX_ROAM_CHANNEL); n++) {
 			chanspec_t ch = roam_cache[n].chanspec;
 			chanlist_before.channels[n] = wf_chspec_ctlchan(ch) |
 				CHSPEC_BAND(ch) | band_bw;
