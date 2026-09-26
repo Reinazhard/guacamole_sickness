@@ -4795,6 +4795,34 @@ dhd_prot_reset(dhd_pub_t *dhd)
 	 * so when stopping bus, flowrings shall be deleted
 	 */
 	if (dhd->flow_rings_inited) {
+		int timeleft = 0;
+
+		/* The DPC walks dhd->flow_ring_table through DHD_FLOW_RING(),
+		 * which does no NULL test, and dhd_flow_rings_deinit() leaves
+		 * max_tx_flowid set, so DHD_FLOW_RING_INV_ID() still accepts the
+		 * flowid after the table is freed.  Quiesce the DPC first.
+		 */
+		dhd_dpc_kill(dhd);
+		/* dhd_dpc_kill() does NOT stop the DPC when it runs as a kthread:
+		 * the ISR dispatches it with dhd_sched_dpc() -> binary_sema_up(),
+		 * not through dhd_dpc_dispatcher_work, and only PROC_STOP()
+		 * terminates the thread.  An iteration already inside
+		 * dhd_bus_dpc() holds DHD_BUS_BUSY_IN_DPC until it returns, and
+		 * busstate is DHD_BUS_DOWN here, so dhd_bus_dpc()'s guard rejects
+		 * every later entry.  Wait for the iteration in flight, and report
+		 * if it does not leave: every sibling caller of this primitive
+		 * logs the timeout (dhd_common.c:1979, dhd_linux.c:6535, :13546,
+		 * :15971, :19577, dhd_pcie_linux.c:852) and a silent one here
+		 * would leave the single condition under which the quiesce did
+		 * not happen with no trace at all.
+		 */
+		timeleft = dhd_os_busbusy_wait_bitmask(dhd,
+			&dhd->dhd_bus_busy_state, DHD_BUS_BUSY_IN_DPC, 0);
+		if ((dhd->dhd_bus_busy_state & DHD_BUS_BUSY_IN_DPC) != 0) {
+			DHD_ERROR(("%s: Timed out(%d) waiting for the DPC to leave "
+				"dhd_bus_dpc(), dhd_bus_busy_state=0x%x\n", __FUNCTION__,
+				timeleft, dhd->dhd_bus_busy_state));
+		}
 		dhd_flow_rings_deinit(dhd);
 	}
 
