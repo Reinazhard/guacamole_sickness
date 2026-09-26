@@ -59,22 +59,60 @@ static DEFINE_MUTEX(shared_i2c_mutex);
 
 bool is_shared_i2c_with_stmvl53l1(struct pinctrl *pinctrl)
 {
+	bool shared;
+
 	/* The global shared_i2c_data can be NULL when allocate memory failed.
 	 * And shared_i2c_data->pinctrl will be NULL if no stmvl53l1 module in
 	 * device tree or stmvl53l1 probes failed. We don't need to care about
 	 * the shared i2c in these two cases.
+	 *
+	 * Read under the mutex.  shared_i2c_data_release() clears the
+	 * global and frees the object while holding it, so an unlocked
+	 * read can return a non-NULL pointer to storage that is already
+	 * gone -- and this is exported and called from the lwis i2c
+	 * driver, which has no reference it could hold instead.
 	 */
-	if (shared_i2c_data == NULL || shared_i2c_data->pinctrl == NULL || pinctrl == NULL)
+	if (pinctrl == NULL)
 		return false;
 
-	return (shared_i2c_data->pinctrl == pinctrl);
+	mutex_lock(&shared_i2c_mutex);
+	shared = shared_i2c_data != NULL &&
+		 shared_i2c_data->pinctrl == pinctrl;
+	mutex_unlock(&shared_i2c_mutex);
+
+	return shared;
 }
 EXPORT_SYMBOL_GPL(is_shared_i2c_with_stmvl53l1);
+
+/* The shared-bus pinctrl, or NULL once this driver no longer owns the
+ * bus.  Same lock and same reason as above: the pointer and the field
+ * it names have to be read together, because the release callback
+ * clears the one and frees the other.
+ */
+static struct pinctrl *shared_i2c_pinctrl(void)
+{
+	struct pinctrl *pinctrl;
+
+	mutex_lock(&shared_i2c_mutex);
+	pinctrl = shared_i2c_data ? shared_i2c_data->pinctrl : NULL;
+	mutex_unlock(&shared_i2c_mutex);
+
+	return pinctrl;
+}
 
 void shared_i2c_data_release(struct kref *ref)
 {
 	struct shared_i2c_data *data =
 		container_of(ref, struct shared_i2c_data, refcount);
+
+	/* Publish the removal before the free.  Both kref_put() call
+	 * sites that can reach zero hold shared_i2c_mutex across this
+	 * callback -- stmvl53l1_remove() takes it around its put, and
+	 * shared_i2c_set_state() holds it from its own lock to its
+	 * unlock -- so a reader that takes the mutex cannot observe a
+	 * non-NULL pointer to freed storage.
+	 */
+	shared_i2c_data = NULL;
 	kfree(data);
 }
 
@@ -90,11 +128,35 @@ int shared_i2c_set_state(struct device *dev, struct pinctrl *pinctrl,
 	}
 
 	mutex_lock(&shared_i2c_mutex);
+
+	/* The caller reached here through is_shared_i2c_with_stmvl53l1(),
+	 * which does not take this lock, so the global can have been
+	 * cleared between that check and this one: an unbind of
+	 * stmvl53l1 frees the object while the lwis i2c driver is
+	 * between its check and this call.  NULL means the same thing
+	 * here as it does there -- no shared i2c -- so there is no
+	 * reference to take and no state to select.
+	 */
+	if (shared_i2c_data == NULL) {
+		mutex_unlock(&shared_i2c_mutex);
+		return 0;
+	}
+
 	if (strcmp(state_str, "on_i2c") == 0)
 		kref_get(&shared_i2c_data->refcount);
 
 	if (strcmp(state_str, "off_i2c") == 0) {
 		kref_put(&shared_i2c_data->refcount, shared_i2c_data_release);
+
+		/* That put can be the last reference, and the release
+		 * callback clears the global before it frees.  Re-read
+		 * the global rather than dereference the object that may
+		 * just have gone.
+		 */
+		if (shared_i2c_data == NULL) {
+			mutex_unlock(&shared_i2c_mutex);
+			return 0;
+		}
 		if (kref_read(&shared_i2c_data->refcount) != 1) {
 			mutex_unlock(&shared_i2c_mutex);
 			return 0;
@@ -598,7 +660,15 @@ static void stmvl53l1_remove(struct i2c_client *client)
 	stmvl53l1_release_gpios(i2c_data);
 
 	stmvl53l1_put(data->client_object);
+
+	/* Order the last put against shared_i2c_set_state()'s kref_get
+	 * and against the locked reads in is_shared_i2c_with_stmvl53l1()
+	 * and shared_i2c_pinctrl(), so the clear in the release callback
+	 * cannot interleave with a concurrent consumer.
+	 */
+	mutex_lock(&shared_i2c_mutex);
 	kref_put(&shared_i2c_data->refcount, shared_i2c_data_release);
+	mutex_unlock(&shared_i2c_mutex);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -660,6 +730,7 @@ int stmvl53l1_power_up_i2c(void *object)
 	int rc = 0;
 	struct i2c_data *data = (struct i2c_data *)object;
 	struct device *dev = &data->client->dev;
+	struct pinctrl *pinctrl;
 
 	if (data->vl53l1_data->is_power_up)
 		return rc;
@@ -713,9 +784,15 @@ int stmvl53l1_power_up_i2c(void *object)
 	/* set sensor on pinctrl state */
 	stmvl53l1_pinctrl_set_state(dev, devm_pinctrl_get(dev), "sensor_on");
 
-	/* Enable shared I2C */
-	if (shared_i2c_data->pinctrl != NULL) {
-		rc = shared_i2c_set_state(dev, shared_i2c_data->pinctrl, "on_i2c");
+	/* Enable shared I2C.  The pinctrl is read under
+	 * shared_i2c_mutex, because a stale non-NULL global would
+	 * otherwise be dereferenced here after an unbind -- this is
+	 * reachable from a stale open of /dev/ispolin_ranging, whose
+	 * ioctl path has no removal guard.
+	 */
+	pinctrl = shared_i2c_pinctrl();
+	if (pinctrl != NULL) {
+		rc = shared_i2c_set_state(dev, pinctrl, "on_i2c");
 		if (rc) {
 			dev_err(dev, "Error enabling i2c bus %d\n", rc);
 			return rc;
@@ -741,6 +818,7 @@ int stmvl53l1_power_down_i2c(void *i2c_object)
 	int rc = 0;
 	struct i2c_data *data = (struct i2c_data *)i2c_object;
 	struct device *dev = &data->client->dev;
+	struct pinctrl *pinctrl;
 
 	if (!data->vl53l1_data->is_power_up)
 		return rc;
@@ -772,9 +850,13 @@ int stmvl53l1_power_down_i2c(void *i2c_object)
 	/* set sensor off pinctrl state */
 	stmvl53l1_pinctrl_set_state(dev, devm_pinctrl_get(dev), "sensor_off");
 
-	/* Disable shared I2C */
-	if (shared_i2c_data->pinctrl != NULL) {
-		rc = shared_i2c_set_state(dev, shared_i2c_data->pinctrl, "off_i2c");
+	/* Disable shared I2C.  Same locked read as the power-up path:
+	 * the global is cleared before the object is freed, so it must
+	 * not be dereferenced without shared_i2c_mutex.
+	 */
+	pinctrl = shared_i2c_pinctrl();
+	if (pinctrl != NULL) {
+		rc = shared_i2c_set_state(dev, pinctrl, "off_i2c");
 		if (rc) {
 			dev_err(dev, "Error disabling i2c bus %d\n", rc);
 			return rc;
