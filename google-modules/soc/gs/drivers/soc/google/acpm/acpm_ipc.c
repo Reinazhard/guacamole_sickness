@@ -401,15 +401,26 @@ int acpm_ipc_release_channel(struct device_node *np,
 	struct callback_info *cb;
 	unsigned long flags;
 
+	/*
+	 * dequeue_policy() walks this list without a lock it could hold across
+	 * the walk, because the callbacks are allowed to wait: slc_acpm_check()
+	 * sends to ACPM and the PT resize callbacks take their own locks.  So
+	 * the walk has to tolerate a concurrent removal instead of excluding
+	 * it.  Clearing ipc_callback under ch_lock stops a released client
+	 * from being called, __list_del_entry() unlinks without poisoning
+	 * next, which a concurrent walker still follows, and the entry is left
+	 * for devres to release when the ACPM device is unbound rather than
+	 * freed underneath that walker.
+	 */
+	spin_lock_irqsave(&channel->ch_lock, flags);
 	list_for_each_entry(cb, cb_list, list) {
 		if (cb->client == np) {
-			spin_lock_irqsave(&channel->ch_lock, flags);
-			list_del(&cb->list);
-			spin_unlock_irqrestore(&channel->ch_lock, flags);
-			devm_kfree(acpm_ipc->dev, cb);
+			cb->ipc_callback = NULL;
+			__list_del_entry(&cb->list);
 			break;
 		}
 	}
+	spin_unlock_irqrestore(&channel->ch_lock, flags);
 
 	return 0;
 }
