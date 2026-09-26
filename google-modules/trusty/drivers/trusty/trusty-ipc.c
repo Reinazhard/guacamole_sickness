@@ -2217,7 +2217,6 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 
 	mutex_lock(&vds->lock);
 	vds->state = VDS_DEAD;
-	vds->vdev = NULL;
 	mutex_unlock(&vds->lock);
 
 	vdev->config->reset(vdev);
@@ -2229,6 +2228,10 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 	vds_free_msg_buf_list(vds, &vds->free_buf_list);
 
 	vdev->config->del_vqs(vds->vdev);
+
+	mutex_lock(&vds->lock);
+	vds->vdev = NULL;
+	mutex_unlock(&vds->lock);
 
 	kref_put(&vds->refcount, _free_vds);
 }
