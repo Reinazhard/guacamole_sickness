@@ -1585,7 +1585,7 @@ static int cs40l26_irq_update_mask(struct cs40l26_private *cs40l26, u32 reg, u32
 	if (bit_mask & CS40L26_WSEQ_UPPER_MASK) {
 		error = cs40l26_wseq_write(cs40l26, reg,
 				FIELD_GET(CS40L26_WSEQ_UPPER_MASK, new_mask),
-				true, CS40L26_WSEQ_OP_WRITE_H16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_H16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 	}
@@ -1593,7 +1593,7 @@ static int cs40l26_irq_update_mask(struct cs40l26_private *cs40l26, u32 reg, u32
 	if (bit_mask & CS40L26_WSEQ_LOWER_MASK) {
 		error = cs40l26_wseq_write(cs40l26, reg,
 				FIELD_GET(CS40L26_WSEQ_LOWER_MASK, new_mask),
-				true, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 	}
@@ -3313,7 +3313,7 @@ static int cs40l26_gpio_config(struct cs40l26_private *cs40l26)
 			return error;
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_GPIO_PAD_CONTROL, pad_val, true,
-				CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+				CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 		if (error)
 			return error;
 
@@ -3409,7 +3409,7 @@ static int cs40l26_brwnout_prevention_init(struct cs40l26_private *cs40l26)
 	}
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_BLOCK_ENABLES2, enables, true,
-			CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3450,13 +3450,13 @@ static int cs40l26_brwnout_prevention_init(struct cs40l26_private *cs40l26)
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_VBBR_CONFIG,
 				(vbbr_config & CS40L26_WSEQ_UPPER_MASK) >> 16,
-				true, CS40L26_WSEQ_OP_WRITE_H16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_H16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_VBBR_CONFIG,
 				(vbbr_config & CS40L26_WSEQ_LOWER_MASK),
-				true, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 	}
@@ -3498,13 +3498,13 @@ static int cs40l26_brwnout_prevention_init(struct cs40l26_private *cs40l26)
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_VPBR_CONFIG,
 				(vpbr_config & CS40L26_WSEQ_UPPER_MASK) >> 16,
-				true, CS40L26_WSEQ_OP_WRITE_H16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_H16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_VPBR_CONFIG,
 				(vpbr_config & GENMASK(15, 0)),
-				true, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+				true, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 		if (error)
 			return error;
 	}
@@ -3540,7 +3540,7 @@ static int cs40l26_dc_wd_config(struct cs40l26_private *cs40l26)
 		return error;
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_ALIVE_DCIN_WD, wd_config, true,
-			CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3571,7 +3571,7 @@ static int cs40l26_asp_config(struct cs40l26_private *cs40l26)
 	}
 
 	error = cs40l26_wseq_multi_write(cs40l26, dsp1rx_config, 2, true,
-			CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 
 err_free:
 	kfree(dsp1rx_config);
@@ -3597,7 +3597,7 @@ static int cs40l26_bst_dcm_config(struct cs40l26_private *cs40l26)
 			return error;
 
 		error = cs40l26_wseq_write(cs40l26, CS40L26_BST_DCM_CTL, val, true,
-				CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+				CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 	}
 
 	return error;
@@ -3692,7 +3692,7 @@ static int cs40l26_bst_ipk_config(struct cs40l26_private *cs40l26)
 	}
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_BST_IPK_CTL, bst_ipk, true,
-			CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3717,7 +3717,7 @@ static int cs40l26_bst_ctl_config(struct cs40l26_private *cs40l26)
 	}
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_VBST_CTL_1, bst_ctl, true,
-			CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3732,7 +3732,7 @@ static int cs40l26_bst_ctl_config(struct cs40l26_private *cs40l26)
 		return error;
 
 	return cs40l26_wseq_write(cs40l26, CS40L26_VBST_CTL_2, vbst_ctl_2, true,
-			CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 }
 
 static int cs40l26_noise_gate_config(struct cs40l26_private *cs40l26)
@@ -3763,7 +3763,7 @@ static int cs40l26_noise_gate_config(struct cs40l26_private *cs40l26)
 		return error;
 
 	return cs40l26_wseq_write(cs40l26, CS40L26_NG_CONFIG, ng_config, true,
-			CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 }
 
 static int cs40l26_aux_noise_gate_config(struct cs40l26_private *cs40l26)
@@ -3777,7 +3777,7 @@ static int cs40l26_aux_noise_gate_config(struct cs40l26_private *cs40l26)
 		return error;
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_NGATE1_INPUT, CS40L26_DATA_SRC_DSP1TX4,
-			true, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			true, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3792,9 +3792,9 @@ static int cs40l26_aux_noise_gate_config(struct cs40l26_private *cs40l26)
 			FIELD_PREP(CS40L26_AUX_NG_EN_MASK, cs40l26->aux_ng_enable);
 
 	if (cs40l26->revid == CS40L26_REVID_B2)
-		wseq_params = &aseq_params;
+		wseq_params = &cs40l26->aseq_params;
 	else
-		wseq_params = &pseq_params;
+		wseq_params = &cs40l26->pseq_params;
 
 	return cs40l26_wseq_write(cs40l26, CS40L26_MIXER_NGATE_CH1_CFG, aux_ng_config, true,
 			CS40L26_WSEQ_OP_WRITE_FULL, wseq_params);
@@ -3811,7 +3811,7 @@ static int cs40l26_clip_lvl_config(struct cs40l26_private *cs40l26)
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_TEST_KEY_CTRL,
 			CS40L26_TEST_KEY_UNLOCK_CODE1, false,
-			CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3821,7 +3821,7 @@ static int cs40l26_clip_lvl_config(struct cs40l26_private *cs40l26)
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_TEST_KEY_CTRL,
 			CS40L26_TEST_KEY_UNLOCK_CODE2, false,
-			CS40L26_WSEQ_OP_WRITE_ADDR8, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_ADDR8, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3847,7 +3847,7 @@ static int cs40l26_clip_lvl_config(struct cs40l26_private *cs40l26)
 	}
 
 	error = cs40l26_wseq_write(cs40l26, CS40L26_DIGPWM_CONFIG2, digpwm_config, false,
-			CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+			CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -3856,7 +3856,7 @@ static int cs40l26_clip_lvl_config(struct cs40l26_private *cs40l26)
 		return error;
 
 	return cs40l26_wseq_write(cs40l26, CS40L26_TEST_KEY_CTRL, CS40L26_TEST_KEY_LOCK_CODE,
-			false, CS40L26_WSEQ_OP_WRITE_L16, &pseq_params);
+			false, CS40L26_WSEQ_OP_WRITE_L16, &cs40l26->pseq_params);
 }
 
 static int cs40l26_lbst_short_test(struct cs40l26_private *cs40l26)
@@ -3950,7 +3950,7 @@ static int cs40l26_handle_a1_errata(struct cs40l26_private *cs40l26)
 	}
 
 	return cs40l26_wseq_multi_write(cs40l26, cs40l26_a1_errata, num_writes,
-			false, CS40L26_WSEQ_OP_WRITE_FULL, &pseq_params);
+			false, CS40L26_WSEQ_OP_WRITE_FULL, &cs40l26->pseq_params);
 }
 
 static int cs40l26_dbc_set(struct cs40l26_private *cs40l26, enum cs40l26_dbc_type dbc, u32 val)
@@ -4166,17 +4166,17 @@ static int cs40l26_dsp_config(struct cs40l26_private *cs40l26)
 	cs40l26_debugfs_init(cs40l26);
 #endif
 
-	error = cs40l26_wseq_init(cs40l26, CS40L26_WSEQ_ACTIVE_NAME, &aseq_params);
+	error = cs40l26_wseq_init(cs40l26, CS40L26_WSEQ_ACTIVE_NAME, &cs40l26->aseq_params);
 	if (error)
 		return error;
 
-	error = cs40l26_wseq_init(cs40l26, CS40L26_WSEQ_POWER_ON_NAME, &pseq_params);
+	error = cs40l26_wseq_init(cs40l26, CS40L26_WSEQ_POWER_ON_NAME, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
 	/* Set speaker output to HI-Z when amplifier is disabled */
 	error = cs40l26_wseq_write(cs40l26, CS40L26_TST_DAC_MSM_CONFIG, CS40L26_SPK_DEFAULT_HIZ,
-			true, CS40L26_WSEQ_OP_WRITE_H16, &pseq_params);
+			true, CS40L26_WSEQ_OP_WRITE_H16, &cs40l26->pseq_params);
 	if (error)
 		return error;
 
@@ -4788,11 +4788,11 @@ int cs40l26_fw_swap(struct cs40l26_private *cs40l26, const u32 id)
 	if (error)
 		goto err;
 
-	error = cs40l26_wseq_clear(cs40l26, &pseq_params);
+	error = cs40l26_wseq_clear(cs40l26, &cs40l26->pseq_params);
 	if (error)
 		goto err;
 
-	error = cs40l26_wseq_clear(cs40l26, &aseq_params);
+	error = cs40l26_wseq_clear(cs40l26, &cs40l26->aseq_params);
 	if (error)
 		goto err;
 
@@ -5721,11 +5721,11 @@ int cs40l26_remove(struct cs40l26_private *cs40l26)
 	 * here would skip the power-down and the reset assertion below
 	 * and leave the part powered and out of reset.
 	 */
-	error = cs40l26_wseq_clear(cs40l26, &pseq_params);
+	error = cs40l26_wseq_clear(cs40l26, &cs40l26->pseq_params);
 	if (error)
 		goto out;
 
-	error = cs40l26_wseq_clear(cs40l26, &aseq_params);
+	error = cs40l26_wseq_clear(cs40l26, &cs40l26->aseq_params);
 	if (error)
 		goto out;
 
@@ -5748,12 +5748,6 @@ out:
 	return error;
 }
 EXPORT_SYMBOL_GPL(cs40l26_remove);
-
-struct cs40l26_wseq_params aseq_params;
-EXPORT_SYMBOL_GPL(aseq_params);
-
-struct cs40l26_wseq_params pseq_params;
-EXPORT_SYMBOL_GPL(pseq_params);
 
 inline int cs40l26_pm_enter(struct device *dev)
 {
