@@ -1038,7 +1038,9 @@ int exynos_panel_disable(struct drm_panel *panel)
 	ctx->dimming_on = false;
 	ctx->self_refresh_active = false;
 	ctx->panel_idle_vrefresh = 0;
+	mutex_lock(&ctx->lp_state_lock);
 	ctx->current_binned_lp = NULL;
+	mutex_unlock(&ctx->lp_state_lock);
 	ctx->cabc_mode = CABC_OFF;
 	ctx->ssc_en = false;
 	ctx->current_cabc_mode = CABC_OFF;
@@ -3661,13 +3663,20 @@ static ssize_t lp_state_show(struct device *dev,
 		return -EPERM;
 	}
 
+	/*
+	 * Hold lp_state_lock across the NULL test and the dereference. Every
+	 * writer of current_binned_lp takes this lock, so the pointer cannot
+	 * be cleared between the two.
+	 */
+	mutex_lock(&ctx->lp_state_lock);
+
 	if (!ctx->current_binned_lp) {
 		dev_warn(ctx->dev, "LP state is null\n");
+		mutex_unlock(&ctx->lp_state_lock);
 		mutex_unlock(&ctx->bl_state_lock);
 		return -EINVAL;
 	}
 
-	mutex_lock(&ctx->lp_state_lock);
 	rc = scnprintf(buf, PAGE_SIZE, "%s\n", ctx->current_binned_lp->name);
 	mutex_unlock(&ctx->lp_state_lock);
 
@@ -5001,7 +5010,9 @@ static void exynos_panel_bridge_mode_set(struct drm_bridge *bridge,
 					drm_crtc_vblank_put(crtc);
 				}
 			}
+			mutex_lock(&ctx->lp_state_lock);
 			ctx->current_binned_lp = NULL;
+			mutex_unlock(&ctx->lp_state_lock);
 		} else if (funcs->mode_set) {
 			if ((MIPI_CMD_SYNC_REFRESH_RATE & exynos_connector_state->mipi_sync) &&
 					is_active && old_mode)
