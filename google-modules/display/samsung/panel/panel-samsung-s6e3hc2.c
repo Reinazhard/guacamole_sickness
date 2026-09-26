@@ -734,7 +734,11 @@ static void s6e3hc2_common_post_enable(struct exynos_panel *ctx)
 	else
 		EXYNOS_DCS_WRITE_SEQ(ctx, 0x29); /* display on */
 
-	kthread_flush_work(&spanel->gamma_work);
+	/*
+	 * No flush here: this runs under mode_lock, which s6e3hc2_gamma_work()
+	 * now takes, so flushing would deadlock. The lock already keeps the
+	 * read behind the display-on sequence.
+	 */
 	if (!spanel->native_gamma_ready)
 		kthread_queue_work(&spanel->worker, &spanel->gamma_work);
 }
@@ -1040,7 +1044,16 @@ static void s6e3hc2_gamma_work(struct kthread_work *work)
 		container_of(work, struct s6e3hc2_panel, gamma_work);
 	struct exynos_panel *ctx = &spanel->base;
 
+	/*
+	 * The DDIC manufacturer page this opens and the gamma tables it
+	 * rewrites are also touched by s6e3hc2_write_display_mode() on the
+	 * commit path, which holds mode_lock. Take the same lock so the page
+	 * cannot be re-locked underneath us and the tables cannot be
+	 * transmitted while they are being rewritten.
+	 */
+	mutex_lock(&ctx->mode_lock);
 	s6e3hc2_gamma_read_tables(ctx);
+	mutex_unlock(&ctx->mode_lock);
 }
 
 static int s6e3hc2_panel_probe(struct mipi_dsi_device *dsi)
