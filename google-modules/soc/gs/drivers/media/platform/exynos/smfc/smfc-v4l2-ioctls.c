@@ -955,6 +955,15 @@ static int v4l2_smfc_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf
 
 	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, buf->type);
 
+	/*
+	 * sbuf->offset[] holds SMFC_MAX_PLANES entries, and this bounds
+	 * the writes below to that. The read needs its own bound:
+	 * buf->m.planes is a kvmalloc() of buf->length entries sized
+	 * from userspace (v4l2-ioctl.c check_array_args()), indexed here
+	 * by the queue's buffer count. A buf->length of 0 is worse than
+	 * merely short -- the core then allocates no array at all and
+	 * leaves buf->m.planes holding the userspace pointer.
+	 */
 	if (vq->num_buffers > SMFC_MAX_PLANES) {
 		return -EINVAL;
 	}
@@ -964,7 +973,9 @@ static int v4l2_smfc_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf
 		struct v4l2_m2m_buffer *mbuf = container_of(vbuf, typeof(*mbuf), vb);
 		struct vb2_smfc_buffer *sbuf = container_of(mbuf, typeof(*sbuf), mb);
 
-		if (!V4L2_TYPE_IS_OUTPUT(buf->type) && V4L2_TYPE_IS_MULTIPLANAR(buf->type))
+		if (!V4L2_TYPE_IS_OUTPUT(buf->type) &&
+		    V4L2_TYPE_IS_MULTIPLANAR(buf->type) &&
+		    index < buf->length)
 			sbuf->offset[index] = buf->m.planes[index].data_offset;
 		else
 			sbuf->offset[index] = 0;
