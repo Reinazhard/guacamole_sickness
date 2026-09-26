@@ -2108,7 +2108,13 @@ static inline void _free_event(struct pl330_thread *thrd, int ev)
 	}
 }
 
+/*
+ * @pch is the channel that owns @thrd, or NULL when the caller holds no
+ * channel lock (DMAC teardown).  It is only used to drop pch->lock around
+ * the two callbacks below.
+ */
 static void pl330_release_channel(struct pl330_thread *thrd,
+				  struct dma_pl330_chan *pch,
 				  unsigned long *flags)
 {
 	if (!thrd || thrd->free)
@@ -2118,8 +2124,13 @@ static void pl330_release_channel(struct pl330_thread *thrd,
 
 	if (flags)
 		raw_spin_unlock_irqrestore(&thrd->dmac->lock, *flags);
+	/* dma_pl330_rqcb() takes pch->lock for each desc it still owns. */
+	if (pch)
+		spin_unlock(&pch->lock);
 	dma_pl330_rqcb(thrd->req[1 - thrd->lstenq].desc, PL330_ERR_ABORT);
 	dma_pl330_rqcb(thrd->req[thrd->lstenq].desc, PL330_ERR_ABORT);
+	if (pch)
+		spin_lock(&pch->lock);
 	if (flags)
 		raw_spin_lock_irqsave(&thrd->dmac->lock, *flags);
 
@@ -2331,7 +2342,7 @@ static int dmac_free_threads(struct pl330_dmac *pl330)
 	/* Release Channel threads */
 	for (i = 0; i < pl330->pcfg.num_chan; i++) {
 		thrd = &pl330->channels[i];
-		pl330_release_channel(thrd, NULL);
+		pl330_release_channel(thrd, NULL, NULL);
 	}
 
 	/* Free memory */
@@ -2713,10 +2724,20 @@ static void pl330_free_chan_resources(struct dma_chan *chan)
 	tasklet_kill(&pch->task);
 
 	pm_runtime_get_sync(pch->dmac->ddma.dev);
+	/*
+	 * pch->thread must only be cleared while pch->lock is held.  The
+	 * threaded IRQ handler and the channel tasklet read pch->thread under
+	 * pch->lock and, once the liveness check at the top of pl330_process()
+	 * has passed, keep using that thread until they return.  Clearing it
+	 * without the lock lets them dereference NULL in pl330_submit_req(),
+	 * _stop() or pl330_start_thread(), or re-arm a thread the DMAC has
+	 * already taken back.  pl330_release_channel() drops pch->lock around
+	 * the descriptor callbacks, which take it themselves.
+	 */
 	spin_lock(&pch->lock);
 	raw_spin_lock_irqsave(&pl330->lock, flags);
 
-	pl330_release_channel(pch->thread, &flags);
+	pl330_release_channel(pch->thread, pch, &flags);
 	pch->thread = NULL;
 
 	if (pch->cyclic)
