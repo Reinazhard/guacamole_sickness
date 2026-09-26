@@ -788,9 +788,9 @@ ptid_t pt_client_enable_size(struct pt_handle *handle, int id, size_t *size)
 	}
 	/* Update by driver callback */
 	*size = handle->pts[id].size;
-	spin_unlock_irqrestore(&handle->lock, flags);
 	if (ptid != PT_PTID_INVALID)
 		pt_resize_list_enable(&handle->pts[id]);
+	spin_unlock_irqrestore(&handle->lock, flags);
 	return ptid;
 }
 
