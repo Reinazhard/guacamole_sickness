@@ -247,8 +247,9 @@ dw3000_nfcc_coex_tlvs_check(struct dw3000 *dw,
 			    const struct dw3000_nfcc_coex_buffer *buffer,
 			    struct dw3000_nfcc_coex_rx_msg_info *rx_msg_info)
 {
+	/* The NFCC fills at most DW3000_NFCC_COEX_MSG_IN_SIZE bytes. */
 	static const int tlvs_len_max =
-		DW3000_NFCC_COEX_MSG_MAX_SIZE - MSG_HEADER_LEN;
+		DW3000_NFCC_COEX_MSG_IN_SIZE - MSG_HEADER_LEN;
 	const struct dw3000_nfcc_coex_msg *msg = &buffer->msg;
 	const struct dw3000_nfcc_coex_tlv_slot_list *slot_list = NULL;
 	int tlvs_len = 0; /* Start parsing at first TLV. */
@@ -262,10 +263,11 @@ dw3000_nfcc_coex_tlvs_check(struct dw3000 *dw,
 			return -EINVAL;
 
 		tlv = MSG_NEXT_TLV(buffer, tlvs_len);
-		tlvs_len += tlv->len;
 
-		if (tlvs_len > tlvs_len_max)
+		if ((tlvs_len + sizeof(*tlv) + tlv->len) > tlvs_len_max)
 			return -EINVAL;
+
+		tlvs_len += tlv->len;
 
 		trace_dw3000_nfcc_coex_tlv_check(dw, tlv->type, tlv->len,
 						 tlv->tlv);
@@ -273,8 +275,12 @@ dw3000_nfcc_coex_tlvs_check(struct dw3000 *dw,
 			/* Reject a new TLV with same type. Behavior not defined. */
 			if (slot_list)
 				return -EINVAL;
-			/* Check if the tlv size isn't exceeding the list max size */
-			if (tlv->len > TLV_SLOTS_LIST_SIZE_MAX)
+			/*
+			 * The slot list is dereferenced below, so the TLV must
+			 * carry at least the slot count and one slot.
+			 */
+			if (tlv->len < 1 + sizeof(struct dw3000_nfcc_coex_tlv_slot) ||
+			    tlv->len > TLV_SLOTS_LIST_SIZE_MAX)
 				return -EINVAL;
 			slot_list = (const struct dw3000_nfcc_coex_tlv_slot_list
 					     *)&tlv->tlv;
