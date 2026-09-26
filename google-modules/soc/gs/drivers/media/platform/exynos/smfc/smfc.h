@@ -179,6 +179,8 @@ struct smfc_crop {
 struct smfc_map_info {
 	struct dma_buf_attachment *dba;
 	struct sg_table *sgt;
+	/* the reference dma_buf_get() took on the import path */
+	struct dma_buf *dbuf;
 };
 
 /*
