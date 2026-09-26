@@ -254,6 +254,10 @@ static int bigo_run_job(struct bigo_core *core, struct bigo_job *job)
 	inst = container_of(job, struct bigo_inst, job);
 	bigo_bypass_ssmt_pid(core, inst->is_decoder_usage);
 	bigo_push_regs(core, job->regs);
+	/* Drop a completion left over from the previous frame, otherwise this
+	 * job's wait is satisfied by the previous frame's interrupt.
+	 */
+	reinit_completion(&core->frame_done);
 	bigo_core_enable(core);
 	ret = wait_for_completion_timeout(&core->frame_done,
 #ifdef CONFIG_DEBUG_FS
