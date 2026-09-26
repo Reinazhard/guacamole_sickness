@@ -302,8 +302,10 @@ int fira_sts_controlee_init(struct fira_session *session,
 
 void fira_sts_controlee_deinit(struct fira_controlee *controlee)
 {
-	if (!controlee->crypto)
-	  fira_crypto_context_deinit(controlee->crypto);
+	if (controlee->crypto) {
+		fira_crypto_context_deinit(controlee->crypto);
+		controlee->crypto = NULL;
+	}
 }
 
 /**
