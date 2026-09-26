@@ -769,6 +769,17 @@ static void edgetpu_firmware_wdt_timeout_action(void *data)
 		return;
 
 	/*
+	 * et_fw was read once, at entry: test that value and the teardown
+	 * predicate edgetpu_firmware_destroy() sets before it destroys the
+	 * firmware.  The pointer test alone is not enough -- a handler that
+	 * starts between chip_fw->before_destroy() and the
+	 * etdev->firmware = NULL store sees a non-NULL et_fw whose chip data
+	 * has already been freed, and the restart path dereferences it.
+	 */
+	if (!et_fw || READ_ONCE(et_fw->teardown))
+		return;
+
+	/*
 	 * Zero the FW state of open mailboxes so that when the runtime releases
 	 * groups the CLOSE_DEVICE KCIs won't be sent.
 	 */
@@ -854,7 +865,31 @@ void edgetpu_firmware_destroy(struct edgetpu_dev *etdev)
 
 	if (!et_fw)
 		return;
-	edgetpu_sw_wdt_destroy(etdev);
+	/*
+	 * Stop the heartbeat, but do not free the object here: the KCI and
+	 * reverse-KCI workers are still live and can reach
+	 * edgetpu_watchdog_bite() until edgetpu_device_remove() cancels
+	 * them, so the free belongs there.  The stop cannot be deferred
+	 * with it either -- the heartbeat pings the firmware through the
+	 * KCI, which edgetpu_mailbox_remove_all() is about to tear down.
+	 */
+	edgetpu_sw_wdt_stop(etdev);
+	/*
+	 * Publish the teardown before anything below destroys the firmware,
+	 * so a watchdog-timeout action queued from here on is rejected
+	 * instead of restarting a firmware that is already half gone.
+	 */
+	WRITE_ONCE(et_fw->teardown, true);
+	/*
+	 * Drain the watchdog-bite action work at the same point.  It has to
+	 * happen before before_destroy() frees the image config that the
+	 * restart path dereferences, and the drain alone is not enough:
+	 * edgetpu_watchdog_bite() can queue the action again after it
+	 * returns, and such a handler still sees the non-NULL
+	 * etdev->firmware it captured at entry -- the predicate above is
+	 * what rejects it.
+	 */
+	edgetpu_sw_wdt_cancel_action(etdev);
 
 	if (et_fw->p) {
 		chip_fw = et_fw->p->chip_fw;
