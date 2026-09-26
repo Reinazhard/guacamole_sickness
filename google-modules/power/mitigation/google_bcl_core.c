@@ -2001,7 +2001,7 @@ static int google_init_fs(struct bcl_device *bcl_dev)
 	else
 		bcl_dev->mitigation_dev = pmic_subdevice_create(NULL, mitigation_sq_groups,
 								bcl_dev, "mitigation");
-	if (IS_ERR(bcl_dev->mitigation_dev))
+	if (IS_ERR_OR_NULL(bcl_dev->mitigation_dev))
 		return -ENODEV;
 
 	return 0;
@@ -2609,10 +2609,12 @@ static int google_bcl_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto bcl_soc_probe_exit;
 
-	if (google_set_main_pmic(bcl_dev) < 0)
+	ret = google_set_main_pmic(bcl_dev);
+	if (ret < 0)
 		goto bcl_soc_probe_exit;
 
-	if (google_set_sub_pmic(bcl_dev) < 0)
+	ret = google_set_sub_pmic(bcl_dev);
+	if (ret < 0)
 		goto bcl_soc_probe_exit;
 
 
@@ -2625,7 +2627,8 @@ static int google_bcl_probe(struct platform_device *pdev)
 	google_bcl_register_zones_ramp(bcl_dev);
 	INIT_DELAYED_WORK(&bcl_dev->ramp_work, google_bcl_qos_release);
 
-	if (google_set_intf_pmic(bcl_dev, pdev) < 0)
+	ret = google_set_intf_pmic(bcl_dev, pdev);
+	if (ret < 0)
 		goto bcl_soc_probe_exit;
 
 	google_init_debugfs(bcl_dev);
@@ -2673,14 +2676,15 @@ debug_fs_removal:
 bcl_soc_probe_exit:
 	google_bcl_remove_thermal(bcl_dev);
 	dev_err(bcl_dev->device, "BCL SW disabled.  Revert to HW mitigation\n");
-	return 0;
+	return ret;
 }
 
 static int google_bcl_remove(struct platform_device *pdev)
 {
 	struct bcl_device *bcl_dev = platform_get_drvdata(pdev);
 
-	pmic_device_destroy(bcl_dev->mitigation_dev->devt);
+	if (bcl_dev->mitigation_dev)
+		pmic_device_destroy(bcl_dev->mitigation_dev->devt);
 	debugfs_remove_recursive(bcl_dev->debug_entry);
 	cpu_pm_unregister_notifier(&bcl_dev->cpu_nb);
 	google_bcl_remove_thermal(bcl_dev);
