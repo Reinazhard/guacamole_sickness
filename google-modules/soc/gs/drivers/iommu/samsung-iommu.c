@@ -473,6 +473,8 @@ static int samsung_sysmmu_attach_dev(struct iommu_domain *dom,
 				dev_name(drvdata->dev));
 			spin_unlock(&drvdata->lock);
 			spin_unlock_irqrestore(&groupdata->sysmmu_list_lock[0], flags);
+			/* The post-increment above already ran for this index. */
+			samsung_sysmmu_detach_drvdata(drvdata);
 			goto err_drvdata_add;
 		}
 		spin_unlock(&drvdata->lock);
