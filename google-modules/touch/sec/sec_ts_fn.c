@@ -8598,6 +8598,12 @@ void sec_ts_fn_remove(struct sec_ts_data *ts)
 {
 	input_err(true, &ts->client->dev, "%s\n", __func__);
 
+	/* fac_dev is NULL when sec_cmd_init() failed: the sec class device was
+	 * never created, or was already destroyed by its own unwind.
+	 */
+	if (!ts->sec.fac_dev)
+		return;
+
 	sysfs_remove_link(&ts->sec.fac_dev->kobj, "input");
 
 	sysfs_remove_group(&ts->sec.fac_dev->kobj,
