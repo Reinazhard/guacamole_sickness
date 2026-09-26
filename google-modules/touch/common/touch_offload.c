@@ -565,7 +565,17 @@ static long touch_offload_ioctl(struct file *file, unsigned int ioctl_num,
 			return err;
 		}
 
-		context->report_cb(context->hcallback, &report);
+		/*
+		 * touch_offload_cleanup() clears report_cb under this lock,
+		 * so taking it here both serialises with that revocation and
+		 * waits for the report already in flight to finish.  The
+		 * driver's remove path frees the frame the callback writes
+		 * to (fts_remove() -> heatmap_remove()) right after cleanup.
+		 */
+		mutex_lock(&context->file_lock);
+		if (context->report_cb)
+			context->report_cb(context->hcallback, &report);
+		mutex_unlock(&context->file_lock);
 		break;
 	}
 
@@ -722,6 +732,20 @@ EXPORT_SYMBOL_GPL(touch_offload_init);
 int touch_offload_cleanup(struct touch_offload_context *context)
 {
 	pr_debug("%s\n", __func__);
+
+	/*
+	 * Revoke the report callback and wait for a report already in
+	 * flight.  The caller frees what the callback reaches --
+	 * heatmap_remove() frees v4l2->frame, which report_cb() writes
+	 * through the driver's read_frame() -- so cleanup must not
+	 * return while a report is running, and none may start after
+	 * it returns.  Acquiring file_lock waits for the one in
+	 * flight; clearing report_cb stops the next, which
+	 * touch_offload_ioctl() tests under the same lock.
+	 */
+	mutex_lock(&context->file_lock);
+	context->report_cb = NULL;
+	mutex_unlock(&context->file_lock);
 
 	device_destroy(context->cls, context->dev_num);
 

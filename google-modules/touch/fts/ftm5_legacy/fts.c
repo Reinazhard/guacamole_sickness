@@ -1594,8 +1594,6 @@ static int touchsim_start(struct fts_touchsim *touchsim)
 	release_all_touches(info);
 
 	/* setup and start a hr timer to be fired every 120Hz(~8.333333ms) */
-	hrtimer_init(&touchsim->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	touchsim->hr_timer.function = touchsim_timer_cb;
 	hrtimer_start(&touchsim->hr_timer,
 			ns_to_ktime(TOUCHSIM_TIMER_INTERVAL_NS),
 			HRTIMER_MODE_ABS);
@@ -6980,6 +6978,16 @@ static int fts_probe(struct spi_device *client)
 	else
 		dev_err(info->dev, "ERROR: Cannot create touch sim. test work queue\n");
 
+	/*
+	 * Initialise the timer here rather than in touchsim_start() so
+	 * that fts_remove() can cancel it unconditionally: cancelling
+	 * a timer that was never initialised dereferences a NULL
+	 * timer->base.
+	 */
+	hrtimer_init(&info->touchsim.hr_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_ABS);
+	info->touchsim.hr_timer.function = touchsim_timer_cb;
+
 	dev_info(info->dev, "Probe Finished!\n");
 
 	return OK;
@@ -7073,6 +7081,22 @@ static void fts_remove(struct spi_device *client)
 	touch_offload_cleanup(&info->offload);
 #endif
 
+	/*
+	 * Quiesce the touch simulation test before heatmap_remove()
+	 * frees v4l2->frame: touchsim_work() reaches heatmap_read(),
+	 * which reads that buffer, and the workqueue used to be
+	 * destroyed further down.  The timer is cancelled before the
+	 * workqueue is drained because touchsim_timer_cb() queues
+	 * work unconditionally -- is_running only stops it from
+	 * re-arming.
+	 */
+	info->touchsim.is_running = false;
+	hrtimer_cancel(&info->touchsim.hr_timer);
+	if (info->touchsim.wq) {
+		destroy_workqueue(info->touchsim.wq);
+		info->touchsim.wq = NULL;
+	}
+
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
 	heatmap_remove(&info->v4l2);
 #endif
@@ -7098,9 +7122,6 @@ static void fts_remove(struct spi_device *client)
 	/* Remove the work thread */
 	destroy_workqueue(info->event_wq);
 	wakeup_source_unregister(info->wakesrc);
-
-	if(info->touchsim.wq)
-		destroy_workqueue(info->touchsim.wq);
 
 	if (info->fwu_workqueue)
 		destroy_workqueue(info->fwu_workqueue);
