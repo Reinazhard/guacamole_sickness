@@ -2343,29 +2343,33 @@ static ssize_t available_logger_srcs_show(struct device *dev, struct device_attr
 {
 	struct cs40l26_private *cs40l26 = dev_get_drvdata(dev);
 	char log_srcs[25] = "";
+	const char *name;
 	int i;
 
 	for (i = 0; i < cs40l26->num_log_srcs; i++) {
 		switch (cs40l26->log_srcs[i].id) {
 		case CS40L26_LOGGER_SRC_ID_BEMF:
-			strncat(log_srcs, "BEMF\n", 5);
+			name = "BEMF\n";
 			break;
 		case CS40L26_LOGGER_SRC_ID_VBST:
-			strncat(log_srcs, "VBST\n", 5);
+			name = "VBST\n";
 			break;
 		case CS40L26_LOGGER_SRC_ID_VMON:
-			strncat(log_srcs, "VMON\n", 5);
+			name = "VMON\n";
 			break;
 		case CS40L26_LOGGER_SRC_ID_EP:
-			strncat(log_srcs, "EP\n", 3);
+			name = "EP\n";
 			break;
 		case CS40L26_LOGGER_SRC_ID_IMON:
-			strncat(log_srcs, "IMON\n", 5);
+			name = "IMON\n";
 			break;
 		default:
 			dev_err(cs40l26->dev, "Invalid source ID %d\n", cs40l26->log_srcs[i].id);
 			return -EINVAL;
 		}
+
+		if (strlcat(log_srcs, name, sizeof(log_srcs)) >= sizeof(log_srcs))
+			break;
 	}
 
 	return snprintf(buf, PAGE_SIZE, "%s", log_srcs);
