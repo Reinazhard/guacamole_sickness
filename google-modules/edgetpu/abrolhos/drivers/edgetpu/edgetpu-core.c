@@ -518,6 +518,15 @@ void edgetpu_device_remove(struct edgetpu_dev *etdev)
 	edgetpu_usage_stats_exit(etdev);
 	edgetpu_chip_remove_mmu(etdev);
 	edgetpu_fs_remove(etdev);
+	/*
+	 * Every context that can reach edgetpu_watchdog_bite() is now
+	 * stopped: the caller released the IRQ before this function,
+	 * edgetpu_mailbox_remove_all() cancelled the KCI and
+	 * reverse-KCI workers, and edgetpu_fs_remove() took away the
+	 * ioctl path that reaches edgetpu_mailbox_activate_bulk().
+	 * Only now is it safe to free the watchdog.
+	 */
+	edgetpu_sw_wdt_destroy(etdev);
 }
 
 struct edgetpu_client *edgetpu_client_add(struct edgetpu_dev_iface *etiface)
