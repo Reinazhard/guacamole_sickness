@@ -6680,6 +6680,7 @@ dhd_stop(struct net_device *net)
 				__FUNCTION__, &dhd->rx_napi_struct, net, net->name));
 			skb_queue_purge(&dhd->rx_napi_queue);
 			napi_disable(&dhd->rx_napi_struct);
+			__skb_queue_purge(&dhd->rx_process_queue);
 			netif_napi_del(&dhd->rx_napi_struct);
 			dhd->rx_napi_netdev = NULL;
 		}
@@ -14370,6 +14371,8 @@ void dhd_detach(dhd_pub_t *dhdp)
 		cancel_work_sync(&dhd->rx_napi_dispatcher_work);
 		__skb_queue_purge(&dhd->rx_pend_queue);
 		skb_queue_purge(&dhd->rx_emerge_queue);
+		skb_queue_purge(&dhd->rx_napi_queue);
+		__skb_queue_purge(&dhd->rx_process_queue);
 #endif /* DHD_LB_RXP */
 #ifdef DHD_LB_TXP
 		cancel_work_sync(&dhd->tx_dispatcher_work);
