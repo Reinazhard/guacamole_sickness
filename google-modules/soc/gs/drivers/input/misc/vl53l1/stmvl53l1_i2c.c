@@ -57,8 +57,7 @@ static uint32_t tv_elapsed_us(struct timespec64 *tv)
 VL53L1_Error VL53L1_GetTickCount(VL53L1_Dev_t *pdev, uint32_t *ptime_ms)
 {
 	(void)pdev;
-	(void)ptime_ms;
-	WARN_ON(1);
+	*ptime_ms = (uint32_t)(ktime_get_ns() / NSEC_PER_MSEC);
 	return 0;
 }
 
