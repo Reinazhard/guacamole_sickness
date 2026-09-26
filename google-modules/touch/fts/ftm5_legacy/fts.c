@@ -7076,6 +7076,15 @@ static void fts_remove(struct spi_device *client)
 	heatmap_remove(&info->v4l2);
 #endif
 
+	/*
+	 * Stop the touch simulation timer before the workqueue it feeds and
+	 * the input device it reports through are torn down.
+	 */
+	info->touchsim.is_running = false;
+	hrtimer_cancel(&info->touchsim.hr_timer);
+	if (info->touchsim.wq)
+		flush_workqueue(info->touchsim.wq);
+
 	cpu_latency_qos_remove_request(&info->pm_qos_req);
 
 	unregister_panel_bridge(&info->panel_bridge);
