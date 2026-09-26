@@ -1182,6 +1182,17 @@ void usb_psy_teardown(void *usb_data)
 	if (!usb)
 		return;
 
+	/*
+	 * sdp_timeout_alarm_cb() queues sdp_timeout_work on usb->usb_type_wq and
+	 * that work dereferences usb->usb_psy.  Both are torn down below, so the
+	 * alarm has to be stopped before any of that starts.  alarm_cancel() also
+	 * waits for a callback that is already running.  Use the same lock the
+	 * rest of the file holds around the alarm.
+	 */
+	mutex_lock(&usb->lock);
+	alarm_cancel(&usb->sdp_timeout_alarm);
+	mutex_unlock(&usb->lock);
+
 	if (usb->tcpc_client)
 		device_remove_groups(&usb->tcpc_client->dev,
 				     usb_psy_sysfs_groups);
