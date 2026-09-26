@@ -1874,6 +1874,13 @@ static inline int __mfc_nal_q_irq(struct mfc_core *core,
 
 		ctx_num = nal_q_handle->nal_q_out_handle->nal_q_ctx;
 
+		if (ctx_num < 0) {
+			mfc_core_err("[NALQ] Can't find ctx in nal q\n");
+			mfc_core_clear_int();
+			ret = 0;
+			break;
+		}
+
 		if (nal_q_handle->nal_q_exception)
 			mfc_set_bit(ctx_num, &core->work_bits);
 
@@ -1882,10 +1889,7 @@ static inline int __mfc_nal_q_irq(struct mfc_core *core,
 		if (!nal_q_handle->nal_q_exception)
 			mfc_core_nal_q_clock_off(core, nal_q_handle, ctx_num);
 
-		if (ctx_num < 0)
-			mfc_core_err("[NALQ] Can't find ctx in nal q\n");
-		else
-			mfc_ctx_ready_set_bit(core->core_ctx[ctx_num], &core->work_bits);
+		mfc_ctx_ready_set_bit(core->core_ctx[ctx_num], &core->work_bits);
 
 		ret = 0;
 		break;
