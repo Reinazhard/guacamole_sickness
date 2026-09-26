@@ -2460,17 +2460,18 @@ static int cs40l26_composite_upload(struct cs40l26_private *cs40l26, s16 *in_dat
 	memset(&delay_section_data, 0, CS40L26_WT_TYPE10_SECTION_BYTES_MIN);
 
 	for (i = 0; i < nsections; i++) {
-		section_size_bytes = sections[i].duration ?
-				CS40L26_WT_TYPE10_SECTION_BYTES_MAX :
-				CS40L26_WT_TYPE10_SECTION_BYTES_MIN;
-
 		if (sections[i].index == 0) {
-			memcpy(data + pos_byte, in_data + in_pos_nib, section_size_bytes);
-			pos_byte += section_size_bytes;
-			in_pos_nib += section_size_bytes / 2;
+			memcpy(data + pos_byte, in_data + in_pos_nib,
+					CS40L26_WT_TYPE10_SECTION_BYTES_MIN);
+			pos_byte += CS40L26_WT_TYPE10_SECTION_BYTES_MIN;
+			in_pos_nib += CS40L26_WT_TYPE10_SECTION_BYTES_MIN / 2;
 			out_nsections++;
 			continue;
 		}
+
+		section_size_bytes = sections[i].duration ?
+				CS40L26_WT_TYPE10_SECTION_BYTES_MAX :
+				CS40L26_WT_TYPE10_SECTION_BYTES_MIN;
 
 		if (sections[i].repeat != 0) {
 			dev_err(dev, "Inner repeats not allowed for NCWs\n");
