@@ -1669,6 +1669,7 @@ static int drv2624_i2c_probe(struct i2c_client *client,
 			     const struct i2c_device_id *id)
 {
 	struct drv2624_data *drv2624;
+	const struct firmware *fw;
 	int err = 0;
 
 	dev_info(&client->dev, "%s enter\n", __func__);
@@ -1789,9 +1790,12 @@ static int drv2624_i2c_probe(struct i2c_client *client,
 	if (err)
 		goto drv2624_i2c_probe_err;
 
-	request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT, "drv2624.bin",
-				&client->dev, GFP_KERNEL, drv2624,
-				drv2624_firmware_load);
+	err = request_firmware(&fw, "drv2624.bin", &client->dev);
+	if (err)
+		dev_err(drv2624->dev, "%s, ERROR!! firmware not found\n",
+			__func__);
+	else
+		drv2624_firmware_load(fw, drv2624);
 
 	dev_info(drv2624->dev, "drv2624 probe succeeded\n");
 
