@@ -553,6 +553,8 @@ static int max77729_uic_storage_read(gbms_tag_t tag, void *buff, size_t size,
 		return -ENOENT;
 	if ((tag + size - 1) > GBMS_TAG_RRS7)
 		return -ERANGE;
+	if (!data->probe_done)
+		return -ENODEV;
 
 	ret = max77729_uic_read(data->regmap, base, buff, size);
 	if (ret < 0)
@@ -571,6 +573,8 @@ static int max77729_uic_storage_write(gbms_tag_t tag, const void *buff,
 		return -ENOENT;
 	if ((tag + size - 1) > GBMS_TAG_RRS7)
 		return -ERANGE;
+	if (!data->probe_done)
+		return -ENODEV;
 
 	ret = max77729_uic_write(data->regmap, base, buff, size);
 	if (ret < 0)
@@ -684,6 +688,15 @@ static void max77729_uic_remove(struct i2c_client *client)
 {
 	struct max77729_uic_data *data = i2c_get_clientdata(client);
 
+	data->probe_done = false;
+	/*
+	 * The threaded IRQ is devm-managed, so it is still live inside
+	 * remove(): max77729_uic_irq() can enqueue noautoibus_work after
+	 * cancel_delayed_work_sync() has already returned, leaving the worker
+	 * to run against the freed data.  disable_irq() waits for a handler in
+	 * flight and blocks new ones, so the cancel below is final.
+	 */
+	disable_irq(client->irq);
 	cancel_delayed_work_sync(&data->noautoibus_work);
 }
 
