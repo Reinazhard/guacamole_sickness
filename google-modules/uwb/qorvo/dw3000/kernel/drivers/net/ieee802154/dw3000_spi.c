@@ -241,6 +241,8 @@ static void dw3000_spi_remove(struct spi_device *spi)
 	dw3000_mcps_unregister(dw);
 	/* Stop state machine */
 	dw3000_state_stop(dw);
+	/* Recall any timer-expired work the state machine queued */
+	cancel_work_sync(&dw->timer_expired_work);
 	dw3000_pm_qos_remove_request(dw);
 	/* Free pre-computed SPI messages */
 	dw3000_transfers_free(dw);
