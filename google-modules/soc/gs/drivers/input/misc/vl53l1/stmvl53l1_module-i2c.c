@@ -590,11 +590,12 @@ static void stmvl53l1_remove(struct i2c_client *client)
 	mutex_lock(&data->work_mutex);
 	/* main driver cleanup */
 	stmvl53l1_cleanup(data);
-
-	/* release gpios */
-	stmvl53l1_release_gpios(i2c_data);
-
 	mutex_unlock(&data->work_mutex);
+
+	/* release gpios outside work_mutex: free_irq() waits for the threaded
+	 * handler, which takes work_mutex, so holding it here would deadlock
+	 */
+	stmvl53l1_release_gpios(i2c_data);
 
 	stmvl53l1_put(data->client_object);
 	kref_put(&shared_i2c_data->refcount, shared_i2c_data_release);
