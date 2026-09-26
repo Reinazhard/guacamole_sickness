@@ -137,6 +137,7 @@ static struct cl_dsp_coeff_desc *cl_dsp_get_coeff(struct cl_dsp *dsp, const char
 {
 	struct cl_dsp_coeff_desc *coeff_desc;
 	unsigned int mem_region_prefix;
+	bool found = false;
 
 	if (!dsp)
 		return ERR_PTR(-EPERM);
@@ -154,12 +155,21 @@ static struct cl_dsp_coeff_desc *cl_dsp_get_coeff(struct cl_dsp *dsp, const char
 		if ((coeff_desc->parent_id & 0xFFFF) != (algo_id & 0xFFFF))
 			continue;
 
+		found = true;
+
 		if (coeff_desc->reg == 0) {
 			dev_err(dsp->dev, "No control %s for block type 0x%X\n",
 					coeff_name, block_type);
 			return ERR_PTR(-EINVAL);
 		}
 		break;
+	}
+
+	if (!found) {
+		dev_err(dsp->dev,
+			"No control %s for block type 0x%X (algo 0x%X)\n",
+			coeff_name, block_type, algo_id);
+		return ERR_PTR(-ENODATA);
 	}
 
 	/* verify register found in expected region */
