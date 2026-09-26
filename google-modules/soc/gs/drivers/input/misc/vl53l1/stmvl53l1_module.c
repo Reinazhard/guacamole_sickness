@@ -4238,7 +4238,7 @@ static int stmvl53l1_input_setup(struct stmvl53l1_data *data)
 
 
 exit_free_dev_ps:
-	input_free_device(data->input_dev_ps);
+	input_free_device(idev);
 exit_err:
 	return rc;
 }
