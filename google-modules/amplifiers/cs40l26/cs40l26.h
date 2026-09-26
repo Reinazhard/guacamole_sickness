@@ -1204,6 +1204,8 @@ struct cs40l26_private {
 	struct cl_dsp_owt_desc rom_wt;
 	const struct cs40l26_rom_regs *rom_regs;
 	const struct cs40l26_rom_data *rom_data;
+	struct cs40l26_wseq_params aseq_params;
+	struct cs40l26_wseq_params pseq_params;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_root;
 	u32 dbg_hw_reg;
@@ -1323,8 +1325,6 @@ int cs40l26_rom_wt_init(struct cs40l26_private *cs40l26);
 void cs40l26_add_codec_devices(struct device *dev);
 
 /* external tables */
-extern struct cs40l26_wseq_params aseq_params;
-extern struct cs40l26_wseq_params pseq_params;
 extern const struct regulator_bulk_data cs40l26_supplies[CS40L26_NUM_SUPPLIES];
 extern const struct dev_pm_ops cs40l26_pm_ops;
 extern const struct regmap_config cs40l26_regmap;
