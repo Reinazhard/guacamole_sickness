@@ -207,6 +207,14 @@ int mcps802154_ca_set_region(struct mcps802154_local *local,
 	if (region_id_present) {
 		list_replace(&old_region->ca_entry, &region->ca_entry);
 		mcps802154_region_close(&local->llhw, old_region);
+		/*
+		 * Drop the stale pointers into the region that was just closed:
+		 * the built schedule holds a region pointer, and fproc.access
+		 * points at an access owned by that region.  This is the same
+		 * pairing mcps802154_fproc_stopped_handle() uses.
+		 */
+		mcps802154_fproc_access_reset(local);
+		mcps802154_schedule_clear(local);
 	} else {
 		list_add(&region->ca_entry, position);
 		ca->n_regions++;
