@@ -5331,9 +5331,10 @@ static void fts_interrupt_uninstall(struct fts_ts_info *info)
 {
 	fts_enableInterrupt(info, false);
 
-	kfree(info->event_dispatch_table);
-
 	free_irq(info->client->irq, info);
+
+	kfree(info->event_dispatch_table);
+	info->event_dispatch_table = NULL;
 }
 
 /**@}*/
