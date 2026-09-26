@@ -885,7 +885,6 @@ static int check_transaction_param_locked(struct lwis_client *client,
 					  struct lwis_transaction *transaction,
 					  bool is_level_triggered)
 {
-	struct lwis_device_event_state *event_state;
 	struct lwis_transaction_info *info = &transaction->info;
 	struct lwis_device *lwis_dev = client->lwis_dev;
 
@@ -905,13 +904,10 @@ static int check_transaction_param_locked(struct lwis_client *client,
 
 	/* Look for the trigger event state, if specified. */
 	if (info->trigger_event_id != LWIS_EVENT_ID_NONE) {
-		event_state = lwis_device_event_state_find(lwis_dev, info->trigger_event_id);
-		if (event_state == NULL) {
+		if (lwis_device_event_state_get_counter(lwis_dev, info->trigger_event_id,
+							&info->current_trigger_event_counter)) {
 			/* Event has not been encountered, setting event counter to zero. */
 			info->current_trigger_event_counter = 0;
-		} else {
-			/* Event found, return current counter to userspace. */
-			info->current_trigger_event_counter = event_state->event_counter;
 		}
 	} else if (!lwis_triggered_by_condition(transaction)) {
 		/* Otherwise it's an immediate transaction. */

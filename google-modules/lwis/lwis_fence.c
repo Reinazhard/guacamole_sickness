@@ -375,17 +375,17 @@ static int trigger_event_add_transaction(struct lwis_client *client,
 					 struct lwis_transaction_trigger_event *event)
 {
 	struct lwis_device *lwis_dev = client->lwis_dev;
-	struct lwis_device_event_state *event_state;
+	int64_t event_counter;
 	struct lwis_transaction_info *info = &transaction->info;
 	int32_t operator_type = info->trigger_condition.operator_type;
 	size_t all_signaled = info->trigger_condition.num_nodes;
 	int precondition_fence_status = LWIS_FENCE_STATUS_NOT_SIGNALED;
 
 	/* Check if the event has been encountered and if the event counters match. */
-	event_state = lwis_device_event_state_find(lwis_dev, event->id);
-	if (event_state != NULL && transaction->info.is_level_triggered &&
+	if (!lwis_device_event_state_get_counter(lwis_dev, event->id, &event_counter) &&
+	    transaction->info.is_level_triggered &&
 	    EXPLICIT_EVENT_COUNTER(event->counter) &&
-	    event->counter == event_state->event_counter) {
+	    event->counter == event_counter) {
 		/* The event is currently level triggered, first we need to check if there is a
 		 * precondition fence associated with the event.
 		 */
