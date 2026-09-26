@@ -546,16 +546,14 @@ static int exynos_ufs_check_ah8_fsm_state(struct ufs_hba *hba, u32 state)
 		if (reg & HCI_AH8_STATE_ERROR)
 			goto out;
 
-		if (reg & state)
-			break;
+		if (reg & state) {
+			ret = 0;
+			goto out;
+		}
 
 		usleep_range(1000, 1100);
 	}
 
-	if (!retry)
-		goto out;
-
-	ret = 0;
 out:
 	dev_info(hba->dev, "%s: cnt = %d, state = %08X, reg = %08X\n",
 			__func__, retry, state, reg);
