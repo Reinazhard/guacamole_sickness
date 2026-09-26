@@ -1542,7 +1542,10 @@ static ssize_t __sysfs_show_eom_res(struct device *dev,
 	int i;
 
 	for (i = 0; i < EOM_DEF_VREF_MAX; i++) {
-		len += snprintf(buf + len, PAGE_SIZE, "%u %u %u\n", p->v_phase,
+		if (len >= PAGE_SIZE)
+			break;
+
+		len += snprintf(buf + len, PAGE_SIZE - len, "%u %u %u\n", p->v_phase,
 				p->v_vref, p->v_err);
 		p++;
 	}
