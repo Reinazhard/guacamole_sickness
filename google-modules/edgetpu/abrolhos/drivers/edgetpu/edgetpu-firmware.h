@@ -58,6 +58,15 @@ struct edgetpu_firmware_private;
 struct edgetpu_firmware {
 	struct edgetpu_dev *etdev;
 	struct edgetpu_firmware_private *p;
+	/*
+	 * Set by edgetpu_firmware_destroy() before it tears the firmware down,
+	 * and never cleared.  A watchdog-timeout action queued while the
+	 * teardown runs must not restart a firmware whose chip data has
+	 * already been freed, and the etdev->firmware pointer captured at the
+	 * action's entry cannot tell it that: that pointer stays non-NULL
+	 * until the very end of the destroy path.
+	 */
+	bool teardown;
 };
 
 struct edgetpu_firmware_buffer {

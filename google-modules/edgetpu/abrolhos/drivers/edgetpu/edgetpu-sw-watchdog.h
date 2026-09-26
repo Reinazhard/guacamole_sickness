@@ -55,6 +55,13 @@ int edgetpu_sw_wdt_start(struct edgetpu_dev *etdev);
 void edgetpu_sw_wdt_stop(struct edgetpu_dev *etdev);
 void edgetpu_sw_wdt_destroy(struct edgetpu_dev *etdev);
 /*
+ * Cancels the watchdog-bite action work without destroying the object.
+ *
+ * Must be called before the firmware the action restarts is freed; the object
+ * itself is kept alive for edgetpu_sw_wdt_destroy().
+ */
+void edgetpu_sw_wdt_cancel_action(struct edgetpu_dev *etdev);
+/*
  * Set callback function @handler_cb and optional param @data which is to be
  * called on f/w ping timeout.
  */
