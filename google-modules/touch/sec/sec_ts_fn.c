@@ -1433,8 +1433,8 @@ static int sec_ts_check_index(struct sec_ts_data *ts)
 	char buff[SEC_CMD_STR_LEN] = { 0 };
 	int node;
 
-	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > ts->tx_count
-		|| sec->cmd_param[1] < 0 || sec->cmd_param[1] > ts->rx_count) {
+	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] >= ts->tx_count
+		|| sec->cmd_param[1] < 0 || sec->cmd_param[1] >= ts->rx_count) {
 
 		snprintf(buff, sizeof(buff), "%s", "NG");
 		sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
