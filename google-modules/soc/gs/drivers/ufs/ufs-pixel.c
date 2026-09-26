@@ -900,6 +900,7 @@ static ssize_t manual_gc_store(struct device *dev,
 	struct pixel_ufs *ufs = to_pixel_ufs(hba);
 	u32 value;
 	int err = 0;
+	unsigned long flags;
 
 	if (kstrtou32(buf, 0, &value))
 		return -EINVAL;
@@ -947,15 +948,29 @@ static ssize_t manual_gc_store(struct device *dev,
 			err = -EAGAIN;
 	}
 
-	if (err || hrtimer_active(&ufs->manual_gc.hrtimer)) {
+	/*
+	 * Arming the timer and handing this store's reference over to it have to
+	 * be one atomic step.  hrtimer_active() is only a snapshot, so two
+	 * stores can otherwise both see the timer idle and both arm the same
+	 * single-shot timer, which discharges only one of the two references.
+	 * work_pending() covers the window in which the timer has already fired
+	 * but pixel_mgc_hibern8_work() has not run yet, where queue_work() is a
+	 * no-op and the second reference is lost the same way.
+	 */
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	if (err || hrtimer_active(&ufs->manual_gc.hrtimer) ||
+	    work_pending(&ufs->manual_gc.hibern8_work)) {
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		pm_runtime_put_sync(hba->dev);
 		return count;
-	} else {
-		/* pm_runtime_put_sync in delay_ms */
-		hrtimer_start(&ufs->manual_gc.hrtimer,
-			ms_to_ktime(ufs->manual_gc.delay_ms),
-			HRTIMER_MODE_REL);
 	}
+
+	/* pm_runtime_put_sync in delay_ms */
+	hrtimer_start(&ufs->manual_gc.hrtimer,
+		      ms_to_ktime(ufs->manual_gc.delay_ms),
+		      HRTIMER_MODE_REL);
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+
 	return count;
 }
 
