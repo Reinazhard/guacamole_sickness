@@ -13,6 +13,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/platform_device.h>
+#include <linux/wait.h>
 #include <soc/google/exynos_pm_qos.h>
 
 #if IS_ENABLED(CONFIG_EXYNOS_ITMON)
@@ -84,6 +85,8 @@ struct bigo_job {
 	void *regs;
 	size_t regs_size;
 	int status;
+	/* sequence number assigned by the submitting BIGO_IOCX_PROCESS */
+	u32 seq;
 };
 
 struct bigo_debugfs {
@@ -146,7 +149,14 @@ struct bigo_inst {
 	struct bigo_bw pk_bw[AVG_CNT];
 	int job_cnt;
 	u32 hw_cycles[AVG_CNT];
-	struct completion job_comp;
+	/* BIGO_IOCX_PROCESS handshake. job_seq is bumped by the submitting
+	 * ioctl and job_done_seq is set by the worker to the sequence of the
+	 * job it finished, so the two are equal when nothing is outstanding.
+	 */
+	struct mutex job_lock;
+	wait_queue_head_t job_wait;
+	u32 job_seq;
+	u32 job_done_seq;
 	struct bigo_job job;
 	/* bytes per pixel */
 	u32 bpp;
