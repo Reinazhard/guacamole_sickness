@@ -8420,6 +8420,10 @@ static int p9221_charger_probe(struct i2c_client *client,
 	charger->extended_int_recv = false;
 	charger->trigger_dd = DREAM_DEBOUNCE_TIME_S;
 	charger->det_status = 1;
+	if (charger->chip_id == P9412_CHIP_ID) {
+		charger->det_on_debounce = 1000;
+		charger->det_off_debounce = 1000;
+	}
 	charger->set_auth_icl = false;
 	charger->fod_mode = -1;
 	mutex_init(&charger->io_lock);
