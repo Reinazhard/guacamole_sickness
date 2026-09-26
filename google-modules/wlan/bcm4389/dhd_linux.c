@@ -5091,7 +5091,14 @@ dhd_sched_dpc(dhd_pub_t *dhdp)
 	if (dhd->thr_dpc_ctl.thr_pid >= 0) {
 		binary_sema_up(&dhd->thr_dpc_ctl);
 		return;
-	} else {
+	}
+
+	/*
+	 * dhd->tasklet is tasklet_init()ed only in tasklet mode. In thread
+	 * mode thr_pid also goes negative when PROC_STOP terminates the DPC
+	 * thread, and scheduling the tasklet then would call a NULL func.
+	 */
+	if (dhd_dpc_prio < 0) {
 		tasklet_schedule(&dhd->tasklet);
 	}
 }
