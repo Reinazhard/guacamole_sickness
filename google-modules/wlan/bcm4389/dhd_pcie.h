@@ -723,6 +723,7 @@ extern int dhdpcie_bus_attach(osl_t *osh, dhd_bus_t **bus_ptr,
 	volatile char *regs, volatile char *tcm, void *pci_dev);
 extern uint32 dhdpcie_bus_cfg_read_dword(struct dhd_bus *bus, uint32 addr, uint32 size);
 extern void dhdpcie_bus_cfg_write_dword(struct dhd_bus *bus, uint32 addr, uint32 size, uint32 data);
+extern uint serialized_backplane_access(dhd_bus_t *bus, uint addr, uint size, uint *val, bool read);
 extern void dhdpcie_bus_intr_enable(struct dhd_bus *bus);
 extern void dhdpcie_bus_intr_disable(struct dhd_bus *bus);
 extern int dhpcie_bus_mask_interrupt(dhd_bus_t *bus);
