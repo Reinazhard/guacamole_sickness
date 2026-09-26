@@ -2743,6 +2743,7 @@ si_doattach(si_info_t *sii, uint devid, osl_t *osh, volatile void *regs,
 	sii->curmap = regs;
 	sii->sdh = sdh;
 	sii->osh = osh;
+	sii->coreidx_lock = osl_spin_lock_init(osh);
 	sii->second_bar0win = ~0x0;
 	sih->enum_base = si_enum_base(devid);
 
@@ -3382,6 +3383,7 @@ si_detach(si_t *sih)
 #endif /* BCMDVFS */
 
 	if (sii != &ksii) {
+		osl_spin_lock_deinit(sii->osh, sii->coreidx_lock);
 		MFREE(sii->osh, sii, sizeof(si_info_t));
 	}
 }

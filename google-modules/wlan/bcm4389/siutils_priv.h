@@ -242,6 +242,13 @@ typedef struct si_info {
 					 * the first(0)/second(1)/...
 					 * d11 core
 					 */
+	/*
+	 * Serialises the core switch.  The PCIe BAR0 window registers
+	 * (cfg 0x80 and cfg 0x70) and sii->curidx are shared by every
+	 * context that switches cores.  A spinlock rather than a
+	 * mutex because the DPC path reaches it from atomic context.
+	 */
+	void	*coreidx_lock;
 	si_res_state_info_t res_state[RES_PEND_STATS_COUNT];
 	uint32	res_pend_count;
 	bool    rfldo3p3_war;		/**< singing cap war enable from nvram */
