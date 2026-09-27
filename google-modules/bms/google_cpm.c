@@ -178,6 +178,24 @@ struct gcpm_drv  {
 	const char *chg_psy_names[GCPM_MAX_CHARGERS];
 	struct gvotable_election *dc_chg_avail_votable;
 	struct mutex chg_psy_lock;
+	/*
+	 * Serialises the MDIS cooling device's registration. It is always
+	 * taken OUTSIDE chg_psy_lock, never inside: the thermal framework's
+	 * register and unregister paths must not run while chg_psy_lock is
+	 * held, because unregister drains an in-flight cur_state_store whose
+	 * set_cur_state needs chg_psy_lock to make progress.
+	 */
+	struct mutex mdis_reg_lock;
+	/*
+	 * Set by google_cpm_remove() with mdis_reg_lock held, and read with it
+	 * held by mdis_size_store() and gcpm_init_work(). It is the answer to
+	 * "has the driver already taken the MDIS cooling device away": a store
+	 * that acquires the lock after remove has run must not put the device
+	 * back, and must not reach gcpm_mdis_tdev_add() at all, because that
+	 * also creates debugfs files under debug_entry and remove never clears
+	 * that dentry.
+	 */
+	bool removed;
 	int chg_psy_active;
 	int chg_psy_count;
 
@@ -3211,6 +3229,16 @@ static void chg_mdis_tdev_free(struct mdis_thermal_device *tdev,
 {
 	devm_kfree(gcpm->device, tdev->thermal_mitigation);
 	tdev->thermal_mitigation = NULL;
+
+	/*
+	 * thermal_levels is the "the limit tables are live" flag for every
+	 * reader of this struct, so it has to fall with the table it describes.
+	 * Leaving it set left thermal_mitigation NULL with a non-zero level
+	 * count, and the next mdis_size_store() then memcpy()'d bytes from that
+	 * NULL pointer. Zeroing it also lets a later write rebuild the tables
+	 * and re-register the device instead of dying on the way in.
+	 */
+	tdev->thermal_levels = 0;
 }
 
 static int mdis_tdev_register(const char *of_name, const char *tcd_name,
@@ -3218,6 +3246,7 @@ static int mdis_tdev_register(const char *of_name, const char *tcd_name,
 			      const struct thermal_cooling_device_ops *ops)
 {
 	struct device_node *cooling_node = NULL;
+	struct thermal_cooling_device *tcd;
 	int ret;
 
 	cooling_node = of_find_node_by_name(NULL, of_name);
@@ -3226,16 +3255,24 @@ static int mdis_tdev_register(const char *of_name, const char *tcd_name,
 		return -EINVAL;
 	}
 
-	ctdev->tcd = thermal_of_cooling_device_register(cooling_node,
-							tcd_name,
-							ctdev,
-							ops);
-	if (IS_ERR_OR_NULL(ctdev->tcd)) {
-		const long err = PTR_ERR(ctdev->tcd);
+	/*
+	 * Keep the result local until it is known good. Storing an ERR_PTR in
+	 * ->tcd would make it non-NULL while invalid, and the two callers (the
+	 * initial registration and the debugfs re-registration) both treat a
+	 * non-NULL ->tcd as a registered device.
+	 */
+	tcd = thermal_of_cooling_device_register(cooling_node,
+						 tcd_name,
+						 ctdev,
+						 ops);
+	if (IS_ERR_OR_NULL(tcd)) {
+		const long err = PTR_ERR(tcd);
 
 		pr_err("error registering %s cooling device (%ld)\n", tcd_name, err);
 		return err;
 	}
+
+	ctdev->tcd = tcd;
 
 	ret = device_create_file(&ctdev->tcd->device, &dev_attr_state2power_table);
 	if (ret)
@@ -3256,62 +3293,114 @@ static int mdis_size_show(void *data, u64 *val)
 	return 0;
 }
 
+/*
+ * Defined next to gcpm_mdis_tdev_add(), which it pairs with; forward declared
+ * because mdis_size_store() below needs it and cannot live that far down the
+ * file (it is the target of mdis_size_fops).
+ */
+static int gcpm_mdis_tdev_reload(struct gcpm_drv *gcpm);
+
+/*
+ * Reallocate the MDIS limit tables for a new thermal_levels.
+ *
+ * Must be called with chg_psy_lock held. It only touches gcpm's own tables and
+ * never enters the thermal framework: thermal_cooling_device_unregister() can
+ * block in kernfs_drain() until an in-flight cur_state_store() finishes, and
+ * that store takes cdev->lock and then chg_psy_lock in
+ * gcpm_set_mdis_charge_cntl_limit(), so a caller holding chg_psy_lock across it
+ * would wait on itself.
+ *
+ * Every allocation is done before anything is published, so a failure leaves
+ * the old tables -- and the old thermal_levels -- fully intact.
+ */
+static int mdis_update_limits(struct gcpm_drv *gcpm, int newsize)
+{
+	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
+	const int old_levels = tdev->thermal_levels;
+	const int bytes = (newsize <= old_levels ? newsize : old_levels) * sizeof(u32);
+	const int newsize_bytes = newsize * sizeof(u32);
+	u32 *new_limits[MDIS_OUT_MAX];
+	u32 *new_mitigation;
+	int index, i;
+
+	if (newsize <= 0)
+		return -EINVAL;
+
+	for (index = 0; index < gcpm->mdis_out_count; index++) {
+		new_limits[index] = devm_kzalloc(gcpm->device,
+						 newsize_bytes * gcpm->mdis_in_count,
+						 GFP_KERNEL);
+		if (!new_limits[index])
+			goto free_new;
+
+		for (i = 0; old_levels && i < gcpm->mdis_in_count; i++)
+			memcpy(new_limits[index] + (i * newsize),
+			       gcpm->mdis_out_limits[index] + (i * old_levels),
+			       bytes);
+	}
+
+	new_mitigation = devm_kzalloc(gcpm->device, newsize_bytes, GFP_KERNEL);
+	if (!new_mitigation)
+		goto free_new;
+	if (old_levels)
+		memcpy(new_mitigation, tdev->thermal_mitigation, bytes);
+
+	/* all allocations succeeded: publish them together */
+	for (index = 0; index < gcpm->mdis_out_count; index++) {
+		devm_kfree(gcpm->device, gcpm->mdis_out_limits[index]);
+		gcpm->mdis_out_limits[index] = new_limits[index];
+	}
+	devm_kfree(gcpm->device, tdev->thermal_mitigation);
+	tdev->thermal_mitigation = new_mitigation;
+	tdev->thermal_levels = newsize;
+
+	return 0;
+
+free_new:
+	while (index--)
+		devm_kfree(gcpm->device, new_limits[index]);
+
+	return -ENOMEM;
+}
+
 static int mdis_size_store(void *data, u64 val)
 {
 	struct gcpm_drv *gcpm = data;
-	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
-	const int newsize = val;
-	const int newsize_bytes = newsize * sizeof(u32);
-	u32 *limits;
-	int bytes, index, i;
 	int ret;
 
+	/*
+	 * The whole store runs under mdis_reg_lock, not just the reload.
+	 * google_cpm_remove() takes this lock to take the cooling device away,
+	 * and the tables this rebuilds are the ones that get published to the
+	 * thermal framework, so a store that only locked for the reload could
+	 * still rebuild the tables behind remove's back and then re-register
+	 * the device remove had just unregistered. Holding the lock across both
+	 * halves makes "remove won" a decision the store cannot race.
+	 *
+	 * The order is mdis_reg_lock outside chg_psy_lock, which is the order
+	 * the rest of the driver uses and the only one it uses; nothing takes
+	 * them the other way round.
+	 */
+	mutex_lock(&gcpm->mdis_reg_lock);
+
+	if (gcpm->removed) {
+		ret = -ENODEV;
+		goto out;
+	}
+
 	mutex_lock(&gcpm->chg_psy_lock);
+	ret = mdis_update_limits(gcpm, val);
+	mutex_unlock(&gcpm->chg_psy_lock);
 
-	bytes = (newsize <= tdev->thermal_levels ? newsize : tdev->thermal_levels) * sizeof(u32);
-
-	for (index = 0; index < gcpm->mdis_out_count; index++) {
-		limits = devm_kzalloc(gcpm->device, newsize_bytes * gcpm->mdis_in_count, GFP_KERNEL);
-		if (!limits) {
-			ret = -ENOMEM;
-			tdev->thermal_levels = 0;
-			goto exit;
-		}
-		for (i = 0; i < gcpm->mdis_in_count; i++)
-			memcpy(limits + (i * newsize), gcpm->mdis_out_limits[index] + (i * tdev->thermal_levels), bytes);
-		devm_kfree(gcpm->device, gcpm->mdis_out_limits[index]);
-		gcpm->mdis_out_limits[index] = limits;
-	}
-
-	limits = devm_kzalloc(gcpm->device, newsize_bytes, GFP_KERNEL);
-	if (!limits) {
-		ret = -ENOMEM;
-		goto exit;
-	}
-	memcpy(limits, tdev->thermal_mitigation, bytes);
-
-	devm_kfree(gcpm->device, tdev->thermal_mitigation);
-	tdev->thermal_mitigation = limits;
-	tdev->thermal_levels = newsize;
-	ret = 0;
+	if (ret)
+		goto out;
 
 	/* Need to re-register cooling device because size is stored in the thermal framework */
-	thermal_cooling_device_unregister(tdev->tcd);
+	ret = gcpm_mdis_tdev_reload(gcpm);
 
-	ret = mdis_tdev_register(MDIS_OF_CDEV_NAME, MDIS_CDEV_NAME,
-				 tdev, &chg_mdis_tcd_ops);
-	if (ret) {
-		dev_err(gcpm->device,
-			"Couldn't register %s rc=%d\n", MDIS_OF_CDEV_NAME, ret);
+out:
+	mutex_unlock(&gcpm->mdis_reg_lock);
 
-		/* Free the limits too! */
-		chg_mdis_tdev_free(tdev, gcpm);
-		ret = -EINVAL;
-		goto exit;
-	}
-
-exit:
-	mutex_unlock(&gcpm->chg_psy_lock);
 	return ret;
 }
 
@@ -3623,14 +3712,31 @@ static int gcpm_init_mdis(struct gcpm_drv *gcpm)
 	gvotable_set_vote2str(gcpm->mdis_votable, gvotable_v2s_int);
 	gvotable_election_set_name(gcpm->mdis_votable, VOTABLE_MDIS);
 
-	/* race with above */
+	return 0;
+}
+
+/*
+ * Register the MDIS cooling device.
+ *
+ * This is a separate step from gcpm_init_mdis() on purpose. The thermal
+ * framework takes thermal_list_lock inside this call, and for a cooling
+ * device that a cooling-maps entry binds it then takes cdev->lock as well,
+ * while cur_state_store() takes cdev->lock before chg_psy_lock. Registering
+ * with chg_psy_lock held is therefore one device tree entry away from a real
+ * ABBA, so the caller must hold mdis_reg_lock and must NOT hold chg_psy_lock.
+ */
+static int gcpm_mdis_tdev_add(struct gcpm_drv *gcpm)
+{
+	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
+	int ret;
+
 	ret = mdis_tdev_register(MDIS_OF_CDEV_NAME, MDIS_CDEV_NAME,
 				 tdev, &chg_mdis_tcd_ops);
 	if (ret) {
 		dev_err(gcpm->device,
 			"Couldn't register %s rc=%d\n", MDIS_OF_CDEV_NAME, ret);
 
-		// Free the limits too!
+		/* Free the limits too! */
 		chg_mdis_tdev_free(tdev, gcpm);
 		return -EINVAL;
 	}
@@ -3647,6 +3753,26 @@ static int gcpm_init_mdis(struct gcpm_drv *gcpm)
 	debugfs_create_file("dc_cc_lim", 0644, gcpm->debug_entry, gcpm, &dc_cc_lim_fops);
 
 	return 0;
+}
+
+/*
+ * Re-register the MDIS cooling device so the thermal framework picks up a new
+ * thermal_levels.
+ *
+ * Must be called with mdis_reg_lock held and chg_psy_lock dropped: the
+ * unregister drains an in-flight cur_state_store(), and that store takes
+ * cdev->lock before chg_psy_lock, so holding chg_psy_lock across it deadlocks.
+ */
+static int gcpm_mdis_tdev_reload(struct gcpm_drv *gcpm)
+{
+	struct mdis_thermal_device *tdev = &gcpm->thermal_device;
+
+	if (tdev->tcd) {
+		thermal_cooling_device_unregister(tdev->tcd);
+		tdev->tcd = NULL;
+	}
+
+	return gcpm_mdis_tdev_add(gcpm);
 }
 
 static void gcpm_cop_warn_work(struct work_struct *work)
@@ -3734,8 +3860,21 @@ static void gcpm_init_work(struct work_struct *work)
 			/* PPS charging: needs an APDO */
 			ret = pps_init(&gcpm->tcpm_pps_data, gcpm->device,
 				       gcpm->tcpm_psy, "wired-pps");
-			if (ret == 0 && gcpm->debug_entry)
-				pps_init_fs(&gcpm->tcpm_pps_data, gcpm->debug_entry);
+			if (ret == 0 && gcpm->debug_entry) {
+				struct dentry *de;
+
+				/*
+				 * pps_init_fs() creates three fixed names, so the
+				 * wired and wireless instances need separate
+				 * directories. Passing gcpm->debug_entry to both
+				 * made the second set collide, leaving the
+				 * wireless PPS with no nodes at all and the
+				 * wired ones shadowed.
+				 */
+				de = debugfs_create_dir("tcpm", gcpm->debug_entry);
+				if (!IS_ERR_OR_NULL(de))
+					pps_init_fs(&gcpm->tcpm_pps_data, de);
+			}
 			if (ret < 0) {
 				pr_err("PPS init failure for %s (%d)\n",
 				       name, ret);
@@ -3772,8 +3911,13 @@ static void gcpm_init_work(struct work_struct *work)
 			/* PPS charging: needs an APDO */
 			ret = pps_init(&gcpm->wlc_pps_data, gcpm->device,
 					gcpm->wlc_dc_psy, "wireless-pps");
-			if (ret == 0 && gcpm->debug_entry)
-				pps_init_fs(&gcpm->wlc_pps_data, gcpm->debug_entry);
+			if (ret == 0 && gcpm->debug_entry) {
+				struct dentry *de;
+
+				de = debugfs_create_dir("wlc", gcpm->debug_entry);
+				if (!IS_ERR_OR_NULL(de))
+					pps_init_fs(&gcpm->wlc_pps_data, de);
+			}
 			if (ret < 0) {
 				pr_err("PPS init failure for %s (%d)\n",
 				       name, ret);
@@ -3859,6 +4003,19 @@ static void gcpm_init_work(struct work_struct *work)
 
 	gcpm->dc_init_complete = true;
 	mutex_unlock(&gcpm->chg_psy_lock);
+
+	/*
+	 * gcpm_init_mdis() only allocates; registering the cooling device is a
+	 * separate step because it must not run with chg_psy_lock held. See
+	 * gcpm_mdis_tdev_add(). mdis_reg_lock additionally keeps a concurrent
+	 * mdis_size_store() from unregistering the device as we add it.
+	 */
+	if (!ret) {
+		mutex_lock(&gcpm->mdis_reg_lock);
+		if (!gcpm->thermal_device.tcd)
+			gcpm_mdis_tdev_add(gcpm);
+		mutex_unlock(&gcpm->mdis_reg_lock);
+	}
 
 	/* might run along set_property() */
 	mod_delayed_work(system_wq, &gcpm->select_work, 0);
@@ -4441,6 +4598,7 @@ static int google_cpm_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&gcpm->cop_warn_work, gcpm_cop_warn_work);
 
 	mutex_init(&gcpm->chg_psy_lock);
+	mutex_init(&gcpm->mdis_reg_lock);
 
 	gcpm->gcpm_ws = wakeup_source_register(NULL, "google-cpm");
 	if (!gcpm->gcpm_ws) {
@@ -4785,8 +4943,20 @@ static int google_cpm_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&gcpm->fcc_retry_work);
 	cancel_delayed_work_sync(&gcpm->cop_warn_work);
 
-	if (gcpm->thermal_device.tcd)
+	/*
+	 * mdis_size_store() unregisters and re-registers this cooling device
+	 * under mdis_reg_lock, and it is driven by a debugfs write that no
+	 * cancel above covers. Setting removed under the same lock is what
+	 * stops a store that has not taken the lock yet from putting the
+	 * device back after remove has taken it away.
+	 */
+	mutex_lock(&gcpm->mdis_reg_lock);
+	gcpm->removed = true;
+	if (gcpm->thermal_device.tcd) {
 		thermal_cooling_device_unregister(gcpm->thermal_device.tcd);
+		gcpm->thermal_device.tcd = NULL;
+	}
+	mutex_unlock(&gcpm->mdis_reg_lock);
 
 	gvotable_destroy_election(gcpm->dc_fcc_votable);
 	gvotable_destroy_election(gcpm->cp_votable);
