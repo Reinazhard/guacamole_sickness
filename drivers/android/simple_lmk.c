@@ -29,6 +29,23 @@
 /* Android oom_score_adj range is 0 to 1000 */
 #define ADJ_MAX 1000
 
+/*
+ * PSI stall thresholds.
+ *
+ * Full stall indicates all non-idle tasks are stalled on memory contention,
+ * leaving CPUs with no productive work. On a 120 Hz display (8.3 ms deadline),
+ * 100 ms of CPU stall represents ~12 dropped frames (perceptible UI stutter).
+ * 150 ms drops ~18 frames (hitch), and 200 ms drops ~24 frames (severe near-OOM).
+ *
+ * Latency tolerance is a human perception and display invariant across
+ * devices, while the kill volume automatically self-calibrates to device RAM
+ * capacity via totalreserve_pages and get_target_free_pages().
+ */
+#define LMK_PSI_WINDOW_MS 1000
+#define LMK_PSI_THRESHOLD_LOW_US 100000
+#define LMK_PSI_THRESHOLD_MED_US 150000
+#define LMK_PSI_THRESHOLD_HIGH_US 200000
+
 struct victim_info {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -52,11 +69,31 @@ static DECLARE_COMPLETION(psi_init_done);
 static int nr_victims;
 static bool reclaim_active;
 
+/*
+ * Android oom_score_adj tier boundaries:
+ * - Tier 0: Cached processes (CACHED_APP_MIN_ADJ, SERVICE_B_ADJ)
+ * - Tier 1: Non-perceptible background (SERVICE_ADJ, HOME_APP_ADJ, PREVIOUS_APP_ADJ)
+ * - Tier 2: Perceptible background (PERCEPTIBLE_APP_ADJ to HEAVY_WEIGHT_APP_ADJ)
+ *
+ * Hard floor: Processes with adj < 200 (VISIBLE_APP_ADJ = 100, foreground activities,
+ * persistent system services like .gms.persistent, SystemUI, and init) must NEVER
+ * be killed by simple_lmk. If physical RAM is exhausted by foreground/visible tasks,
+ * the core kernel OOM killer handles it by terminating the largest memory consumer.
+ */
+#define LMK_TIER0_MIN_ADJ 800
+#define LMK_TIER1_MIN_ADJ 500
+#define LMK_TIER2_MIN_ADJ 200
+
 #define LMK_TIERS 3
-static const short tier_min_adj[LMK_TIERS] = { 800, 200, 1 };
+static const short tier_min_adj[LMK_TIERS] = {
+	LMK_TIER0_MIN_ADJ,
+	LMK_TIER1_MIN_ADJ,
+	LMK_TIER2_MIN_ADJ
+};
 
 static atomic_t needs_reclaim = ATOMIC_INIT(0);
 static atomic_t needs_reap = ATOMIC_INIT(0);
+static atomic_t oom_attempts = ATOMIC_INIT(0);
 static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
 
 /*
@@ -408,30 +445,8 @@ static void scan_and_kill(void)
 
 	/* Populate the victims array with tasks sorted by adj and then size */
 	find_victims(&nr_found);
-	if (unlikely(!nr_found)) {
-		/*
-		 * No victims at the current tier. If there's still a memory
-		 * deficit, escalate immediately to the next tier instead of
-		 * waiting for the next PSI event. Without this, the system
-		 * gets stuck at Tier 0 forever when all cached apps are
-		 * already dead but memory pressure continues.
-		 */
-		if (get_target_free_pages() > 0) {
-			int current_adj = atomic_read(&target_min_adj);
-			if (current_adj == tier_min_adj[0]) {
-				atomic_set(&target_min_adj, tier_min_adj[1]);
-				atomic_set(&needs_reclaim, 1);
-				pr_info_ratelimited("Escalating to adj %d, no victims at current tier\n",
-						    tier_min_adj[1]);
-			} else if (current_adj == tier_min_adj[1]) {
-				atomic_set(&target_min_adj, tier_min_adj[2]);
-				atomic_set(&needs_reclaim, 1);
-				pr_info_ratelimited("Escalating to adj %d, no victims at current tier\n",
-						    tier_min_adj[2]);
-			}
-		}
+	if (unlikely(!nr_found))
 		return;
-	}
 
 	/*
 	 * Sort all victims by size (descending) to kill largest first,
@@ -546,6 +561,7 @@ static void scan_and_kill(void)
 	sort(victims, nr_to_kill, sizeof(*victims), victim_cmp, victim_swap);
 	smp_wmb();
 	atomic_set(&needs_reap, 1);
+	atomic_set(&oom_attempts, 0);
 	if (waitqueue_active(&reaper_waitq))
 		wake_up(&reaper_waitq);
 }
@@ -770,6 +786,7 @@ static int simple_lmk_psi_thread(void *data)
 
 	while (!kthread_should_stop()) {
 		short min_adj = ADJ_MAX;
+		bool high, med, low;
 
 		/*
 		 * Sleep until a PSI trigger fires. wait_event_freezable
@@ -781,14 +798,27 @@ static int simple_lmk_psi_thread(void *data)
 				     READ_ONCE(psi_triggers[1]->event) ||
 				     READ_ONCE(psi_triggers[2]->event));
 
-		/* Check triggers from highest to lowest severity */
-		if (cmpxchg(&psi_triggers[2]->event, 1, 0)) {
+		/*
+		 * Atomically sample and clear all trigger events.
+		 *
+		 * Sampling and clearing every trigger on wake is essential:
+		 * if a severe event fires (e.g. tier 2), milder triggers (tier 1
+		 * and tier 0) have also breached their lower thresholds and set
+		 * event = 1. If only the highest is cleared, the remaining
+		 * triggers keep event = 1, immediately waking this thread on the
+		 * next iteration to execute spurious back-to-back reclaim cycles
+		 * for lower tiers.
+		 */
+		high = cmpxchg(&psi_triggers[2]->event, 1, 0);
+		med  = cmpxchg(&psi_triggers[1]->event, 1, 0);
+		low  = cmpxchg(&psi_triggers[0]->event, 1, 0);
+
+		if (high)
 			min_adj = tier_min_adj[2];
-		} else if (cmpxchg(&psi_triggers[1]->event, 1, 0)) {
+		else if (med)
 			min_adj = tier_min_adj[1];
-		} else if (cmpxchg(&psi_triggers[0]->event, 1, 0)) {
+		else if (low)
 			min_adj = tier_min_adj[0];
-		}
 
 		/*
 		 * Map PSI stall events to target adj levels.
@@ -796,7 +826,12 @@ static int simple_lmk_psi_thread(void *data)
 		 * is still running.
 		 */
 		if (min_adj != ADJ_MAX && !READ_ONCE(reclaim_active)) {
+			pr_info_ratelimited("PSI wake: Tier %d (min_adj=%d), free=%lu, reserve=%lu\n",
+					    min_adj == tier_min_adj[2] ? 2 :
+					    (min_adj == tier_min_adj[1] ? 1 : 0),
+					    min_adj, nr_free_pages(), totalreserve_pages);
 			atomic_set(&target_min_adj, min_adj);
+			atomic_set(&oom_attempts, 0);
 			if (!atomic_xchg(&needs_reclaim, 1) && waitqueue_active(&oom_waitq))
 				wake_up(&oom_waitq);
 		}
@@ -835,21 +870,37 @@ static int simple_lmk_oom_notify(struct notifier_block *self,
 	unsigned long *freed = data;
 
 	/*
-	 * This is an uncaught OOM event (e.g. a huge sudden allocation) that
-	 * PSI missed. Escalate to the maximum tier and wake the reclaim thread
-	 * to handle it asynchronously. We never call scan_and_kill() directly
-	 * here because it may sleep (set_cpus_allowed_ptr, etc.) and the OOM
-	 * notifier can run from contexts where sleeping is undesirable.
-	 *
-	 * Tell the core OOM killer we are handling it (*freed = 1) to suppress
-	 * a dual-kill collision. If the reclaim thread fails to find victims,
-	 * the next PSI/OOM event will re-trigger.
+	 * If earlier kills are still being reaped, memory is already on its
+	 * way to being freed. Tell the core OOM killer to retry.
 	 */
-	atomic_set(&target_min_adj, tier_min_adj[2]);
-	if (!atomic_xchg(&needs_reclaim, 1) && waitqueue_active(&oom_waitq))
-		wake_up(&oom_waitq);
+	if (pages_pending_free() > 0) {
+		*freed = 1;
+		atomic_set(&oom_attempts, 0);
+		return NOTIFY_OK;
+	}
 
-	*freed = 1;
+	/*
+	 * This is an uncaught OOM event (e.g. huge sudden allocation) that
+	 * PSI missed. Wake the reclaim thread at maximum tier (adj >= 200).
+	 *
+	 * On the first attempt, tell the core OOM killer we are handling it
+	 * (*freed = 1) so simple_lmkd can attempt to reclaim background tasks.
+	 * If simple_lmkd finds no victims (or all tasks with adj >= 200 are
+	 * already dead) and OOM re-triggers without pending pages, do NOT
+	 * set *freed. Allow the core OOM killer to terminate the runaway
+	 * memory hog (e.g. the foreground game) instead of deadlocking or
+	 * killing system components.
+	 */
+	if (atomic_inc_return(&oom_attempts) == 1) {
+		atomic_set(&target_min_adj, tier_min_adj[2]);
+		/* Wake the reclaim thread; atomic_xchg orders state */
+		if (!atomic_xchg(&needs_reclaim, 1) && waitqueue_active(&oom_waitq))
+			wake_up(&oom_waitq);
+		*freed = 1;
+	} else {
+		atomic_set(&oom_attempts, 0);
+	}
+
 	return NOTIFY_OK;
 }
 
@@ -860,13 +911,13 @@ static struct notifier_block simple_lmk_oom_nb = {
 /* Initialize Simple LMK when lmkd in Android writes to the minfree parameter */
 static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 {
+	static const int thresholds[LMK_TIERS] = {
+		LMK_PSI_THRESHOLD_LOW_US,
+		LMK_PSI_THRESHOLD_MED_US,
+		LMK_PSI_THRESHOLD_HIGH_US
+	};
 	static atomic_t init_done = ATOMIC_INIT(0);
 	struct task_struct *thread;
-	int thresholds[LMK_TIERS] = {
-		CONFIG_ANDROID_SIMPLE_LMK_PSI_THRESHOLD_LOW_US,
-		CONFIG_ANDROID_SIMPLE_LMK_PSI_THRESHOLD_MED_US,
-		CONFIG_ANDROID_SIMPLE_LMK_PSI_THRESHOLD_HIGH_US
-	};
 	int i, ret = 0;
 
 	if (!atomic_cmpxchg(&init_done, 0, 1)) {
@@ -890,8 +941,9 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 		 */
 		for (i = 0; i < LMK_TIERS; i++) {
 			char buf[64];
+
 			snprintf(buf, sizeof(buf), "full %d %d", thresholds[i],
-				 CONFIG_ANDROID_SIMPLE_LMK_PSI_WINDOW_MS * 1000);
+				 LMK_PSI_WINDOW_MS * 1000);
 			psi_triggers[i] = psi_trigger_create(&psi_system, buf, PSI_MEM,
 							       NULL, NULL);
 			if (IS_ERR(psi_triggers[i])) {
