@@ -1038,10 +1038,10 @@ static int nt37290_disable(struct drm_panel *panel)
 	if (ctx->hbm.local_hbm.enabled) {
 		dev_warn(ctx->dev, "%s: lhbm is still enabled while disabling panel\n",
 			 __func__);
-		mutex_lock(&ctx->mode_lock);
+		rt_mutex_lock(&ctx->mode_lock);
 		/* disable lhbm immediately */
 		nt37290_set_local_hbm_mode(ctx, false);
-		mutex_unlock(&ctx->mode_lock);
+		rt_mutex_unlock(&ctx->mode_lock);
 	}
 
 	return exynos_panel_disable(panel);
