@@ -1038,9 +1038,9 @@ int exynos_panel_disable(struct drm_panel *panel)
 	ctx->dimming_on = false;
 	ctx->self_refresh_active = false;
 	ctx->panel_idle_vrefresh = 0;
-	mutex_lock(&ctx->lp_state_lock);
+	rt_mutex_lock(&ctx->lp_state_lock);
 	ctx->current_binned_lp = NULL;
-	mutex_unlock(&ctx->lp_state_lock);
+	rt_mutex_unlock(&ctx->lp_state_lock);
 	ctx->cabc_mode = CABC_OFF;
 	ctx->ssc_en = false;
 	ctx->current_cabc_mode = CABC_OFF;
@@ -1162,11 +1162,11 @@ void exynos_panel_set_binned_lp(struct exynos_panel *ctx, const u16 brightness)
 	is_lp_state = is_backlight_lp_state(bl);
 	mutex_unlock(&ctx->bl_state_lock);
 
-	mutex_lock(&ctx->lp_state_lock);
+	rt_mutex_lock(&ctx->lp_state_lock);
 
 	if (is_lp_state && ctx->current_binned_lp &&
 	    binned_lp->bl_threshold == ctx->current_binned_lp->bl_threshold) {
-		mutex_unlock(&ctx->lp_state_lock);
+		rt_mutex_unlock(&ctx->lp_state_lock);
 		return;
 	}
 
@@ -1175,7 +1175,7 @@ void exynos_panel_set_binned_lp(struct exynos_panel *ctx, const u16 brightness)
 	ctx->current_binned_lp = binned_lp;
 	dev_dbg(ctx->dev, "enter lp_%s\n", ctx->current_binned_lp->name);
 
-	mutex_unlock(&ctx->lp_state_lock);
+	rt_mutex_unlock(&ctx->lp_state_lock);
 
 	panel_state = !binned_lp->bl_threshold ? PANEL_STATE_BLANK : PANEL_STATE_LP;
 	exynos_panel_set_backlight_state(ctx, panel_state);
@@ -3668,17 +3668,17 @@ static ssize_t lp_state_show(struct device *dev,
 	 * writer of current_binned_lp takes this lock, so the pointer cannot
 	 * be cleared between the two.
 	 */
-	mutex_lock(&ctx->lp_state_lock);
+	rt_mutex_lock(&ctx->lp_state_lock);
 
 	if (!ctx->current_binned_lp) {
 		dev_warn(ctx->dev, "LP state is null\n");
-		mutex_unlock(&ctx->lp_state_lock);
+		rt_mutex_unlock(&ctx->lp_state_lock);
 		mutex_unlock(&ctx->bl_state_lock);
 		return -EINVAL;
 	}
 
 	rc = scnprintf(buf, PAGE_SIZE, "%s\n", ctx->current_binned_lp->name);
-	mutex_unlock(&ctx->lp_state_lock);
+	rt_mutex_unlock(&ctx->lp_state_lock);
 
 	mutex_unlock(&ctx->bl_state_lock);
 
@@ -5010,9 +5010,9 @@ static void exynos_panel_bridge_mode_set(struct drm_bridge *bridge,
 					drm_crtc_vblank_put(crtc);
 				}
 			}
-			mutex_lock(&ctx->lp_state_lock);
+			rt_mutex_lock(&ctx->lp_state_lock);
 			ctx->current_binned_lp = NULL;
-			mutex_unlock(&ctx->lp_state_lock);
+			rt_mutex_unlock(&ctx->lp_state_lock);
 		} else if (funcs->mode_set) {
 			if ((MIPI_CMD_SYNC_REFRESH_RATE & exynos_connector_state->mipi_sync) &&
 					is_active && old_mode)
@@ -5813,7 +5813,7 @@ int exynos_panel_common_init(struct mipi_dsi_device *dsi,
 	rt_mutex_init(&ctx->mode_lock);
 	mutex_init(&ctx->crtc_lock);
 	mutex_init(&ctx->bl_state_lock);
-	mutex_init(&ctx->lp_state_lock);
+	rt_mutex_init(&ctx->lp_state_lock);
 
 	drm_panel_init(&ctx->panel, dev, ctx->desc->panel_func, DRM_MODE_CONNECTOR_DSI);
 
