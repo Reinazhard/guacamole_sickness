@@ -924,7 +924,15 @@ struct exynos_panel {
 	/* Record the current CABC mode if force_off enabled */
 	enum exynos_cabc_mode current_cabc_mode;
 
-	struct mutex lp_state_lock;
+	/*
+	 * Priority-inheriting: the real-time decon commit worker takes this
+	 * from exynos_panel_disable(), where no other lock is held, while a
+	 * CFS backlight writer can hold it across a sleeping DSI command set
+	 * in exynos_panel_set_binned_lp(). mode_lock's priority inheritance
+	 * does not cover that, because the RT thread waits on this lock
+	 * rather than on mode_lock.
+	 */
+	struct rt_mutex lp_state_lock;
 	const struct exynos_binned_lp *current_binned_lp;
 	struct drm_property_blob *lp_mode_blob;
 
