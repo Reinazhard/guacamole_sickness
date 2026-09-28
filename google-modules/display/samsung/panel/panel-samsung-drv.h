@@ -17,6 +17,7 @@
 #include <linux/device.h>
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
+#include <linux/rtmutex.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of_gpio.h>
 #include <linux/backlight.h>
@@ -907,7 +908,15 @@ struct exynos_panel {
 	bool bl_ctrl_dcs;
 	enum exynos_cabc_mode cabc_mode;
 	struct backlight_device *bl;
-	struct mutex mode_lock;
+	/*
+	 * Priority-inheriting: this is taken from the real-time decon commit
+	 * worker (decon%u_kthread, SCHED_FIFO 20) as well as from CFS sysfs
+	 * writers and work items that hold it across sleeping DSI transfers.
+	 * As a plain mutex the RT worker could sleep behind a preemptible
+	 * non-RT holder with no bound on the delay, which shows up as a
+	 * missed vsync.
+	 */
+	struct rt_mutex mode_lock;
 	struct mutex crtc_lock;
 	struct mutex bl_state_lock;
 	struct exynos_bl_notifier bl_notifier;

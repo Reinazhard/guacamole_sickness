@@ -1051,9 +1051,9 @@ static void s6e3hc2_gamma_work(struct kthread_work *work)
 	 * cannot be re-locked underneath us and the tables cannot be
 	 * transmitted while they are being rewritten.
 	 */
-	mutex_lock(&ctx->mode_lock);
+	rt_mutex_lock(&ctx->mode_lock);
 	s6e3hc2_gamma_read_tables(ctx);
-	mutex_unlock(&ctx->mode_lock);
+	rt_mutex_unlock(&ctx->mode_lock);
 }
 
 static int s6e3hc2_panel_probe(struct mipi_dsi_device *dsi)
