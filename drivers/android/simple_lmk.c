@@ -501,12 +501,16 @@ static void scan_and_kill(void)
 			victim->size << (PAGE_SHIFT - 10));
 
 		/*
-		 * Thaw the victim first so it can receive and process the
-		 * kill signal immediately. Signals can't wake frozen tasks;
-		 * only a thaw operation can.
+		 * Signals cannot wake a frozen task, so thaw the whole thread
+		 * group before the kill: zap_other_threads() signals siblings
+		 * with signal_wake_up(), which cannot wake them either.
 		 */
-		if (frozen(vtsk))
-			__thaw_task(vtsk);
+		rcu_read_lock();
+		for_each_thread(vtsk, t) {
+			if (frozen(t))
+				__thaw_task(t);
+		}
+		rcu_read_unlock();
 
 		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
