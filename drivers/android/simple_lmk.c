@@ -564,11 +564,11 @@ static void scan_and_kill(void)
 	 * needs_reap == 1.
 	 */
 	sort(victims, nr_to_kill, sizeof(*victims), victim_cmp, victim_swap);
+	/* Pairs with wait_event_freezable in reaper thread */
 	smp_wmb();
 	atomic_set(&needs_reap, 1);
 	atomic_set(&oom_attempts, 0);
-	if (waitqueue_active(&reaper_waitq))
-		wake_up(&reaper_waitq);
+	wake_up(&reaper_waitq);
 }
 
 static int simple_lmk_reclaim_thread(void *data)
