@@ -167,10 +167,11 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	int cidx = 0, cpu;
 
 	/*
-	 * Get the utilization and uclamp minimum threshold for this task. Note
-	 * that RT tasks don't have per-entity load tracking.
+	 * Get the utilization and uclamp thresholds for this task. RT tasks
+	 * don't have per-entity load tracking.
 	 */
-	p_util = rt ? 0 : task_util_est(p);
+	p_util = rt ? 0 : min_t(unsigned long, task_util_est(p),
+				uclamp_eff_value(p, UCLAMP_MAX));
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
 
 	/*
