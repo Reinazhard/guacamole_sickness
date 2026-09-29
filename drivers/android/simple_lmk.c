@@ -577,8 +577,12 @@ static int simple_lmk_reclaim_thread(void *data)
 	set_task_rt_prio(current, MAX_RT_PRIO - 1);
 	set_freezable();
 
-	while (1) {
-		wait_event_freezable(oom_waitq, atomic_read(&needs_reclaim));
+	while (!kthread_should_stop()) {
+		wait_event_freezable(oom_waitq,
+				     atomic_read(&needs_reclaim) ||
+				     kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		/*
 		 * Clear needs_reclaim before scanning so that any escalation
 		 * signal set by scan_and_kill() (or a new PSI event arriving
@@ -728,8 +732,12 @@ static int simple_lmk_reaper_thread(void *data)
 	set_task_rt_prio(current, MAX_RT_PRIO - 2);
 	set_freezable();
 
-	while (1) {
-		wait_event_freezable(reaper_waitq, atomic_read(&needs_reap));
+	while (!kthread_should_stop()) {
+		wait_event_freezable(reaper_waitq,
+				     atomic_read(&needs_reap) ||
+				     kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		atomic_set(&needs_reap, 0);
 		reap_victims();
 	}
@@ -922,21 +930,25 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 		LMK_PSI_THRESHOLD_HIGH_US
 	};
 	static atomic_t init_done = ATOMIC_INIT(0);
-	struct task_struct *thread;
+	struct task_struct *reaper_thread = NULL;
+	struct task_struct *reclaim_thread = NULL;
+	struct task_struct *psi_thread = NULL;
 	int i, ret = 0;
 
 	if (!atomic_cmpxchg(&init_done, 0, 1)) {
-		thread = kthread_run(simple_lmk_reaper_thread, NULL,
-				     "simple_lmkd_reaper");
-		if (IS_ERR(thread)) {
-			ret = PTR_ERR(thread);
+		reaper_thread = kthread_run(simple_lmk_reaper_thread, NULL,
+					    "simple_lmkd_reaper");
+		if (IS_ERR(reaper_thread)) {
+			ret = PTR_ERR(reaper_thread);
+			reaper_thread = NULL;
 			goto fail;
 		}
 
-		thread = kthread_run(simple_lmk_reclaim_thread, NULL,
-				     "simple_lmkd");
-		if (IS_ERR(thread)) {
-			ret = PTR_ERR(thread);
+		reclaim_thread = kthread_run(simple_lmk_reclaim_thread, NULL,
+					     "simple_lmkd");
+		if (IS_ERR(reclaim_thread)) {
+			ret = PTR_ERR(reclaim_thread);
+			reclaim_thread = NULL;
 			goto fail;
 		}
 
@@ -959,13 +971,13 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 			psi_trigger_set_waitq(psi_triggers[i], &psi_waitq);
 		}
 
-		thread = kthread_run(simple_lmk_psi_thread, NULL,
-				     "simple_lmkd_psi");
-		if (IS_ERR(thread)) {
-			ret = PTR_ERR(thread);
+		psi_thread = kthread_run(simple_lmk_psi_thread, NULL,
+					 "simple_lmkd_psi");
+		if (IS_ERR(psi_thread)) {
+			ret = PTR_ERR(psi_thread);
+			psi_thread = NULL;
 			goto fail;
 		}
-
 
 		WARN_ON(register_oom_notifier(&simple_lmk_oom_nb));
 
@@ -979,12 +991,18 @@ fail:
 	 * Roll back any partially created state and allow lmkd to retry
 	 * initialization on a subsequent write to the minfree parameter.
 	 */
+	if (psi_thread)
+		kthread_stop(psi_thread);
 	for (i = 0; i < LMK_TIERS; i++) {
 		if (psi_triggers[i]) {
 			psi_trigger_destroy(psi_triggers[i]);
 			psi_triggers[i] = NULL;
 		}
 	}
+	if (reclaim_thread)
+		kthread_stop(reclaim_thread);
+	if (reaper_thread)
+		kthread_stop(reaper_thread);
 	atomic_set(&init_done, 0);
 	return ret;
 }
