@@ -612,8 +612,8 @@ static struct mm_struct *next_reap_victim(bool force)
 	int i;
 
 	/*
-	 * Take an mmget reference under victims_lock so the mm struct can't be
-	 * freed by exit_mmap() while we reap it.
+	 * Scan the victims array under victims_lock so mm pointers cannot be
+	 * freed by exit_mmap() while we inspect them.
 	 */
 	for (i = 0; i < READ_ONCE(nr_victims); i++, mm = NULL) {
 		spin_lock_irqsave(&victims_lock, flags);
@@ -622,12 +622,6 @@ static struct mm_struct *next_reap_victim(bool force)
 			spin_unlock_irqrestore(&victims_lock, flags);
 			continue;
 		}
-
-		if (!mmget_not_zero(mm)) {
-			spin_unlock_irqrestore(&victims_lock, flags);
-			continue;
-		}
-		spin_unlock_irqrestore(&victims_lock, flags);
 
 		/*
 		 * Do a trylock so the reaper thread doesn't sleep. If the
@@ -641,17 +635,7 @@ static struct mm_struct *next_reap_victim(bool force)
 			if (force) {
 				struct mm_struct *drop_mm = NULL;
 
-				/*
-				 * Operate on the mm's flags and drop our mmgrab()
-				 * reference *before* mmput(). mmput() can drop the
-				 * last mm_users reference, which synchronously runs
-				 * __mmput() -> exit_mmap() -> simple_lmk_mm_freed(),
-				 * and the latter can mmdrop() the mmgrab() reference
-				 * we hold here, freeing the mm. Dereferencing mm
-				 * after mmput() would therefore be a use-after-free.
-				 */
 				set_bit(MMF_OOM_SKIP, &mm->flags);
-				spin_lock_irqsave(&victims_lock, flags);
 				if (victims[i].mm == mm) {
 					victims[i].mm = NULL;
 					drop_mm = mm;
@@ -660,21 +644,27 @@ static struct mm_struct *next_reap_victim(bool force)
 				if (drop_mm)
 					mmdrop(drop_mm);
 			} else {
+				spin_unlock_irqrestore(&victims_lock, flags);
 				should_retry = true;
 			}
-			mmput(mm);
 			continue;
 		}
 
 		/*
-		 * Check MMF_OOM_SKIP again under the lock in case this mm was
-		 * reaped by exit_mmap() and then had its page tables destroyed.
+		 * Check MMF_OOM_SKIP again under mmap_read_lock in case this
+		 * mm was reaped by exit_mmap() and had its page tables
+		 * destroyed. While mmap_read_lock is held, exit_mmap() is
+		 * serialized on mmap_write_lock, keeping the address space
+		 * intact. Precluding mmget() prevents the reaper kthread from
+		 * ever calling mmput() and stalling on process teardown.
 		 */
-		if (!test_bit(MMF_OOM_SKIP, &mm->flags))
+		if (!test_bit(MMF_OOM_SKIP, &mm->flags)) {
+			spin_unlock_irqrestore(&victims_lock, flags);
 			break;
+		}
 
 		mmap_read_unlock(mm);
-		mmput(mm);
+		spin_unlock_irqrestore(&victims_lock, flags);
 	}
 
 	if (!mm) {
@@ -756,7 +746,6 @@ static void reap_victims(void)
 			schedule_timeout_uninterruptible(1);
 		}
 		mmap_read_unlock(mm);
-		mmput(mm);
 
 		/* Yield to let RCU grace periods and other work proceed */
 		cond_resched();
