@@ -503,10 +503,15 @@ static void scan_and_kill(void)
 		/*
 		 * Thaw the victim first so it can receive and process the
 		 * kill signal immediately. Signals can't wake frozen tasks;
-		 * only a thaw operation can.
+		 * only a thaw operation can. Thaw all threads in the group
+		 * so zap_other_threads() does not block on frozen siblings.
 		 */
-		if (frozen(vtsk))
-			__thaw_task(vtsk);
+		rcu_read_lock();
+		for_each_thread(vtsk, t) {
+			if (frozen(t))
+				__thaw_task(t);
+		}
+		rcu_read_unlock();
 
 		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
