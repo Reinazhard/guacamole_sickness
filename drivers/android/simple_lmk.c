@@ -934,8 +934,8 @@ static int simple_lmk_oom_notify(struct notifier_block *self,
 	 */
 	if (atomic_inc_return(&oom_attempts) == 1) {
 		atomic_set(&target_min_adj, tier_min_adj[2]);
-		/* Wake the reclaim thread; atomic_xchg orders state */
-		if (!atomic_xchg(&needs_reclaim, 1) && waitqueue_active(&oom_waitq))
+		atomic_set(&needs_reclaim, 1);
+		if (!READ_ONCE(reclaim_active))
 			wake_up(&oom_waitq);
 		*freed = 1;
 	} else {
