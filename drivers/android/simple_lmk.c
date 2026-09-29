@@ -566,8 +566,7 @@ static void scan_and_kill(void)
 	smp_wmb();
 	atomic_set(&needs_reap, 1);
 	atomic_set(&oom_attempts, 0);
-	if (waitqueue_active(&reaper_waitq))
-		wake_up(&reaper_waitq);
+	wake_up(&reaper_waitq);
 }
 
 static int simple_lmk_reclaim_thread(void *data)
