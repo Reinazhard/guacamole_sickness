@@ -579,7 +579,8 @@ static int simple_lmk_reclaim_thread(void *data)
 
 	while (!kthread_should_stop()) {
 		wait_event_freezable(oom_waitq,
-				     atomic_read(&needs_reclaim) ||
+				     (atomic_read(&needs_reclaim) &&
+				      !READ_ONCE(reclaim_active)) ||
 				     kthread_should_stop());
 		if (kthread_should_stop())
 			break;
@@ -676,6 +677,8 @@ static struct mm_struct *next_reap_victim(bool force)
 			 */
 			smp_mb();
 			WRITE_ONCE(reclaim_active, false);
+			if (atomic_read(&needs_reclaim))
+				wake_up(&oom_waitq);
 		}
 	}
 
@@ -834,19 +837,21 @@ static int simple_lmk_psi_thread(void *data)
 			min_adj = tier_min_adj[0];
 
 		/*
-		 * Map PSI stall events to target adj levels.
-		 * reclaim_active gates new cycles while scan_and_kill
-		 * is still running.
+		 * Map PSI stall events to target adj levels. If reclaim is active,
+		 * record escalation if this event is more severe than the current target.
 		 */
-		if (min_adj != ADJ_MAX && !READ_ONCE(reclaim_active)) {
-			pr_info_ratelimited("PSI wake: Tier %d (min_adj=%d), free=%lu, reserve=%lu\n",
-					    min_adj == tier_min_adj[2] ? 2 :
-					    (min_adj == tier_min_adj[1] ? 1 : 0),
-					    min_adj, nr_free_pages(), totalreserve_pages);
-			atomic_set(&target_min_adj, min_adj);
-			atomic_set(&oom_attempts, 0);
-			if (!atomic_xchg(&needs_reclaim, 1) && waitqueue_active(&oom_waitq))
-				wake_up(&oom_waitq);
+		if (min_adj != ADJ_MAX) {
+			if (!READ_ONCE(reclaim_active) || min_adj < atomic_read(&target_min_adj)) {
+				pr_info_ratelimited("PSI wake: Tier %d (min_adj=%d), free=%lu, reserve=%lu\n",
+						    min_adj == tier_min_adj[2] ? 2 :
+						    (min_adj == tier_min_adj[1] ? 1 : 0),
+						    min_adj, nr_free_pages(), totalreserve_pages);
+				atomic_set(&target_min_adj, min_adj);
+				atomic_set(&oom_attempts, 0);
+				atomic_set(&needs_reclaim, 1);
+				if (!READ_ONCE(reclaim_active))
+					wake_up(&oom_waitq);
+			}
 		}
 	}
 
