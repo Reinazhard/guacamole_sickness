@@ -159,7 +159,7 @@ done:
 	return res > 0;
 }
 
-static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt)
+static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync)
 {
 	/* Initialize @best such that @best always has a valid CPU at the end */
 	struct cass_cpu_cand cands[2], *best = cands;
@@ -169,12 +169,11 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	int cidx = 0, cpu;
 
 	/*
-	 * Get the utilization and uclamp thresholds for this task. Note
-	 * that RT tasks don't have per-entity load tracking. Cap p_util
+	 * Get the utilization and uclamp thresholds for this task. Cap p_util
 	 * with UCLAMP_MAX so background cgroup clamps are honored.
 	 */
-	p_util = rt ? 0 : min_t(unsigned long, task_util_est(p),
-				uclamp_eff_value(p, UCLAMP_MAX));
+	p_util = min_t(unsigned long, task_util_est(p),
+		       uclamp_eff_value(p, UCLAMP_MAX));
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
 
 	/*
@@ -302,8 +301,8 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	return best->cpu;
 }
 
-static int cass_select_task_rq(struct task_struct *p, int prev_cpu,
-			       int wake_flags, bool rt)
+static int cass_select_task_rq_fair(struct task_struct *p, int prev_cpu,
+				    int wake_flags)
 {
 	bool sync;
 
@@ -320,20 +319,9 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu,
 		return cpumask_first(p->cpus_ptr);
 
 	/* cass_best_cpu() needs the CFS task's utilization, so sync it up */
-	if (!rt && !(wake_flags & SD_BALANCE_FORK))
+	if (!(wake_flags & SD_BALANCE_FORK))
 		sync_entity_load_avg(&p->se);
 
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
-	return cass_best_cpu(p, prev_cpu, sync, rt);
-}
-
-static int cass_select_task_rq_fair(struct task_struct *p, int prev_cpu,
-				    int wake_flags)
-{
-	return cass_select_task_rq(p, prev_cpu, wake_flags, false);
-}
-
-int cass_select_task_rq_rt(struct task_struct *p, int prev_cpu, int wake_flags)
-{
-	return cass_select_task_rq(p, prev_cpu, wake_flags, true);
+	return cass_best_cpu(p, prev_cpu, sync);
 }
