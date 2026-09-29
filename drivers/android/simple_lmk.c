@@ -62,6 +62,7 @@ struct victim_info {
 
 static struct victim_info victims[MAX_VICTIMS] __cacheline_aligned_in_smp;
 static struct task_struct *task_bucket[ADJ_MAX + 1] __cacheline_aligned;
+static DEFINE_SPINLOCK(victims_lock);
 static DECLARE_WAIT_QUEUE_HEAD(oom_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 static DECLARE_COMPLETION(psi_init_done);
@@ -116,10 +117,12 @@ static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
 static unsigned long pages_pending_free(void)
 {
 	unsigned long total = 0;
+	unsigned long flags;
 	int i;
 
+	spin_lock_irqsave(&victims_lock, flags);
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
-		struct mm_struct *mm = READ_ONCE(victims[i].mm);
+		struct mm_struct *mm = victims[i].mm;
 
 		/* No victim, or its memory has already been accounted as free */
 		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags))
@@ -127,6 +130,7 @@ static unsigned long pages_pending_free(void)
 
 		total += victims[i].pending;
 	}
+	spin_unlock_irqrestore(&victims_lock, flags);
 
 	return total;
 }
@@ -403,6 +407,7 @@ static void scan_and_kill(void)
 {
 	static struct mm_struct *drop_mms[MAX_VICTIMS];
 	int i, nr_to_kill, nr_found = 0;
+	unsigned long flags;
 	int num_drop;
 
 	/*
@@ -425,23 +430,22 @@ static void scan_and_kill(void)
 	 * overwritten and lost: nothing ever calls mmdrop(), mm_count never
 	 * reaches zero, and the mm_struct leaks.
 	 *
-	 * Getting here at all means the reaper is finished with these, so
-	 * every remaining entry has either been reaped or is being released by
-	 * exit_mmap() right now. Either way the reference is ours to drop.
-	 * xchg against the cmpxchg in simple_lmk_mm_freed() so exactly one of
-	 * the two sees a non-NULL pointer and therefore exactly one drop
-	 * happens.
-	 *
-	 * nr_victims is zeroed first so that simple_lmk_mm_freed() stops
-	 * matching against an array we are about to refill.
+	 * Sweep under victims_lock so simple_lmk_mm_freed() cannot race.
 	 */
+	num_drop = 0;
+	spin_lock_irqsave(&victims_lock, flags);
 	WRITE_ONCE(nr_victims, 0);
 	for (i = 0; i < MAX_VICTIMS; i++) {
-		struct mm_struct *mm = xchg(&victims[i].mm, NULL);
+		struct mm_struct *mm = victims[i].mm;
 
+		victims[i].mm = NULL;
 		if (mm)
-			mmdrop(mm);
+			drop_mms[num_drop++] = mm;
 	}
+	spin_unlock_irqrestore(&victims_lock, flags);
+
+	for (i = 0; i < num_drop; i++)
+		mmdrop(drop_mms[i]);
 
 	/* Populate the victims array with tasks sorted by adj and then size */
 	find_victims(&nr_found);
@@ -460,6 +464,7 @@ static void scan_and_kill(void)
 	 * reaper thread, and indicate that reclaim is active.
 	 */
 	num_drop = 0;
+	spin_lock_irqsave(&victims_lock, flags);
 	WRITE_ONCE(nr_victims, nr_to_kill);
 	WRITE_ONCE(reclaim_active, true);
 	for (i = 0; i < nr_to_kill; i++) {
@@ -470,6 +475,7 @@ static void scan_and_kill(void)
 			drop_mms[num_drop++] = mm;
 		}
 	}
+	spin_unlock_irqrestore(&victims_lock, flags);
 
 	for (i = 0; i < num_drop; i++)
 		mmdrop(drop_mms[i]);
@@ -563,7 +569,9 @@ static void scan_and_kill(void)
 	 * the fully-populated victims array and nr_victims before it observes
 	 * needs_reap == 1.
 	 */
+	spin_lock_irqsave(&victims_lock, flags);
 	sort(victims, nr_to_kill, sizeof(*victims), victim_cmp, victim_swap);
+	spin_unlock_irqrestore(&victims_lock, flags);
 	/* Pairs with wait_event_freezable in reaper thread */
 	smp_wmb();
 	atomic_set(&needs_reap, 1);
@@ -599,21 +607,27 @@ static int simple_lmk_reclaim_thread(void *data)
 static struct mm_struct *next_reap_victim(bool force)
 {
 	struct mm_struct *mm = NULL;
+	unsigned long flags;
 	bool should_retry = false;
 	int i;
 
 	/*
-	 * cmpxchg in simple_lmk_mm_freed() protects victims[i].mm. We take an
-	 * mmget reference so the mm struct can't be freed while we reap it.
+	 * Take an mmget reference under victims_lock so the mm struct can't be
+	 * freed by exit_mmap() while we reap it.
 	 */
 	for (i = 0; i < READ_ONCE(nr_victims); i++, mm = NULL) {
-		/* Check if this victim is alive and hasn't been reaped yet */
-		mm = READ_ONCE(victims[i].mm);
-		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags))
+		spin_lock_irqsave(&victims_lock, flags);
+		mm = victims[i].mm;
+		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags)) {
+			spin_unlock_irqrestore(&victims_lock, flags);
 			continue;
+		}
 
-		if (!mmget_not_zero(mm))
+		if (!mmget_not_zero(mm)) {
+			spin_unlock_irqrestore(&victims_lock, flags);
 			continue;
+		}
+		spin_unlock_irqrestore(&victims_lock, flags);
 
 		/*
 		 * Do a trylock so the reaper thread doesn't sleep. If the
@@ -625,6 +639,8 @@ static struct mm_struct *next_reap_victim(bool force)
 		 */
 		if (!mmap_read_trylock(mm)) {
 			if (force) {
+				struct mm_struct *drop_mm = NULL;
+
 				/*
 				 * Operate on the mm's flags and drop our mmgrab()
 				 * reference *before* mmput(). mmput() can drop the
@@ -635,8 +651,14 @@ static struct mm_struct *next_reap_victim(bool force)
 				 * after mmput() would therefore be a use-after-free.
 				 */
 				set_bit(MMF_OOM_SKIP, &mm->flags);
-				if (cmpxchg(&victims[i].mm, mm, NULL) == mm)
-					mmdrop(mm);
+				spin_lock_irqsave(&victims_lock, flags);
+				if (victims[i].mm == mm) {
+					victims[i].mm = NULL;
+					drop_mm = mm;
+				}
+				spin_unlock_irqrestore(&victims_lock, flags);
+				if (drop_mm)
+					mmdrop(drop_mm);
 			} else {
 				should_retry = true;
 			}
@@ -762,6 +784,7 @@ static int simple_lmk_reaper_thread(void *data)
 
 void simple_lmk_mm_freed(struct mm_struct *mm)
 {
+	unsigned long flags;
 	int i;
 	bool matched = false;
 
@@ -783,19 +806,18 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 	 * its own reference at the end without ours ever being dropped,
 	 * mm_count never reaches zero, and the mm_struct is leaked outright.
 	 *
-	 * Scanning is bounded by MAX_VICTIMS against a cacheline-aligned
-	 * array and runs once per process exit, so the search is not worth a
-	 * correctness hazard. Every path that drops a victim's reference
-	 * clears its slot first, so stale entries cannot be matched.
+	 * Search and clear under victims_lock so concurrent array updates,
+	 * reap inspection, and sorting do not race.
 	 */
+	spin_lock_irqsave(&victims_lock, flags);
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
-		if (READ_ONCE(victims[i].mm) == mm) {
-			if (cmpxchg(&victims[i].mm, mm, NULL) == mm) {
-				matched = true;
-				break;
-			}
+		if (victims[i].mm == mm) {
+			victims[i].mm = NULL;
+			matched = true;
+			break;
 		}
 	}
+	spin_unlock_irqrestore(&victims_lock, flags);
 
 	if (matched)
 		mmdrop(mm);
