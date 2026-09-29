@@ -79,17 +79,20 @@ void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 
 /*
  * Returns true if @c is a CPU with the maximum possible original capacity and
- * there's only one such CPU in the system (i.e., if @c is the prime CPU).
+ * is part of a small high-power cluster (e.g. 1 or 2 prime cores on asymmetric SoCs).
  */
 static __always_inline
 bool cass_prime_cpu(const struct cass_cpu_cand *c)
 {
 	/*
-	 * On arm64, the prime CPU is always the last CPU. If it doesn't have
-	 * the same original capacity as the prior CPU, then it is prime.
+	 * On asymmetric arm64 SoCs, prime cores have maximum original capacity
+	 * while little cores have lower capacity. Guard against out-of-bounds
+	 * array accesses when nr_cpu_ids < 2, and identify prime cores on both
+	 * single-prime (e.g. Tensor G3/G4) and dual-prime (e.g. GS101 dual X1) SoCs.
 	 */
-	return c->cpu == nr_cpu_ids - 1 &&
-	       arch_scale_cpu_capacity(nr_cpu_ids - 2) != SCHED_CAPACITY_SCALE;
+	return nr_cpu_ids > 1 && c->cap_orig == SCHED_CAPACITY_SCALE &&
+	       arch_scale_cpu_capacity(0) < SCHED_CAPACITY_SCALE &&
+	       (nr_cpu_ids <= 2 || arch_scale_cpu_capacity(nr_cpu_ids - 3) != SCHED_CAPACITY_SCALE);
 }
 
 /* Returns true if @a is a better CPU than @b */
