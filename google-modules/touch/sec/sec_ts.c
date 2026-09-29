@@ -4832,6 +4832,14 @@ static int sec_ts_probe(struct spi_device *client)
 		}
 	}
 
+	/*
+	 * This *must* be done before request_threaded_irq is called.
+	 * Otherwise, if an interrupt is received before request is added,
+	 * but after the interrupt has been subscribed to, pm_qos_req
+	 * may be accessed before initialization in the interrupt handler.
+	 */
+	ts->pm_qos_req.type = PM_QOS_REQ_AFFINE_IRQ;
+	ts->pm_qos_req.irq = client->irq;
 	cpu_latency_qos_add_request(&ts->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 
 	ts->ignore_charger_nb = 0;
