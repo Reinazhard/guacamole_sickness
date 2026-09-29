@@ -122,15 +122,13 @@ static bool sugov_update_next_freq(struct sugov_policy *sg_policy, u64 time,
 	if (sg_policy->need_freq_update) {
 		sg_policy->need_freq_update = false;
 		/*
-		 * The policy limits have changed, but if the return value of
-		 * cpufreq_driver_resolve_freq() after applying the new limits
-		 * is still equal to the previously selected frequency, the
-		 * driver callback need not be invoked unless the driver
-		 * specifically wants that to happen on every update of the
-		 * policy limits.
+		 * Policy limits have changed. Bypass downward rate limiting to
+		 * commit thermal clamps immediately.
 		 */
-		if (cpufreq_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS))
-			goto must_update;
+		if (next_freq == sg_policy->next_freq &&
+		    !cpufreq_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS))
+			return false;
+		goto must_update;
 	}
 
 	/*
@@ -146,8 +144,11 @@ static bool sugov_update_next_freq(struct sugov_policy *sg_policy, u64 time,
 	 */
 	if (next_freq == sg_policy->next_freq ||
 	    (next_freq < sg_policy->next_freq &&
-	     sugov_should_rate_limit(sg_policy, time)))
+	     sugov_should_rate_limit(sg_policy, time))) {
+		/* Reset cached raw frequency so next update is not falsely skipped */
+		sg_policy->cached_raw_freq = 0;
 		return false;
+	}
 
 must_update:
 	sg_policy->next_freq = next_freq;
@@ -215,10 +216,16 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 
 	sg_policy->cached_raw_freq = freq;
 	l_freq = cpufreq_driver_resolve_freq(policy, freq);
+	if (!policy->freq_table)
+		return l_freq;
+
 	idx = cpufreq_frequency_table_target(policy, freq, policy->min, policy->max, CPUFREQ_RELATION_H);
+	if (idx < 0)
+		return l_freq;
+
 	h_freq = policy->freq_table[idx].frequency;
 	h_freq = clamp(h_freq, policy->min, policy->max);
-	if (l_freq <= h_freq || l_freq == policy->min)
+	if (l_freq <= h_freq || l_freq == policy->min || freq <= h_freq)
 		return l_freq;
 
 	/*
@@ -460,9 +467,14 @@ static void sugov_update_single_perf(struct update_util_data *hook, u64 time,
 	if (!sugov_update_single_common(sg_cpu, time, max_cap, flags))
 		return;
 
+	if (sg_cpu->util < sg_cpu->sg_policy->next_freq &&
+	    sugov_should_rate_limit(sg_cpu->sg_policy, time))
+		return;
+
 	cpufreq_driver_adjust_perf(sg_cpu->cpu, sg_cpu->bw_min,
 				   sg_cpu->util, max_cap);
 
+	sg_cpu->sg_policy->next_freq = sg_cpu->util;
 	sg_cpu->sg_policy->last_freq_update_time = time;
 }
 
