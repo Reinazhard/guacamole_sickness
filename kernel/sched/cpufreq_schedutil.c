@@ -366,12 +366,17 @@ static unsigned long sugov_iowait_apply(struct sugov_cpu *sg_cpu, u64 time,
 
 	if (!sg_cpu->iowait_boost_pending) {
 		/*
-		 * No boost pending; reduce the boost value.
+		 * No boost pending; reduce the boost value only if at least
+		 * one tick has elapsed since the last update on this CPU,
+		 * preventing rapid sibling core wakeups in shared policies
+		 * from prematurely eroding the boost.
 		 */
-		sg_cpu->iowait_boost >>= 1;
-		if (sg_cpu->iowait_boost < IOWAIT_BOOST_MIN) {
-			sg_cpu->iowait_boost = 0;
-			return 0;
+		if (time - sg_cpu->last_update >= TICK_NSEC) {
+			sg_cpu->iowait_boost >>= 1;
+			if (sg_cpu->iowait_boost < IOWAIT_BOOST_MIN) {
+				sg_cpu->iowait_boost = 0;
+				return 0;
+			}
 		}
 	}
 
