@@ -8416,12 +8416,18 @@ static bool task_is_unity_game(struct task_struct *p)
 	struct task_struct *t;
 	bool ret = false;
 
+	if ((p->flags & PF_KTHREAD) || !p->mm)
+		return false;
+
 	/* Filter for Android user applications (i.e., positive adj) */
 	if (p->signal->oom_score_adj >= 0) {
 		rcu_read_lock();
 		for_each_thread(p, t) {
-			/* Check for a UnityMain thread in the thread group */
-			if (!strcmp(t->comm, "UnityMain")) {
+			char comm[TASK_COMM_LEN];
+
+			/* Use get_task_comm to avoid torn reads during rename */
+			get_task_comm(comm, t);
+			if (!strcmp(comm, "UnityMain")) {
 				ret = true;
 				break;
 			}
@@ -8450,20 +8456,6 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 	get_task_struct(p);
 	rcu_read_unlock();
 
-	/*
-	 * Unity-based games like to shoot themselves in the foot by setting a
-	 * nonsense CPU affinity, restricting the game to a narrow set of CPU
-	 * cores that it thinks are the "big" cores in a heterogeneous CPU. It
-	 * assumes that CPUs only have two performance domains (clusters), and
-	 * therefore royally mucks up games' CPU affinities on CPUs which have
-	 * more than two performance domains.
-	 *
-	 * Check if the target task is part of a Unity-based game and silently
-	 * ignore the setaffinity request so that it can't sabotage itself.
-	 */
-	if (task_is_unity_game(p))
-		goto out_put_task;
-
 	if (p->flags & PF_NO_SETAFFINITY) {
 		retval = -EINVAL;
 		goto out_put_task;
@@ -8484,6 +8476,21 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 		goto out_put_task;
 	retval = security_task_setscheduler(p);
 	if (retval)
+		goto out_put_task;
+
+	/*
+	 * Unity-based games like to shoot themselves in the foot by setting a
+	 * nonsense CPU affinity, restricting the game to a narrow set of CPU
+	 * cores that it thinks are the "big" cores in a heterogeneous CPU. It
+	 * assumes that CPUs only have two performance domains (clusters), and
+	 * therefore royally mucks up games' CPU affinities on CPUs which have
+	 * more than two performance domains.
+	 *
+	 * Check if the caller is part of a Unity-based game self-affining and
+	 * silently ignore the request. Gated after permission checks and
+	 * restricted to p == current to prevent cross-UID security oracles.
+	 */
+	if (p == current && task_is_unity_game(p))
 		goto out_put_task;
 
 	retval = __sched_setaffinity(p, in_mask);
