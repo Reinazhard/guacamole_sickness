@@ -564,10 +564,11 @@ static u64 update_triggers(struct psi_group *group, u64 now)
 				wake_up_interruptible(t->ext_wq);
 			else
 				wake_up_interruptible(&t->event_wait);
+
+			t->last_event_time = now;
+			/* Reset threshold breach flag once event got generated */
+			t->pending_event = false;
 		}
-		t->last_event_time = now;
-		/* Reset threshold breach flag once event got generated */
-		t->pending_event = false;
 	}
 
 	trace_android_vh_psi_group(group);
@@ -1364,6 +1365,8 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	t_ext = container_of(t, struct psi_trigger_ext, trigger);
 	if (t_ext->of)
 		kernfs_notify(t_ext->of->kn);
+	else if (t->ext_wq)
+		wake_up_interruptible(t->ext_wq);
 	else
 		wake_up_interruptible(&t->event_wait);
 
@@ -1407,9 +1410,10 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	 */
 	if (task_to_destroy) {
 		/*
-		 * After the RCU grace period has expired, the worker
-		 * can no longer be found through group->poll_task.
+		 * Ensure any re-armed timer from concurrent RCU readers
+		 * is synchronously canceled before stopping worker.
 		 */
+		del_timer_sync(&group->poll_timer);
 		kthread_stop(task_to_destroy);
 		atomic_set(&group->poll_scheduled, 0);
 	}
