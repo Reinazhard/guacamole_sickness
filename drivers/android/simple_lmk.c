@@ -531,7 +531,7 @@ static void scan_and_kill(void)
 		rcu_read_unlock();
 
 		/* Allow the victim to run on any CPU. This won't schedule. */
-		set_cpus_allowed_ptr(vtsk, cpu_all_mask);
+		set_cpus_allowed_ptr(vtsk, cpu_possible_mask);
 
 		/* Store the number of anon pages to sort victims for reaping */
 		victim->score = get_mm_counter(mm, MM_ANONPAGES);
