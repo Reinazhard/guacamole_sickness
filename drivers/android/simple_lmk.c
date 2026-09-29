@@ -709,16 +709,25 @@ static void reap_victims(void)
 			continue;
 		}
 
-		/* Successfully acquired mmap_lock; reset retry state */
-		retry_deadline = 0;
-		force = false;
-
 		/*
-		 * Try to reap the victim. Mark it as reaped with MMF_OOM_SKIP
-		 * if successful.
+		 * A failed reap (e.g. a non-blocking MMU notifier returned
+		 * -EAGAIN) is retried until the deadline expires, then given
+		 * up on to avoid spinning at RT priority.
 		 */
-		if (__oom_reap_task_mm(mm))
+		if (__oom_reap_task_mm(mm)) {
 			set_bit(MMF_OOM_SKIP, &mm->flags);
+			retry_deadline = 0;
+			force = false;
+		} else {
+			if (!retry_deadline) {
+				retry_deadline = jiffies + REAP_RETRY_JIFFIES;
+			} else if (time_after(jiffies, retry_deadline)) {
+				set_bit(MMF_OOM_SKIP, &mm->flags);
+				retry_deadline = 0;
+				force = false;
+			}
+			schedule_timeout_uninterruptible(1);
+		}
 		mmap_read_unlock(mm);
 		mmput(mm);
 
