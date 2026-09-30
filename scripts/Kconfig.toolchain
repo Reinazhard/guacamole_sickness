@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Toolchain capability checks.
+#
+# These used to be $(call cc-option,...) / $(call ld-option,...) probes in the
+# top-level Makefile. A probe shells out to the compiler, and the top-level
+# Makefile is re-parsed by every sub-make, so each flag was re-probed many
+# times per build. Asking the question here instead evaluates it once, when the
+# configuration is generated, and the answer is then read from .config as a
+# plain symbol.
+
+config CC_HAS_ZERO_INIT_PADDING_BITS
+	def_bool $(cc-option,-fzero-init-padding-bits=all)
+
+config CC_HAS_DIAGNOSTICS_SHOW_CONTEXT
+	def_bool $(cc-option,-fdiagnostics-show-context=2)
+
+config CC_HAS_DIAGNOSTICS_SHOW_INLINING_CHAIN
+	def_bool $(cc-option,-fdiagnostics-show-inlining-chain)
+
+config CC_HAS_STRICT_FLEX_ARRAYS
+	def_bool $(cc-option,-fstrict-flex-arrays=3)
+
+# gcc-10 renamed --param=allow-store-data-races=0 to -fno-allow-store-data-races
+config CC_HAS_ALLOW_STORE_DATA_RACES_PARAM
+	def_bool CC_IS_GCC && $(cc-option,--param=allow-store-data-races=0)
+
+config CC_HAS_NO_ALLOW_STORE_DATA_RACES
+	def_bool CC_IS_GCC && $(cc-option,-fno-allow-store-data-races)
+
+config CC_HAS_MNOP_MCOUNT
+	def_bool $(cc-option,-mnop-mcount)
+
+# s390-linux-gnu-gcc did not support -mfentry until gcc-9.
+config CC_HAS_MFENTRY
+	def_bool $(cc-option,-mfentry)
+
+config LD_HAS_NO_WARN_RWX_SEGMENTS
+	def_bool $(ld-option,--no-warn-rwx-segments)
+
+config CC_HAS_WCAST_FUNCTION_TYPE
+	def_bool $(cc-option,-Wcast-function-type)
+
+config CC_HAS_WERROR_INCOMPATIBLE_POINTER_TYPES
+	def_bool $(cc-option,-Werror=incompatible-pointer-types)
+
+config CC_HAS_WERROR_DESIGNATED_INIT
+	def_bool $(cc-option,-Werror=designated-init)
+
+# Warning flags probed by scripts/Makefile.extrawarn. It is re-parsed in every
+# directory, so these were among the most repeatedly-evaluated probes.
+config CC_HAS_WNO_UNUSED_BUT_SET_VARIABLE
+	def_bool $(cc-option,-Wunused-but-set-variable)
+
+config CC_HAS_WNO_UNUSED_CONST_VARIABLE
+	def_bool $(cc-option,-Wunused-const-variable)
+
+config CC_HAS_WNO_PACKED_NOT_ALIGNED
+	def_bool $(cc-option,-Wpacked-not-aligned)
+
+config CC_HAS_WNO_STRINGOP_TRUNCATION
+	def_bool $(cc-option,-Wstringop-truncation)
+
+# cc-disable-warning probes in scripts/Makefile.extrawarn that run on every
+# parse because they sit outside the W= guards.
+config CC_HAS_WPOINTER_TO_ENUM_CAST
+	def_bool $(cc-option,-Wpointer-to-enum-cast)
+
+config CC_HAS_WUNALIGNED_ACCESS
+	def_bool $(cc-option,-Wunaligned-access)
+
+config CC_HAS_WCAST_FUNCTION_TYPE_STRICT
+	def_bool $(cc-option,-Wcast-function-type-strict)
+
+# Always accepted by both gcc and clang, but the value embeds $(srctree), so it
+# stays a Makefile expansion rather than a fixed flag.
+config CC_HAS_FMACRO_PREFIX_MAP
+	def_bool $(cc-option,-fmacro-prefix-map=/=)
+
+# arch/arm64/Makefile is included by the top-level Makefile, which every
+# sub-make re-parses, so these are probed many times per build.
+config CC_HAS_MABI_LP64
+	def_bool $(cc-option,-mabi=lp64)
+
+config CC_HAS_MBRANCH_PROTECTION_NONE
+	def_bool $(cc-option,-mbranch-protection=none)
+
+config LD_HAS_NO_APPLY_DYNAMIC_RELOCS
+	def_bool $(ld-option,--no-apply-dynamic-relocs)
+
+# cc-disable-warning probes in the top-level Makefile. Each runs a compiler
+# invocation to decide whether to append -Wno-<warning>.
+config CC_HAS_WFRAME_ADDRESS
+	def_bool $(cc-option,-Wframe-address)
+
+config CC_HAS_WFORMAT_TRUNCATION
+	def_bool $(cc-option,-Wformat-truncation)
+
+config CC_HAS_WFORMAT_OVERFLOW
+	def_bool $(cc-option,-Wformat-overflow)
+
+config CC_HAS_WADDRESS_OF_PACKED_MEMBER
+	def_bool $(cc-option,-Waddress-of-packed-member)
+
+config CC_HAS_WDEFAULT_CONST_INIT_UNSAFE
+	def_bool $(cc-option,-Wdefault-const-init-unsafe)
+
+config CC_HAS_WDANGLING_POINTER
+	def_bool $(cc-option,-Wdangling-pointer)
+
+config CC_HAS_WRESTRICT
+	def_bool $(cc-option,-Wrestrict)
+
+config CC_HAS_WSTRINGOP_OVERFLOW
+	def_bool $(cc-option,-Wstringop-overflow)

@@ -17,7 +17,7 @@ ifeq ($(CONFIG_RELOCATABLE), y)
 # for relative relocs, since this leads to better Image compression
 # with the relocation offsets always being zero.
 LDFLAGS_vmlinux		+= -shared -Bsymbolic -z notext \
-			$(call ld-option, --no-apply-dynamic-relocs)
+			$(if $(CONFIG_LD_HAS_NO_APPLY_DYNAMIC_RELOCS),--no-apply-dynamic-relocs)
 endif
 
 ifeq ($(CONFIG_ARM64_ERRATUM_843419),y)
@@ -41,8 +41,8 @@ KBUILD_CFLAGS	+= -mgeneral-regs-only	\
 KBUILD_CFLAGS	+= $(call cc-disable-warning, psabi)
 KBUILD_AFLAGS	+= $(compat_vdso)
 
-KBUILD_CFLAGS	+= $(call cc-option,-mabi=lp64)
-KBUILD_AFLAGS	+= $(call cc-option,-mabi=lp64)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_MABI_LP64),-mabi=lp64)
+KBUILD_AFLAGS	+= $(if $(CONFIG_CC_HAS_MABI_LP64),-mabi=lp64)
 
 # Avoid generating .eh_frame* sections.
 ifneq ($(CONFIG_UNWIND_TABLES),y)
@@ -70,7 +70,7 @@ endif
 
 # Ensure that if the compiler supports branch protection we default it
 # off, this will be overridden if we are using branch protection.
-branch-prot-flags-y += $(call cc-option,-mbranch-protection=none)
+branch-prot-flags-y += $(if $(CONFIG_CC_HAS_MBRANCH_PROTECTION_NONE),-mbranch-protection=none)
 
 ifeq ($(CONFIG_ARM64_PTR_AUTH_KERNEL),y)
 branch-prot-flags-$(CONFIG_CC_HAS_SIGN_RETURN_ADDRESS) := -msign-return-address=all
