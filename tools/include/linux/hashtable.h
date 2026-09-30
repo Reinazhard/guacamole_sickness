@@ -21,6 +21,15 @@
 #define DECLARE_HASHTABLE(name, bits)                                   	\
 	struct hlist_head name[1 << (bits)]
 
+/*
+ * Like DEFINE_HASHTABLE(), but takes the number of buckets rather than its
+ * base-2 logarithm. "size" must be a power of two. It expands to a single
+ * declaration so that "static HASHTABLE_DEFINE()" reads correctly, which
+ * rules out a _Static_assert() here.
+ */
+#define HASHTABLE_DEFINE(name, size)						\
+	DEFINE_HASHTABLE(name, ilog2(size))
+
 #define HASH_SIZE(name) (ARRAY_SIZE(name))
 #define HASH_BITS(name) ilog2(HASH_SIZE(name))
 
