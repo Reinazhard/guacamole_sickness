@@ -855,10 +855,10 @@ endif # may-sync-config
 endif # need-config
 
 KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
-KBUILD_CFLAGS	+= $(call cc-disable-warning,frame-address,)
-KBUILD_CFLAGS	+= $(call cc-disable-warning, format-truncation)
-KBUILD_CFLAGS	+= $(call cc-disable-warning, format-overflow)
-KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_WFRAME_ADDRESS),-Wno-frame-address)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_WFORMAT_TRUNCATION),-Wno-format-truncation)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_WFORMAT_OVERFLOW),-Wno-format-overflow)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_WADDRESS_OF_PACKED_MEMBER),-Wno-address-of-packed-member)
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
@@ -880,8 +880,8 @@ KBUILD_RUSTFLAGS += -Coverflow-checks=$(if $(CONFIG_RUST_OVERFLOW_CHECKS),y,n)
 ifdef CONFIG_CC_IS_GCC
 # gcc-10 renamed --param=allow-store-data-races=0 to
 # -fno-allow-store-data-races.
-KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
-KBUILD_CFLAGS	+= $(call cc-option,-fno-allow-store-data-races)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_ALLOW_STORE_DATA_RACES_PARAM),--param=allow-store-data-races=0)
+KBUILD_CFLAGS	+= $(if $(CONFIG_CC_HAS_NO_ALLOW_STORE_DATA_RACES),-fno-allow-store-data-races)
 endif
 
 ifdef CONFIG_READABLE_ASM
@@ -923,7 +923,7 @@ KBUILD_CFLAGS += -Wno-gnu
 # disabled with this same switch, there should not be too much coverage lost
 # because -Wuninitialized will still flag when an uninitialized const variable
 # is used.
-KBUILD_CFLAGS += $(call cc-disable-warning, default-const-init-unsafe)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WDEFAULT_CONST_INIT_UNSAFE),-Wno-default-const-init-unsafe)
 else
 
 # gcc inanely warns about local variables called 'main'
@@ -932,11 +932,11 @@ endif
 
 # These warnings generated too much noise in a regular build.
 # Use make W=1 to enable them (see scripts/Makefile.extrawarn)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_UNUSED_BUT_SET_VARIABLE),-Wno-unused-but-set-variable)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_UNUSED_CONST_VARIABLE),-Wno-unused-const-variable)
 
 # These result in bogus false positives
-KBUILD_CFLAGS += $(call cc-disable-warning, dangling-pointer)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WDANGLING_POINTER),-Wno-dangling-pointer)
 
 ifdef CONFIG_FRAME_POINTER
 KBUILD_CFLAGS	+= -fno-omit-frame-pointer -fno-optimize-sibling-calls
@@ -969,10 +969,12 @@ endif
 endif
 
 # Explicitly clear padding bits during variable initialization
-KBUILD_CFLAGS += $(call cc-option,-fzero-init-padding-bits=all)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_ZERO_INIT_PADDING_BITS),-fzero-init-padding-bits=all)
 
 # While VLAs have been removed, GCC produces unreachable stack probes
 # for the randomize_kstack_offset feature. Disable it for all compilers.
+# Probed here rather than in Kconfig as clang only accepts it for some
+# sub-targets, so the architecture's flags matter.
 KBUILD_CFLAGS	+= $(call cc-option, -fno-stack-clash-protection)
 
 # Clear used registers at func exit (to reduce data lifetime and ROP gadgets).
@@ -984,7 +986,7 @@ ifdef CONFIG_FUNCTION_TRACER
 ifdef CONFIG_FTRACE_MCOUNT_USE_CC
   CC_FLAGS_FTRACE	+= -mrecord-mcount
   ifdef CONFIG_HAVE_NOP_MCOUNT
-    ifeq ($(call cc-option-yn, -mnop-mcount),y)
+    ifdef CONFIG_CC_HAS_MNOP_MCOUNT
       CC_FLAGS_FTRACE	+= -mnop-mcount
       CC_FLAGS_USING	+= -DCC_USING_NOP_MCOUNT
     endif
@@ -1001,7 +1003,7 @@ ifdef CONFIG_FTRACE_MCOUNT_USE_RECORDMCOUNT
 endif
 ifdef CONFIG_HAVE_FENTRY
   # s390-linux-gnu-gcc did not support -mfentry until gcc-9.
-  ifeq ($(call cc-option-yn, -mfentry),y)
+  ifdef CONFIG_CC_HAS_MFENTRY
     CC_FLAGS_FTRACE	+= -mfentry
     CC_FLAGS_USING	+= -DCC_USING_FENTRY
   endif
@@ -1085,16 +1087,16 @@ KBUILD_CFLAGS += -Wno-pointer-sign
 # In order to make sure new function cast mismatches are not introduced
 # in the kernel (to avoid tripping CFI checking), the kernel should be
 # globally built with -Wcast-function-type.
-KBUILD_CFLAGS += $(call cc-option, -Wcast-function-type)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WCAST_FUNCTION_TYPE),-Wcast-function-type)
 
 # disable stringop warnings in gcc 8+
-KBUILD_CFLAGS += $(call cc-disable-warning, stringop-truncation)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_STRINGOP_TRUNCATION),-Wno-stringop-truncation)
 
 # We'll want to enable this eventually, but it's not going away for 5.7 at least
-KBUILD_CFLAGS += $(call cc-disable-warning, stringop-overflow)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WSTRINGOP_OVERFLOW),-Wno-stringop-overflow)
 
 # Another good warning that we'll want to enable eventually
-KBUILD_CFLAGS += $(call cc-disable-warning, restrict)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WRESTRICT),-Wno-restrict)
 
 # Enabled with W=2, disabled by default as noisy
 ifdef CONFIG_CC_IS_GCC
@@ -1130,16 +1132,16 @@ endif
 KBUILD_CFLAGS   += -Werror=date-time
 
 # enforce correct pointer usage
-KBUILD_CFLAGS   += $(call cc-option,-Werror=incompatible-pointer-types)
+KBUILD_CFLAGS   += $(if $(CONFIG_CC_HAS_WERROR_INCOMPATIBLE_POINTER_TYPES),-Werror=incompatible-pointer-types)
 
 # Require designated initializers for all marked structures
-KBUILD_CFLAGS   += $(call cc-option,-Werror=designated-init)
+KBUILD_CFLAGS   += $(if $(CONFIG_CC_HAS_WERROR_DESIGNATED_INIT),-Werror=designated-init)
 
 # Ensure compilers do not transform certain loops into calls to wcslen()
 KBUILD_CFLAGS += -fno-builtin-wcslen
 
 # change __FILE__ to the relative path from the srctree
-KBUILD_CPPFLAGS += $(call cc-option,-fmacro-prefix-map=$(srctree)/=)
+KBUILD_CPPFLAGS += $(if $(CONFIG_CC_HAS_FMACRO_PREFIX_MAP),-fmacro-prefix-map=$(srctree)/=)
 
 # include additional Makefiles when needed
 include-y			:= scripts/Makefile.extrawarn
@@ -1169,7 +1171,7 @@ LDFLAGS_vmlinux += --build-id=sha1
 
 KBUILD_LDFLAGS	+= -z noexecstack
 ifeq ($(CONFIG_LD_IS_BFD),y)
-KBUILD_LDFLAGS	+= $(call ld-option,--no-warn-rwx-segments)
+KBUILD_LDFLAGS	+= $(if $(CONFIG_LD_HAS_NO_WARN_RWX_SEGMENTS),--no-warn-rwx-segments)
 endif
 
 ifeq ($(CONFIG_STRIP_ASM_SYMS),y)
@@ -1192,6 +1194,9 @@ KBUILD_USERLDFLAGS += $(filter -m32 -m64 --target=%, $(KBUILD_CPPFLAGS) $(KBUILD
 
 # userspace programs are linked via the compiler, use the correct linker
 ifdef CONFIG_CC_IS_CLANG
+# Probed here rather than in Kconfig: --ld-path is a link-time option, and
+# clang rejects it under -Werror when only compiling, so cc-option in the
+# Kconfig context cannot see it.
 KBUILD_USERLDFLAGS += $(call cc-option, --ld-path=$(LD))
 endif
 
