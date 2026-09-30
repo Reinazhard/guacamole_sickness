@@ -87,6 +87,43 @@ static inline u32 hash_ptr(const void *ptr, unsigned int bits)
 	return hash_long((unsigned long)ptr, bits);
 }
 
+/*
+ * String hashing, taken from include/linux/stringhash.h, which the host-side
+ * build cannot include. Copied rather than shared so that the guest and host
+ * definitions cannot drift; depcheck() only needs a well-spread hash, not the
+ * dcache's exact one.
+ */
+
+/* Hash courtesy of the R5 hash in reiserfs modulo sign bits */
+#define init_name_hash(salt)		(unsigned long)(salt)
+
+/* partial hash update function. Assume roughly 4 bits per character */
+static inline unsigned long
+partial_name_hash(unsigned long c, unsigned long prevhash)
+{
+	return (prevhash + (c << 4) + (c >> 4)) * 11;
+}
+
+/*
+ * Finally: cut down the number of bits to a int value (and try to avoid
+ * losing bits).
+ */
+static inline unsigned int end_name_hash(unsigned long hash)
+{
+	return hash_long(hash, 32);
+}
+
+/* Compute the hash for a name string. */
+static inline unsigned int hash_str(const char *name)
+{
+	unsigned long hash = init_name_hash(0);
+
+	while (*name)
+		hash = partial_name_hash(*name++, hash);
+
+	return end_name_hash(hash);
+}
+
 /* This really should be called fold32_ptr; it does no hashing to speak of. */
 static inline u32 hash32_ptr(const void *ptr)
 {

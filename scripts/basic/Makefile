@@ -2,7 +2,13 @@
 #
 # fixdep: used to generate dependency information during build process
 
-hostprogs-always-y	+= fixdep
+hostprogs-always-y	+= fixdep depcheck
+
+# depcheck uses the host-side hash and hashtable helpers. This tree does not put
+# tools/include on the default host include path the way newer ones do, and the
+# plain <hash.h> spelling depcheck.c uses needs tools/include/linux, so add it
+# with -idirafter: it must not shadow the system <string.h> with the kernel's.
+HOSTCFLAGS_depcheck.o	+= -idirafter $(srctree)/tools/include/linux -I$(srctree)/tools/include
 
 # randstruct: the seed is needed before building the gcc-plugin or
 # before running a Clang kernel build.
