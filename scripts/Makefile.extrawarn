@@ -28,10 +28,10 @@ KBUILD_CFLAGS += -Wmissing-format-attribute
 KBUILD_CFLAGS += -Wmissing-prototypes
 KBUILD_CFLAGS += -Wold-style-definition
 KBUILD_CFLAGS += -Wmissing-include-dirs
-KBUILD_CFLAGS += $(call cc-option, -Wunused-but-set-variable)
-KBUILD_CFLAGS += $(call cc-option, -Wunused-const-variable)
-KBUILD_CFLAGS += $(call cc-option, -Wpacked-not-aligned)
-KBUILD_CFLAGS += $(call cc-option, -Wstringop-truncation)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_UNUSED_BUT_SET_VARIABLE),-Wunused-but-set-variable)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_UNUSED_CONST_VARIABLE),-Wunused-const-variable)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_PACKED_NOT_ALIGNED),-Wpacked-not-aligned)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WNO_STRINGOP_TRUNCATION),-Wstringop-truncation)
 # The following turn off the warnings enabled by -Wextra
 KBUILD_CFLAGS += -Wno-missing-field-initializers
 KBUILD_CFLAGS += -Wno-sign-compare
@@ -65,10 +65,10 @@ KBUILD_CFLAGS += -Wformat-insufficient-args
 endif
 endif
 KBUILD_CFLAGS += -Wno-sign-compare
-KBUILD_CFLAGS += $(call cc-disable-warning, pointer-to-enum-cast)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WPOINTER_TO_ENUM_CAST),-Wno-pointer-to-enum-cast)
 KBUILD_CFLAGS += -Wno-tautological-constant-out-of-range-compare
-KBUILD_CFLAGS += $(call cc-disable-warning, unaligned-access)
-KBUILD_CFLAGS += $(call cc-disable-warning, cast-function-type-strict)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WUNALIGNED_ACCESS),-Wno-unaligned-access)
+KBUILD_CFLAGS += $(if $(CONFIG_CC_HAS_WCAST_FUNCTION_TYPE_STRICT),-Wno-cast-function-type-strict)
 KBUILD_CFLAGS += -Wno-enum-compare-conditional
 endif
 
