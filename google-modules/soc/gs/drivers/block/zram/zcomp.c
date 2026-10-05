@@ -319,6 +319,8 @@ int zcomp_recompress(struct zcomp *comp, u32 index, struct page *page,
 void zcomp_destroy(struct zcomp *comp)
 {
 	comp->op->destroy(comp);
+	/* @comp was allocated by zcomp_create(); @scratch is the template's */
+	kfree(comp);
 }
 
 /*
@@ -332,15 +334,34 @@ void zcomp_destroy(struct zcomp *comp)
 struct zcomp *zcomp_create(const char *algo_name, struct zcomp_params *params,
 			   struct zram *zram, u32 prio)
 {
+	const struct zcomp *tmpl;
 	struct zcomp *comp;
 	int error;
 
 	down_read(&zcomp_rwsem);
-	comp = find_zcomp(algo_name);
-	if (!comp) {
+	tmpl = find_zcomp(algo_name);
+	if (!tmpl) {
 		up_read(&zcomp_rwsem);
 		return ERR_PTR(-EINVAL);
 	}
+
+	/*
+	 * Allocate a per-instance zcomp. The object in zcomp_list is only a
+	 * template: it is shared by every device and priority that selects
+	 * this algorithm. Returning it directly, as the previous code did,
+	 * made all of them alias one instance, so a second zcomp_create()
+	 * overwrote the first device's params/prio/zram/private and the
+	 * backend contexts, and destroy then tore down the wrong device.
+	 */
+	comp = kzalloc(sizeof(*comp), GFP_KERNEL);
+	if (!comp) {
+		up_read(&zcomp_rwsem);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	comp->op = tmpl->op;
+	strscpy(comp->algo_name, tmpl->algo_name, sizeof(comp->algo_name));
+	comp->scratch = tmpl->scratch;
 
 	/* assign the params before comp->op->create */
 	comp->params = params;
@@ -349,6 +370,7 @@ struct zcomp *zcomp_create(const char *algo_name, struct zcomp_params *params,
 	error = comp->op->create(comp, algo_name);
 	if (error) {
 		up_read(&zcomp_rwsem);
+		kfree(comp);
 		return ERR_PTR(error);
 	}
 
