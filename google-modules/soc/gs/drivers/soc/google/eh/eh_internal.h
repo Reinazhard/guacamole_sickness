@@ -79,6 +79,14 @@ struct eh_device {
 	 */
 	bool removed;
 
+	/*
+	 * Set while suspended. Admission is refused rather than accepted, so a
+	 * request that arrives in the window between suspend's in-flight check
+	 * and the clock gate is not discarded by eh_compr_fifo_init()'s index
+	 * reset on resume (which would strand its submitter).
+	 */
+	bool suspended;
+
 	/* parent device */
 	struct device *dev;
 
