@@ -22,6 +22,20 @@ static void zram_read_page_end_io(struct page *page)
 	folio_unlock(folio);
 }
 
+/*
+ * The hook fires for every block-device swap read, not just zram
+ * (cpq/mm/page_io.c:swap_readpage_bdev_sync). private_data is only a
+ * struct zram * for zram disks, so the device has to be identified before
+ * it is dereferenced -- otherwise a read of a real swap partition, loop or
+ * dm device would treat its private_data as a struct zram and corrupt
+ * memory. The driver registers its disks as "zramN".
+ */
+static inline bool zram_bdev_is_zram(struct block_device *bdev)
+{
+	return bdev && bdev->bd_disk &&
+	       !strncmp(bdev->bd_disk->disk_name, "zram", 4);
+}
+
 static void rvh_swap_readpage_bdev_sync(void *data, struct block_device *bdev,
 					sector_t sector, struct page *page,
 					bool *read)
@@ -33,8 +47,15 @@ static void rvh_swap_readpage_bdev_sync(void *data, struct block_device *bdev,
 	if (PageTransHuge(page))
 		return;
 
+	if (!zram_bdev_is_zram(bdev))
+		return;
+
 	zram = bdev->bd_disk->private_data;
 	index = sector >> SECTORS_PER_PAGE_SHIFT;
+
+	/* Guard against a stale/renamed bdev giving an out-of-range index */
+	if (!zram || index >= (zram->disksize >> PAGE_SHIFT))
+		return;
 
 	ret = zram_read_page(zram, page, index, NULL);
 	/* fallback to bio path for ZRAM_WB and error cases */
