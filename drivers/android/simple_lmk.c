@@ -809,6 +809,13 @@ static struct mm_struct *next_reap_victim(bool force)
 			 */
 			smp_mb();
 			WRITE_ONCE(reclaim_active, false);
+			/*
+			 * Pairs with the smp_mb() in the PSI path: order the clear
+			 * of reclaim_active before sampling needs_reclaim so a
+			 * concurrent escalation cannot be missed by both sides
+			 * (see the comment there).
+			 */
+			smp_mb();
 			if (atomic_read(&needs_reclaim))
 				wake_up(&oom_waitq);
 		}
@@ -997,6 +1004,15 @@ static int simple_lmk_psi_thread(void *data)
 				atomic_set(&target_min_adj, min_adj);
 				atomic_set(&oom_attempts, 0);
 				atomic_set(&needs_reclaim, 1);
+				/*
+				 * Pairs with the smp_mb() in next_reap_victim().
+				 * Without a barrier on both sides a store-buffer
+				 * reordering lets this CPU read reclaim_active as
+				 * still true while the reaper reads needs_reclaim as
+				 * still zero, so neither side wakes the reclaim
+				 * thread and the raised tier sits unpulled.
+				 */
+				smp_mb();
 				if (!READ_ONCE(reclaim_active))
 					wake_up(&oom_waitq);
 			}
@@ -1060,6 +1076,8 @@ static int simple_lmk_oom_notify(struct notifier_block *self,
 	if (atomic_inc_return(&oom_attempts) == 1) {
 		atomic_set(&target_min_adj, tier_min_adj[2]);
 		atomic_set(&needs_reclaim, 1);
+		/* Pairs with the smp_mb() in next_reap_victim() */
+		smp_mb();
 		if (!READ_ONCE(reclaim_active))
 			wake_up(&oom_waitq);
 		*freed = 1;
