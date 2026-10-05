@@ -14,9 +14,16 @@
 #include <linux/spinlock_types.h>
 #include <linux/wait.h>
 
+/*
+ * One entry per in-flight compression request, indexed by the hardware
+ * write index. Every submission writes a different slot, so pad each entry
+ * to a cache line: otherwise consecutive slots share a line and the writes
+ * from different CPUs ping-pong the line against the compression thread
+ * that reads it.
+ */
 struct eh_completion {
 	void *priv;
-};
+} ____cacheline_aligned_in_smp;
 
 #define EH_MAX_DCMD 8
 
