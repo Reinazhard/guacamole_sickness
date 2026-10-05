@@ -835,7 +835,7 @@ static int max1720x_model_reload(struct max1720x_chip *chip, bool force)
 
 	chip->model_reload = MAX_M5_LOAD_MODEL_REQUEST;
 	chip->model_ok = false;
-	mod_delayed_work(system_wq, &chip->model_work, 0);
+	mod_delayed_work(system_percpu_wq, &chip->model_work, 0);
 
 	return 0;
 }
@@ -942,7 +942,7 @@ static ssize_t rc_switch_enable_store(struct device *dev, struct device_attribut
 			 chip->rc_switch.rc2_learncfg, ret);
 	}
 
-	mod_delayed_work(system_wq, &chip->rc_switch.switch_work, 0);
+	mod_delayed_work(system_percpu_wq, &chip->rc_switch.switch_work, 0);
 
 	return count;
 }
@@ -3118,7 +3118,7 @@ static int max1720x_gbms_set_property(struct power_supply *psy,
 
 		/* check cycle count, save state, check drift if needed */
 		delay_ms = max1720x_check_drift_delay(&chip->drift_data);
-		mod_delayed_work(system_wq, &chip->model_work,
+		mod_delayed_work(system_percpu_wq, &chip->model_work,
 				 msecs_to_jiffies(delay_ms));
 
 		break;
@@ -5141,7 +5141,7 @@ static void max1720x_model_work(struct work_struct *work)
 		const unsigned long delay = msecs_to_jiffies(60 * 1000);
 
 		chip->model_reload += 1;
-		mod_delayed_work(system_wq, &chip->model_work, delay);
+		mod_delayed_work(system_percpu_wq, &chip->model_work, delay);
 	}
 
 	if (new_model) {
@@ -5291,7 +5291,7 @@ reschedule:
 				     "%s didn't finish. ret=%d", __func__, ret);
 	}
 
-	mod_delayed_work(system_wq, &chip->rc_switch.switch_work, msecs_to_jiffies(interval));
+	mod_delayed_work(system_percpu_wq, &chip->rc_switch.switch_work, msecs_to_jiffies(interval));
 }
 
 static int read_chip_property_u32(const struct max1720x_chip *chip,

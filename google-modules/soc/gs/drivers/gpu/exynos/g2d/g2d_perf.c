@@ -210,7 +210,7 @@ void g2d_update_performance(struct g2d_device *g2d_dev)
 	if (!qos.rbw && !qos.wbw && !qos.devfreq) {
 		cancel_delayed_work(&g2d_dev->dwork);
 	} else {
-		mod_delayed_work(system_wq,
+		mod_delayed_work(system_percpu_wq,
 				 &g2d_dev->dwork, msecs_to_jiffies(50));
 	}
 }

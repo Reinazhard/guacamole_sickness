@@ -546,7 +546,7 @@ no_fod:
 		 charger->pdata->fod_hpp_num, charger->pdata->fod_hpp_hv_num, retries);
 done:
 	if (charger->pdata->fod_fsw)
-		mod_delayed_work(system_wq, &charger->chk_fod_work,
+		mod_delayed_work(system_percpu_wq, &charger->chk_fod_work,
 				 msecs_to_jiffies(P9XXX_FOD_CHK_DELAY_MS));
 unlock:
 	mutex_unlock(&charger->fod_lock);
@@ -1276,7 +1276,7 @@ static void p9221_set_offline(struct p9221_charger_data *charger)
 
 	p9221_vote_defaults(charger);
 	if (charger->enabled)
-		mod_delayed_work(system_wq, &charger->dcin_pon_work,
+		mod_delayed_work(system_percpu_wq, &charger->dcin_pon_work,
 				 msecs_to_jiffies(P9221_DCIN_PON_DELAY_MS));
 
 	logbuffer_log(charger->log, "offline\n");
@@ -2050,7 +2050,7 @@ static int p9221_get_psy_online(struct p9221_charger_data *charger)
 		/* pm_stay_awake(charger->dev) is needed for schedule notifier_work */
 		charger->check_dc = true;
 		pm_stay_awake(charger->dev);
-		mod_delayed_work(system_wq, &charger->notifier_work,
+		mod_delayed_work(system_percpu_wq, &charger->notifier_work,
 				 msecs_to_jiffies(P9221_NOTIFIER_DELAY_MS));
 		pm_relax(charger->dev);
 	}
@@ -3073,7 +3073,7 @@ static void p9221_set_capacity(struct p9221_charger_data *charger, int capacity)
 
 	/* p9221_is_online() is true when the device in TX mode. */
 	if (charger->online && charger->last_capacity >= 0 && charger->last_capacity <= 100)
-		mod_delayed_work(system_wq, &charger->charge_stats_hda_work, 0);
+		mod_delayed_work(system_percpu_wq, &charger->charge_stats_hda_work, 0);
 
 	if (charger->pdata->gpp_enhanced && charger->last_capacity > WLC_HPP_SOC_LIMIT)
 		feature_gpp_15w_enable(charger, false);
@@ -3335,7 +3335,7 @@ static int p9221_notifier_cb(struct notifier_block *nb, unsigned long event,
 
 	pm_stay_awake(charger->dev);
 
-	mod_delayed_work(system_wq, &charger->notifier_work,
+	mod_delayed_work(system_percpu_wq, &charger->notifier_work,
 			 msecs_to_jiffies(P9221_NOTIFIER_DELAY_MS));
 	pm_relax(charger->dev);
 
@@ -3893,7 +3893,7 @@ static void p9221_notifier_check_dc(struct p9221_charger_data *charger)
 
 		ret = p9221_notifier_check_neg_power(charger);
 		if (ret > 0) {
-			ret = mod_delayed_work(system_wq, &charger->notifier_work,
+			ret = mod_delayed_work(system_percpu_wq, &charger->notifier_work,
 					       msecs_to_jiffies(P9221_NOTIFIER_DELAY_MS));
 			if (ret == 0)
 				return;
@@ -3909,7 +3909,7 @@ static void p9221_notifier_check_dc(struct p9221_charger_data *charger)
 	dc_in = p9221_has_dc_in(charger);
 	if (dc_in < 0) {
           	dev_info(&charger->client->dev, "reschedule it(%d)\n", dc_in);
-		mod_delayed_work(system_wq, &charger->notifier_work,
+		mod_delayed_work(system_percpu_wq, &charger->notifier_work,
 				 msecs_to_jiffies(P9221_NOTIFIER_DELAY_MS));
 		return;
 	}
@@ -7091,7 +7091,7 @@ static irqreturn_t p9221_irq_thread(int irq, void *irq_data)
 				atomic_set(&charger->charger_present_flag, 1);
 				power_supply_changed(charger->wc_psy);
 			}
-			mod_delayed_work(system_wq, &charger->presence_check_work,
+			mod_delayed_work(system_percpu_wq, &charger->presence_check_work,
 				msecs_to_jiffies(PRESENCE_CHECK_PING_TIMEOUT_MS));
 		}
 
@@ -7102,9 +7102,9 @@ static irqreturn_t p9221_irq_thread(int irq, void *irq_data)
 			pm_stay_awake(charger->dev);
 
 			if (charger->pdata->rf_value != -1)
-				mod_delayed_work(system_wq, &charger->set_rf_work,
+				mod_delayed_work(system_percpu_wq, &charger->set_rf_work,
 						 msecs_to_jiffies(P9XXX_SET_RF_DELAY_MS));
-			mod_delayed_work(system_wq, &charger->notifier_work,
+			mod_delayed_work(system_percpu_wq, &charger->notifier_work,
 					 msecs_to_jiffies(P9221_NOTIFIER_DELAY_MS));
 			pm_relax(charger->dev);
 		}
@@ -7197,7 +7197,7 @@ static irqreturn_t p9221_irq_det_thread(int irq, void *irq_data)
 
 	if (debounce_interval >= 0) {
 		__pm_stay_awake(charger->det_status_ws);
-		mod_delayed_work(system_wq, &charger->change_det_status_work, debounce_interval);
+		mod_delayed_work(system_percpu_wq, &charger->change_det_status_work, debounce_interval);
 	}
 
 	/* If we are already online, just ignore the interrupt. */

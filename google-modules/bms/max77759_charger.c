@@ -910,7 +910,7 @@ static int max77759_set_insel(struct max77759_chgr_data *data,
 		insel_value |= MAX77759_CHG_CNFG_12_WCINSEL;
 	}
 
-	mod_delayed_work(system_wq, &data->wcin_charge_disable_work, 0);
+	mod_delayed_work(system_percpu_wq, &data->wcin_charge_disable_work, 0);
 
 	if (from_uc != use_case || force_wlc || wlc_on) {
 		wlc_on = wlc_on || (insel_value & MAX77759_CHG_CNFG_12_WCINSEL) != 0;
@@ -3557,7 +3557,7 @@ static int max77759_charger_pm_resume(struct device *dev)
 	pm_runtime_put_sync(data->dev);
 
 	if ((data->otg_fccm_reset) && (data->otg_changed))
-		mod_delayed_work(system_wq, &data->otg_fccm_worker, 0);
+		mod_delayed_work(system_percpu_wq, &data->otg_fccm_worker, 0);
 
 	return 0;
 }

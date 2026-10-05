@@ -248,7 +248,7 @@ int ln8411_send_pd_message(struct ln8411_charger *ln8411,
 	/* PPS_Work: will reschedule */
 	dev_dbg(ln8411->dev, "%s: pps_ui = %d\n", __func__, pps_ui);
 	if (pps_ui > 0)
-		mod_delayed_work(system_wq, &ln8411->pps_work,
+		mod_delayed_work(system_percpu_wq, &ln8411->pps_work,
 				 msecs_to_jiffies(pps_ui));
 
 	return pps_ui;

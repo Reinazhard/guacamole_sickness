@@ -214,7 +214,7 @@ static irqreturn_t latched_irq_handler(int irq, void *data)
 			bcl_cb_clr_irq(bcl_dev, idx);
 		return IRQ_HANDLED;
 	}
-	queue_work(system_unbound_wq, &zone->irq_triggered_work);
+	queue_work(system_dfl_wq, &zone->irq_triggered_work);
 	return IRQ_HANDLED;
 }
 
@@ -767,7 +767,7 @@ static irqreturn_t vdroop_irq_thread_fn(int irq, void *data)
 		atomic_inc(&zone->last_triggered.triggered_cnt[START]);
 		zone->last_triggered.triggered_time[START] =
 			ktime_to_ms(ktime_get());
-		queue_work(system_unbound_wq, &zone->irq_triggered_work);
+		queue_work(system_dfl_wq, &zone->irq_triggered_work);
 	}
 
 	return IRQ_HANDLED;
@@ -889,7 +889,7 @@ static void main_pwrwarn_irq_work(struct work_struct *work)
 	mutex_unlock(&bcl_dev->main_odpm->lock);
 
 	if (revisit_needed)
-		mod_delayed_work(system_unbound_wq, &bcl_dev->main_pwr_irq_work,
+		mod_delayed_work(system_dfl_wq, &bcl_dev->main_pwr_irq_work,
 				 msecs_to_jiffies(PWRWARN_DELAY_MS));
 }
 #endif
@@ -926,7 +926,7 @@ static void sub_pwrwarn_irq_work(struct work_struct *work)
 	mutex_unlock(&bcl_dev->sub_odpm->lock);
 
 	if (revisit_needed)
-		mod_delayed_work(system_unbound_wq, &bcl_dev->sub_pwr_irq_work,
+		mod_delayed_work(system_dfl_wq, &bcl_dev->sub_pwr_irq_work,
 				 msecs_to_jiffies(PWRWARN_DELAY_MS));
 }
 #endif
@@ -948,7 +948,7 @@ static irqreturn_t sub_pwr_warn_irq_handler(int irq, void *data)
 				gpio_set_value(bcl_dev->modem_gpio1_pin, 1);
 
 			/* Setup Timer to clear the triggered */
-			mod_delayed_work(system_unbound_wq, &bcl_dev->sub_pwr_irq_work,
+			mod_delayed_work(system_dfl_wq, &bcl_dev->sub_pwr_irq_work,
 					 msecs_to_jiffies(PWRWARN_DELAY_MS));
 			pwrwarn_update_start_time(bcl_dev, i, bcl_dev->pwrwarn_sub_irq_bins,
 							bcl_dev->sub_pwr_warn_triggered,
@@ -978,7 +978,7 @@ static irqreturn_t main_pwr_warn_irq_handler(int irq, void *data)
 				gpio_set_value(bcl_dev->modem_gpio1_pin, 1);
 
 			/* Setup Timer to clear the triggered */
-			mod_delayed_work(system_unbound_wq, &bcl_dev->main_pwr_irq_work,
+			mod_delayed_work(system_dfl_wq, &bcl_dev->main_pwr_irq_work,
 					 msecs_to_jiffies(PWRWARN_DELAY_MS));
 			pwrwarn_update_start_time(bcl_dev, i, bcl_dev->pwrwarn_main_irq_bins,
 							bcl_dev->main_pwr_warn_triggered,

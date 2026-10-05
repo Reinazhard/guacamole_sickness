@@ -1195,7 +1195,7 @@ static int psy_changed(struct notifier_block *nb,
 
 	if (action == PSY_EVENT_PROP_CHANGED &&
 	    (!strcmp(psy->desc->name, batt_drv->fg_psy_name))) {
-		mod_delayed_work(system_wq, &batt_drv->batt_work, 0);
+		mod_delayed_work(system_percpu_wq, &batt_drv->batt_work, 0);
 	}
 
 	return NOTIFY_OK;
@@ -6682,7 +6682,7 @@ static int batt_chg_logic(struct batt_drv *batt_drv)
 		/* released in battery_work() */
 		__pm_stay_awake(batt_drv->poll_ws);
 		batt_drv->batt_fast_update_cnt = BATT_WORK_FAST_RETRY_CNT;
-		mod_delayed_work(system_wq, &batt_drv->batt_work,
+		mod_delayed_work(system_percpu_wq, &batt_drv->batt_work,
 				 msecs_to_jiffies(BATT_WORK_FAST_RETRY_MS));
 
 		/* TODO: move earlier and include the change to the curve */
@@ -7698,7 +7698,7 @@ static ssize_t debug_set_pairing_state(struct file *filp,
 
 	if (val == BATT_PAIRING_ENABLED) {
 		batt_drv->pairing_state = BATT_PAIRING_ENABLED;
-		mod_delayed_work(system_wq, &batt_drv->batt_work, 0);
+		mod_delayed_work(system_percpu_wq, &batt_drv->batt_work, 0);
 	} else if (val == BATT_PAIRING_RESET) {
 
 		/* send a paring enable to re-pair OR reboot */
@@ -11467,7 +11467,7 @@ static ssize_t temp_filter_enable_store(struct device *dev,
 	if (temp_filter->enable != enable) {
 		temp_filter->enable = enable;
 		temp_filter->force_update = true;
-		mod_delayed_work(system_wq, &temp_filter->work, 0);
+		mod_delayed_work(system_percpu_wq, &temp_filter->work, 0);
 	}
 
 	return count;
@@ -12585,7 +12585,7 @@ static void batt_init_temp_filter(struct batt_drv *batt_drv)
 
 	/* initial temperature value in first read data */
 	temp_filter->force_update = true;
-	mod_delayed_work(system_wq, &temp_filter->work, 0);
+	mod_delayed_work(system_percpu_wq, &temp_filter->work, 0);
 
 	pr_info("temperature filter: default:%ds, fast:%ds, resume:%dms\n",
 		temp_filter->default_interval / 1000, temp_filter->fast_interval / 1000,
@@ -12645,7 +12645,7 @@ done:
 	pr_debug("temperature filter: [%d, %d, %d, %d, %d] interval=%dms\n",
 		 temp_filter->sample[0], temp_filter->sample[1], temp_filter->sample[2],
 		 temp_filter->sample[3], temp_filter->sample[4], interval);
-	mod_delayed_work(system_wq, &temp_filter->work, msecs_to_jiffies(interval));
+	mod_delayed_work(system_percpu_wq, &temp_filter->work, msecs_to_jiffies(interval));
 }
 
 #define BOOT_TO_OS_ATTEMPTS 3
@@ -15065,7 +15065,7 @@ static int gbatt_pm_resume(struct device *dev)
 	batt_drv->temp_filter.resume_delay = true;
 	pm_runtime_put_sync(batt_drv->device);
 
-	mod_delayed_work(system_wq, &batt_drv->batt_work, 0);
+	mod_delayed_work(system_percpu_wq, &batt_drv->batt_work, 0);
 
 	return 0;
 }

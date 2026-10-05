@@ -1422,7 +1422,7 @@ static int gcpm_chg_select_logic(struct gcpm_drv *gcpm)
 
 		dc_done = gcpm_taper_step(gcpm, dc_iin, gcpm->taper_step - 1);
 		if (!dc_done) {
-			mod_delayed_work(system_wq, &gcpm->select_work, interval);
+			mod_delayed_work(system_percpu_wq, &gcpm->select_work, interval);
 			gcpm->taper_step -= 1;
 			gcpm->taper_step_used = true;
 		}
@@ -1501,7 +1501,7 @@ static int gcpm_chg_select_logic(struct gcpm_drv *gcpm)
 		pr_debug("%s: DC schedule pps_work in %ds\n", __func__,
 			 schedule_pps_interval / 1000);
 
-		mod_delayed_work(system_wq, &gcpm->pps_work,
+		mod_delayed_work(system_percpu_wq, &gcpm->pps_work,
 				 msecs_to_jiffies(schedule_pps_interval));
 	}
 
@@ -1527,7 +1527,7 @@ static void gcpm_chg_select_work(struct work_struct *work)
 	if (ret == -EAGAIN) {
 		const int interval = 5; /* 5 seconds */
 
-		mod_delayed_work(system_wq, &gcpm->select_work,
+		mod_delayed_work(system_percpu_wq, &gcpm->select_work,
 				 msecs_to_jiffies(interval * 1000));
 	}
 
@@ -1734,7 +1734,7 @@ static void gcpm_pps_wlc_dc_work(struct work_struct *work)
 		/* something is changed: kick the revert to default */
 		index = gcpm_chg_select(gcpm);
 		if (index != gcpm->dc_index)
-			mod_delayed_work(system_wq, &gcpm->select_work, 0);
+			mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 
 		/* ->pps_index valid: set/ping source to DC, ping watchdog */
 		ret = GPSY_SET_PROP(dc_psy, GBMS_PROP_CHARGING_ENABLED,
@@ -1961,7 +1961,7 @@ static int gcpm_dc_fcc_callback(struct gvotable_election *el,
 	 * gcpm_chg_select_by_demand().
 	 */
 	if (applied || changed)
-		mod_delayed_work(system_wq, &gcpm->select_work,
+		mod_delayed_work(system_percpu_wq, &gcpm->select_work,
 				 msecs_to_jiffies(DC_ENABLE_DELAY_MS));
 
 	mutex_unlock(&gcpm->chg_psy_lock);
@@ -1977,7 +1977,7 @@ static int gcpm_dc_chg_avail_callback(struct gvotable_election *el,
 	if (!gcpm->init_complete)
 		return 0;
 
-	mod_delayed_work(system_wq, &gcpm->select_work, 0);
+	mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 	pr_debug("DC_CHG_AVAIL: dc_avail=%d, reason=%s\n", dc_chg_avail, reason);
 
 	return 0;
@@ -2053,7 +2053,7 @@ static int gcpm_set_active_charger(struct gcpm_drv *gcpm,
 			const int interval = 5; /* seconds */
 
 			/* let the setting go through but */
-			mod_delayed_work(system_wq, &gcpm->select_work,
+			mod_delayed_work(system_percpu_wq, &gcpm->select_work,
 					msecs_to_jiffies(interval * 1000));
 		}
 
@@ -2531,7 +2531,7 @@ static int gcpm_psy_changed(struct notifier_block *nb, unsigned long action,
 
 	/* should tickle the PPS loop only when is running */
 	if (tickle_pps_work)
-		mod_delayed_work(system_wq, &gcpm->pps_work, 0);
+		mod_delayed_work(system_percpu_wq, &gcpm->pps_work, 0);
 
 	return NOTIFY_OK;
 }
@@ -3560,7 +3560,7 @@ static int gcpm_mdis_callback(struct gvotable_election *el, const char *reason,
 			const int interval = 5; /* seconds */
 
 			/* let the setting go through but */
-			mod_delayed_work(system_wq, &gcpm->select_work,
+			mod_delayed_work(system_percpu_wq, &gcpm->select_work,
 					 msecs_to_jiffies(interval * 1000));
 		}
 	}
@@ -3608,7 +3608,7 @@ static int gcpm_fcc_callback(struct gvotable_election *el, const char *reason,
 	if (cp_min != -1 && limit <= cp_min) {
 		pr_debug("MSC_GCPM_FCC: limit=%d reason=%s cpmin=%d trigger select\n",
 			 limit, reason, cp_min);
-		mod_delayed_work(system_wq, &gcpm->select_work, 0);
+		mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 		return 0;
 	}
 
@@ -3629,7 +3629,7 @@ static int gcpm_fcc_callback(struct gvotable_election *el, const char *reason,
 	if (ret == -EAGAIN) {
 		gcpm->fcc_retries = GCPM_FCC_RETRIES;
 		gcpm->fcc_retry_limit = limit;
-		mod_delayed_work(system_wq, &gcpm->fcc_retry_work, GCPM_FCC_RETRY_INTERVAL);
+		mod_delayed_work(system_percpu_wq, &gcpm->fcc_retry_work, GCPM_FCC_RETRY_INTERVAL);
 	}
 
 	pr_debug("MSC_GCPM_FCC: applied new cp_limit=%d cp_min=%d ret=%d\n",
@@ -4018,7 +4018,7 @@ static void gcpm_init_work(struct work_struct *work)
 	}
 
 	/* might run along set_property() */
-	mod_delayed_work(system_wq, &gcpm->select_work, 0);
+	mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 }
 
 static void gcpm_fcc_retry_work(struct work_struct *work)
@@ -4082,7 +4082,7 @@ static int gcpm_debug_set_active(void *data, u64 val)
 
 	mutex_lock(&gcpm->chg_psy_lock);
 	gcpm->force_active = intval;
-	mod_delayed_work(system_wq, &gcpm->select_work, 0);
+	mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 	mutex_unlock(&gcpm->chg_psy_lock);
 
 	return 0;
@@ -4148,7 +4148,7 @@ static int gcpm_debug_pps_stage_set(void *data, u64 val)
 	if (pps_data)
 		pps_data->stage = intval;
 	gcpm->force_pps = !pps_is_disabled(intval);
-	mod_delayed_work(system_wq, &gcpm->pps_work, 0);
+	mod_delayed_work(system_percpu_wq, &gcpm->pps_work, 0);
 	mutex_unlock(&gcpm->chg_psy_lock);
 
 	return 0;
@@ -4177,7 +4177,7 @@ static int gcpm_debug_dc_state_set(void *data, u64 val)
 
 	mutex_lock(&gcpm->chg_psy_lock);
 	gcpm->dc_state = intval;
-	mod_delayed_work(system_wq, &gcpm->select_work, 0);
+	mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 	mutex_unlock(&gcpm->chg_psy_lock);
 
 	return 0;
@@ -4207,7 +4207,7 @@ static int gcpm_debug_taper_ctl_set(void *data, u64 val)
 	/* ta_check set when taper control changes value */
 	ta_check = gcpm_taper_ctl(gcpm, val);
 	if (ta_check)
-		mod_delayed_work(system_wq, &gcpm->select_work, 0);
+		mod_delayed_work(system_percpu_wq, &gcpm->select_work, 0);
 	mutex_unlock(&gcpm->chg_psy_lock);
 	return 0;
 }
