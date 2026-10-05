@@ -46,6 +46,15 @@
 #define LMK_PSI_THRESHOLD_MED_US 150000
 #define LMK_PSI_THRESHOLD_HIGH_US 200000
 
+#define LMK_TIERS 3
+
+/* Stall thresholds, one per tier, in the same order as tier_min_adj. */
+static const int psi_thresholds[LMK_TIERS] = {
+	LMK_PSI_THRESHOLD_LOW_US,
+	LMK_PSI_THRESHOLD_MED_US,
+	LMK_PSI_THRESHOLD_HIGH_US
+};
+
 struct victim_info {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -85,7 +94,6 @@ static bool reclaim_active;
 #define LMK_TIER1_MIN_ADJ 500
 #define LMK_TIER2_MIN_ADJ 200
 
-#define LMK_TIERS 3
 static const short tier_min_adj[LMK_TIERS] = {
 	LMK_TIER0_MIN_ADJ,
 	LMK_TIER1_MIN_ADJ,
@@ -159,6 +167,43 @@ static unsigned long get_target_free_pages(void)
 		return 0;
 
 	return deficit - pending;
+}
+
+/*
+ * Measured memory-stall duty cycle.
+ *
+ * PSI accumulates the time tasks spend fully stalled on memory reclaim in
+ * psi_system.total[PSI_POLL][PSI_MEM_FULL], in nanoseconds. Sample it and the
+ * clock at each reclaim cycle; the difference is the stall the device actually
+ * experienced over that interval, and dividing by the wall time gives the
+ * fraction of the interval, in [0, 100], during which allocation was blocked
+ * on memory.
+ *
+ * This is a measurement, not a threshold: it is the same quantity PSI compares
+ * against a trigger's threshold before firing, so anything that wants to react
+ * to "how bad is it really" has a real number to work from instead of guessing
+ * from the fact that a coarse trigger fired.
+ */
+static u64 stall_ns_last;
+static unsigned long stall_jiffies_last;
+
+static unsigned long measure_stall_pct(unsigned long interval_jiffies)
+{
+	u64 now_ns = psi_system.total[PSI_POLL][PSI_MEM_FULL];
+	u64 delta_ns;
+	u64 window_ns;
+
+	if (!interval_jiffies)
+		return 0;
+
+	delta_ns = now_ns - stall_ns_last;
+	stall_ns_last = now_ns;
+
+	window_ns = (u64)interval_jiffies * NSEC_PER_SEC / HZ;
+	if (delta_ns >= window_ns)
+		return 100;
+
+	return div_u64(delta_ns * 100, window_ns);
 }
 
 /*
@@ -504,6 +549,7 @@ static void scan_and_kill(void)
 	static struct mm_struct *drop_mms[MAX_VICTIMS];
 	int i, nr_to_kill, nr_found = 0;
 	unsigned long target_pages = 0;
+	unsigned long stall_pct;
 	unsigned long flags;
 	int num_drop;
 
@@ -521,6 +567,13 @@ static void scan_and_kill(void)
 	 * Tier 0. Must run before find_victims(), which snapshots target_min_adj.
 	 */
 	relax_min_adj();
+
+	/*
+	 * Sample how hard the device is actually stalling since the last
+	 * cycle. Measured, not configured.
+	 */
+	stall_pct = measure_stall_pct(jiffies - stall_jiffies_last);
+	stall_jiffies_last = jiffies;
 
 	/*
 	 * Release whatever the previous cycle left behind before touching the
@@ -555,6 +608,18 @@ static void scan_and_kill(void)
 	find_victims(&nr_found, &target_pages);
 	if (unlikely(!nr_found))
 		return;
+
+	/*
+	 * Report the measured stall, the tier PSI selected, and the deficit.
+	 * Reading these across a boot on different RAM variants is what says
+	 * whether the fixed adj ladder is actually right for each of them,
+	 * instead of assuming it is.
+	 */
+	pr_info("stall %lu%%, tier %d, deficit %lu pages, %d candidate(s)\n",
+		stall_pct,
+		atomic_read(&target_min_adj) == tier_min_adj[2] ? 2 :
+		(atomic_read(&target_min_adj) == tier_min_adj[1] ? 1 : 0),
+		target_pages, nr_found);
 
 	/*
 	 * Sort all victims by size (descending) to kill largest first,
@@ -1095,11 +1160,6 @@ static struct notifier_block simple_lmk_oom_nb = {
 /* Initialize Simple LMK when lmkd in Android writes to the minfree parameter */
 static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 {
-	static const int thresholds[LMK_TIERS] = {
-		LMK_PSI_THRESHOLD_LOW_US,
-		LMK_PSI_THRESHOLD_MED_US,
-		LMK_PSI_THRESHOLD_HIGH_US
-	};
 	static atomic_t init_done = ATOMIC_INIT(0);
 	struct task_struct *reaper_thread = NULL;
 	struct task_struct *reclaim_thread = NULL;
@@ -1130,7 +1190,7 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 		for (i = 0; i < LMK_TIERS; i++) {
 			char buf[64];
 
-			snprintf(buf, sizeof(buf), "full %d %d", thresholds[i],
+			snprintf(buf, sizeof(buf), "full %d %d", psi_thresholds[i],
 				 LMK_PSI_WINDOW_MS * 1000);
 			psi_triggers[i] = psi_trigger_create(&psi_system, buf, PSI_MEM,
 							       NULL, NULL);
