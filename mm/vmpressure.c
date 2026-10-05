@@ -391,16 +391,25 @@ static void vmpressure_global(gfp_t gfp, unsigned long scanned, bool critical,
 	unsigned long pressure;
 	unsigned long stall;
 	unsigned long flags;
+	bool synthetic = false;
 
-	if (critical)
+	/*
+	 * A critical event carries no real scan count, so substitute a full
+	 * window to force the ratio to close. The pages are fabricated: count
+	 * them as scanned, not as stalled, or the stall/scanned ratio in
+	 * vmpressure_account_stall() is inflated by pages nobody scanned.
+	 */
+	if (critical) {
 		scanned = calculate_vmpressure_win();
+		synthetic = true;
+	}
 
 	spin_lock_irqsave(&vmpr->sr_lock, flags);
 	if (scanned) {
 		vmpr->scanned += scanned;
 		vmpr->reclaimed += reclaimed;
 
-		if (!current_is_kswapd())
+		if (!synthetic && !current_is_kswapd())
 			vmpr->stall += scanned;
 
 		stall = vmpr->stall;
