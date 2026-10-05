@@ -48,7 +48,12 @@
 
 #define LMK_TIERS 3
 
-/* Stall thresholds, one per tier, in the same order as tier_min_adj. */
+/*
+ * Stall thresholds, one per tier, in the same order as tier_min_adj: index 0
+ * is Tier 0 (cached, most protected, easiest to trip) and index LMK_TIERS - 1
+ * is the most aggressive. tier_reach_adj() also uses these as the reference
+ * stall for each tier's depth.
+ */
 static const int psi_thresholds[LMK_TIERS] = {
 	LMK_PSI_THRESHOLD_LOW_US,
 	LMK_PSI_THRESHOLD_MED_US,
@@ -83,16 +88,34 @@ static bool reclaim_active;
  * Android oom_score_adj tier boundaries:
  * - Tier 0: Cached processes (CACHED_APP_MIN_ADJ, SERVICE_B_ADJ)
  * - Tier 1: Non-perceptible background (SERVICE_ADJ, HOME_APP_ADJ, PREVIOUS_APP_ADJ)
- * - Tier 2: Perceptible background (PERCEPTIBLE_APP_ADJ to HEAVY_WEIGHT_APP_ADJ)
+ * - Tier 2: Perceptible background (PERCEPTIBLE_APP_ADJ to HEAVYWEIGHT_APP_ADJ)
  *
- * Hard floor: Processes with adj < 200 (VISIBLE_APP_ADJ = 100, foreground activities,
- * persistent system services like .gms.persistent, SystemUI, and init) must NEVER
- * be killed by simple_lmk. If physical RAM is exhausted by foreground/visible tasks,
- * the core kernel OOM killer handles it by terminating the largest memory consumer.
+ * A tier is entered when its PSI stall threshold is breached (see
+ * LMK_PSI_THRESHOLD_*). The threshold is a latency bound -- how long an
+ * allocation may be stalled before it is perceptible -- so it is a fixed
+ * property of the display and of human perception, not of RAM size. The
+ * tier values below are the *shallowest* adj each tier may reach.
+ *
+ * How deep *within* a tier a reclaim cycle actually reaches is not a constant
+ * and not a tunable: it is derived from the memory stall the device is
+ * actually measuring (see tier_reach_adj()). A device that is stalling hard
+ * relative to the tier's own threshold is allowed to reach its floor; one
+ * stalling only just past the threshold stays near the ceiling. The reference
+ * for "how hard" is the tier's threshold itself, so there is no separate
+ * coefficient to set.
+ *
+ * Hard floor: processes with adj < LMK_TIER_FLOOR_ADJ (VISIBLE_APP_ADJ = 100,
+ * foreground activities, persistent system services like .gms.persistent,
+ * SystemUI, init) must NEVER be killed by simple_lmk. If physical RAM is
+ * exhausted by foreground/visible tasks, the core kernel OOM killer handles it
+ * by terminating the largest memory consumer.
  */
 #define LMK_TIER0_MIN_ADJ 800
 #define LMK_TIER1_MIN_ADJ 500
 #define LMK_TIER2_MIN_ADJ 200
+
+/* Absolute floor: no tier may ever select a task with a lower adj than this. */
+#define LMK_TIER_FLOOR_ADJ 200
 
 static const short tier_min_adj[LMK_TIERS] = {
 	LMK_TIER0_MIN_ADJ,
@@ -175,14 +198,14 @@ static unsigned long get_target_free_pages(void)
  * PSI accumulates the time tasks spend fully stalled on memory reclaim in
  * psi_system.total[PSI_POLL][PSI_MEM_FULL], in nanoseconds. Sample it and the
  * clock at each reclaim cycle; the difference is the stall the device actually
- * experienced over that interval, and dividing by the wall time gives the
- * fraction of the interval, in [0, 100], during which allocation was blocked
- * on memory.
+ * experienced over that interval. Dividing by the wall time gives a duty cycle
+ * in [0, 100]: the fraction of the interval during which allocation was
+ * blocked on memory.
  *
- * This is a measurement, not a threshold: it is the same quantity PSI compares
- * against a trigger's threshold before firing, so anything that wants to react
- * to "how bad is it really" has a real number to work from instead of guessing
- * from the fact that a coarse trigger fired.
+ * This is the same quantity PSI compares against a trigger's threshold before
+ * firing, so using it to size the kill needs no new constant: the tier's own
+ * threshold, expressed as a duty, is the reference for "the stall we already
+ * agreed was too much".
  */
 static u64 stall_ns_last;
 static unsigned long stall_jiffies_last;
@@ -204,6 +227,72 @@ static unsigned long measure_stall_pct(unsigned long interval_jiffies)
 		return 100;
 
 	return div_u64(delta_ns * 100, window_ns);
+}
+
+/*
+ * Map a tier ceiling back to its tier index. Ceilings are distinct, so the
+ * first match wins; anything unrecognised is treated as the most aggressive
+ * tier.
+ */
+static short tier_of_ceil(short ceil_adj)
+{
+	int i;
+
+	for (i = 0; i < LMK_TIERS; i++) {
+		if (tier_min_adj[i] == ceil_adj)
+			return i;
+	}
+
+	return LMK_TIERS - 1;
+}
+
+/*
+ * Depth (lowest adj) a tier may reach, from the stall the device measured.
+ *
+ * The tier's threshold is the stall it took to enter the tier, so it is also
+ * the reference for how deep that tier is entitled to go: reaching it means we
+ * are at exactly the pressure the tier was defined for, and each further
+ * multiple of it is more evidence that reclaim is losing. The driver therefore
+ * descends from the tier's shallowest adj toward LMK_TIER_FLOOR_ADJ in
+ * proportion to measured_stall / tier_threshold, saturating at the floor.
+ *
+ * Neither the reference nor the span is a chosen number: the reference is
+ * LMK_PSI_THRESHOLD_*, already fixed by perception, and the span is the gap
+ * between two adj values that come from the Android priority brackets.
+ */
+static short tier_reach_adj(short tier_index, unsigned long stall_pct)
+{
+	unsigned long target_duty;
+	unsigned long span, reached;
+
+	if (tier_index < 0 || tier_index >= LMK_TIERS)
+		tier_index = LMK_TIERS - 1;
+
+	if (tier_min_adj[tier_index] <= LMK_TIER_FLOOR_ADJ)
+		return LMK_TIER_FLOOR_ADJ;
+
+	/*
+	 * The tier's threshold as a duty cycle. psi_thresholds[] is in
+	 * microseconds and the sampling window is LMK_PSI_WINDOW_MS
+	 * milliseconds, so the fraction of the window the stall would have to
+	 * fill to trip the threshold is:
+	 *
+	 *     threshold_us * 100 / (window_ms * 1000)   [percent]
+	 *
+	 * measured_stall_pct is in the same units, so the two compare directly.
+	 */
+	target_duty = (unsigned long)psi_thresholds[tier_index] * 100 /
+		      (LMK_PSI_WINDOW_MS * 1000);
+	if (!target_duty)
+		target_duty = 1;
+
+	if (stall_pct >= target_duty)
+		return LMK_TIER_FLOOR_ADJ;
+
+	span = tier_min_adj[tier_index] - LMK_TIER_FLOOR_ADJ;
+	reached = span * stall_pct / target_duty;
+
+	return tier_min_adj[tier_index] - (short)reached;
 }
 
 /*
@@ -320,13 +409,25 @@ static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 	       get_mm_counter(mm, MM_SWAPENTS);
 }
 
-static unsigned long find_victims(int *vindex, unsigned long *target_out)
+static unsigned long find_victims(int *vindex, unsigned long *target_out,
+				  unsigned long stall_pct)
 {
 	short i, min_adj = ADJ_MAX, max_adj = 0;
-	short limit_adj = atomic_read(&target_min_adj);
+	short tier_ceil = atomic_read(&target_min_adj);
+	short tier, limit_adj;
 	unsigned long pages_found = 0;
 	unsigned long target_pages = get_target_free_pages();
 	struct task_struct *tsk;
+
+	/*
+	 * The tier PSI selected sets the ceiling; the stall the device actually
+	 * measured sets how deep within that tier this cycle may reach. Map the
+	 * ceiling back to its tier index, then derive the effective adj once
+	 * per cycle so find_victims(), the grace-period gate and the sort all
+	 * agree on it.
+	 */
+	tier = tier_of_ceil(tier_ceil);
+	limit_adj = tier_reach_adj(tier, stall_pct);
 
 	/*
 	 * Hand the deficit this scan selected against back to the caller so the
@@ -402,9 +503,12 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out)
 			 * Grace period: protect recently backgrounded apps from
 			 * Tier 0 kills. When an app enters the cached tier
 			 * (adj >= 800), it gets a 5-second grace period.
-			 * Only applies during mild Tier 0 pressure.
+			 * Only applies during mild Tier 0 pressure. Gate on the
+			 * tier PSI selected, not on the derived reach, so the
+			 * protection tracks the tier rather than the current
+			 * measured stall.
 			 */
-			if (limit_adj == tier_min_adj[0] &&
+			if (tier_ceil == tier_min_adj[0] &&
 			    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
 				goto drop_ref;
 
@@ -570,7 +674,8 @@ static void scan_and_kill(void)
 
 	/*
 	 * Sample how hard the device is actually stalling since the last
-	 * cycle. Measured, not configured.
+	 * cycle. This is what sizes the kill depth for this cycle; it is
+	 * measured, not configured.
 	 */
 	stall_pct = measure_stall_pct(jiffies - stall_jiffies_last);
 	stall_jiffies_last = jiffies;
@@ -605,20 +710,20 @@ static void scan_and_kill(void)
 		mmdrop(drop_mms[i]);
 
 	/* Populate the victims array with tasks sorted by adj and then size */
-	find_victims(&nr_found, &target_pages);
+	find_victims(&nr_found, &target_pages, stall_pct);
 	if (unlikely(!nr_found))
 		return;
 
 	/*
-	 * Report the measured stall, the tier PSI selected, and the deficit.
-	 * Reading these across a boot on different RAM variants is what says
-	 * whether the fixed adj ladder is actually right for each of them,
-	 * instead of assuming it is.
+	 * Report the measured stall, the tier PSI selected, the depth that
+	 * stall entitled it to, and the deficit. Reading these across a boot is
+	 * what says whether the derived depth tracks pressure sensibly, instead
+	 * of assuming a fixed adj ladder is right for every device.
 	 */
-	pr_info("stall %lu%%, tier %d, deficit %lu pages, %d candidate(s)\n",
-		stall_pct,
-		atomic_read(&target_min_adj) == tier_min_adj[2] ? 2 :
-		(atomic_read(&target_min_adj) == tier_min_adj[1] ? 1 : 0),
+	pr_info("stall %lu%%, tier %d, reached adj %d, deficit %lu pages, %d candidate(s)\n",
+		stall_pct, tier_of_ceil(atomic_read(&target_min_adj)),
+		tier_reach_adj(tier_of_ceil(atomic_read(&target_min_adj)),
+			       stall_pct),
 		target_pages, nr_found);
 
 	/*
