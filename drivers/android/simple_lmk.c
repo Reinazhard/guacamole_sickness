@@ -658,6 +658,14 @@ static void scan_and_kill(void)
 		 * next cycle escalates and over-kills.
 		 */
 		victim->score = get_reclaimable_pages(mm);
+		/*
+		 * Refresh size to the same measurement used for the credit below.
+		 * size was sampled back in find_victims() and the task has been
+		 * running since, so leaving the two to disagree would credit the
+		 * deficit with a different page count than the one the victim was
+		 * selected and sorted on.
+		 */
+		victim->size = victim->score;
 
 		/*
 		 * The kill is dispatched below, so these pages are now
