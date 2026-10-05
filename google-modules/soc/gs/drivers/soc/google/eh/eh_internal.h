@@ -72,6 +72,13 @@ struct eh_device {
 	bool sync_comp_irq;
 	int comp_irq;
 
+	/*
+	 * Set once eh_of_remove() has torn the hardware down. eh_create() and
+	 * eh_destroy() must not hand out or re-publish a device whose buffers
+	 * have been released.
+	 */
+	bool removed;
+
 	/* parent device */
 	struct device *dev;
 
