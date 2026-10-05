@@ -1431,6 +1431,9 @@ static int eh_of_remove(struct platform_device *pdev)
 	list_del_init(&eh_dev->eh_dev_list);
 	spin_unlock(&eh_dev_list_lock);
 
+	/* The device is going away; never hand it out again. */
+	WRITE_ONCE(eh_dev->removed, true);
+
 	/*
 	 * Drain before stopping the thread, as eh_suspend() does and for
 	 * the same reason: only the thread retires requests, so stopping
@@ -1457,23 +1460,48 @@ static int eh_of_remove(struct platform_device *pdev)
 	cpu_latency_qos_remove_request(&eh_dev->pm_qos_req);
 	free_irq(eh_dev->error_irq, eh_dev);
 	free_irq(eh_dev->comp_irq, eh_dev);
-	eh_hw_deinit(eh_dev);
-
-	clk_disable_unprepare(eh_dev->clk);
-	clk_put(eh_dev->clk);
-	pm_runtime_put_sync(&pdev->dev);
-	pm_runtime_disable(&pdev->dev);
 
 	/*
-	 * eh_destroy() is exported and writes through the pointer it is
-	 * handed, so a device an upper layer still holds has to outlive
-	 * this remove: freeing it would turn that call, and any later
-	 * eh_compress_page(), into a write to freed memory. The fifo, the
-	 * completions and the bounce buffers are released by
-	 * eh_hw_deinit() above either way; only the struct is held back.
+	 * A claimed device is still owned by the upper layer: the node was
+	 * self-linked, meaning eh_create() handed it out and nobody called
+	 * eh_destroy() yet. Do NOT deinitialize the hardware buffers in that
+	 * case -- eh_hw_deinit() frees the fifo, the completions and the
+	 * bounce buffers and NULLs regs, leaving the device the upper layer
+	 * still holds with a dangling fifo and no registers, so the next
+	 * eh_compress_page()/eh_decompress_page() writes through NULL.
+	 *
+	 * The struct has to outlive this remove regardless (eh_destroy()
+	 * writes through the pointer it is handed), and it must stay
+	 * functional, so leave the buffers intact and let the upper layer's
+	 * eh_destroy() path release them. Only tear the hardware down for a
+	 * device nobody else holds.
 	 */
-	if (!claimed)
+	if (!claimed) {
+		unsigned long data;
+
+		/*
+		 * Disable the engine before releasing its buffers, as
+		 * eh_suspend() does. eh_hw_deinit() free()s the compression
+		 * output pages that the still-enabled FIFO would otherwise
+		 * keep writing to if the drain above timed out (the pipeline
+		 * is wedged and the thread reports it as a hardware fault).
+		 */
+		eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, ~0UL);
+		eh_write_register(eh_dev, EH_REG_INTRP_MASK_DCMP, ~0UL);
+		data = eh_read_register(eh_dev, EH_REG_CDESC_CTRL);
+		data &= ~(1UL << EH_CDESC_CTRL_COMPRESS_ENABLE_SHIFT);
+		eh_write_register(eh_dev, EH_REG_CDESC_CTRL, data);
+
+		eh_hw_deinit(eh_dev);
+		clk_disable_unprepare(eh_dev->clk);
+		clk_put(eh_dev->clk);
+		pm_runtime_put_sync(&pdev->dev);
+		pm_runtime_disable(&pdev->dev);
 		kfree(eh_dev);
+		return 0;
+	}
+
+	pr_warn("eh: device still claimed at remove; leaving hardware up\n");
 	return 0;
 }
 
