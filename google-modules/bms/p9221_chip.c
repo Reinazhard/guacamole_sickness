@@ -1143,7 +1143,7 @@ static int p9412_chip_tx_mode(struct p9221_charger_data *chgr, bool enable)
 		logbuffer_log(chgr->rtx_log, "fail to set RTxFOD threshold, ret=%d\n", ret);
 
 	if (chgr->pdata->apbst_en && !chgr->pdata->hw_ocp_det)
-		mod_delayed_work(system_wq, &chgr->chk_rtx_ocp_work, 0);
+		mod_delayed_work(system_percpu_wq, &chgr->chk_rtx_ocp_work, 0);
 
 	return 0;
 }
@@ -1225,7 +1225,7 @@ static int ra9530_chip_tx_mode(struct p9221_charger_data *chgr, bool enable)
 
 	/* TODO: b/289877860 check if this is needed in RA9530 */
 	//if (chgr->pdata->apbst_en && !chgr->pdata->hw_ocp_det)
-	//	mod_delayed_work(system_wq, &chgr->chk_rtx_ocp_work, 0);
+	//	mod_delayed_work(system_percpu_wq, &chgr->chk_rtx_ocp_work, 0);
 
 	logbuffer_log(chgr->rtx_log, "rtx mode=1");
 
@@ -3171,7 +3171,7 @@ static void p9xxx_gpio_set(struct gpio_chip *chip, unsigned int offset, int valu
 			/* Prevent device removal while spoofing is enabled */
 			if (charger->det_status == 1) {
 				__pm_stay_awake(charger->det_status_ws);
-				mod_delayed_work(system_wq, &charger->change_det_status_work,
+				mod_delayed_work(system_percpu_wq, &charger->change_det_status_work,
 						 msecs_to_jiffies(DET_READY_DEBOUNCE_MS));
 			}
 		}

@@ -402,7 +402,7 @@ static int max77779_fg_model_reload(struct max77779_fg_chip *chip, bool force)
 	chip->model_reload = MAX77779_FG_LOAD_MODEL_REQUEST;
 	chip->model_ok = false;
 	chip->por = true;
-	mod_delayed_work(system_wq, &chip->model_work, 0);
+	mod_delayed_work(system_percpu_wq, &chip->model_work, 0);
 
 	return 0;
 }
@@ -1930,7 +1930,7 @@ static int max77779_gbms_fg_set_property(struct power_supply *psy,
 		}
 		mutex_unlock(&ce->batt_ce_lock);
 
-		mod_delayed_work(system_wq, &chip->model_work, msecs_to_jiffies(351));
+		mod_delayed_work(system_percpu_wq, &chip->model_work, msecs_to_jiffies(351));
 
 		break;
 	case GBMS_PROP_HEALTH_ACT_IMPEDANCE:
@@ -3517,7 +3517,7 @@ static void max77779_fg_model_work(struct work_struct *work)
 		power_supply_changed(chip->psy);
 	} else if (chip->model_reload >= MAX77779_FG_LOAD_MODEL_REQUEST) {
 		chip->model_reload += 1;
-		mod_delayed_work(system_wq, &chip->model_work, msecs_to_jiffies(1000));
+		mod_delayed_work(system_percpu_wq, &chip->model_work, msecs_to_jiffies(1000));
 	}
 
 	mutex_unlock(&chip->model_lock);

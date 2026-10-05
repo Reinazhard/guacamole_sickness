@@ -244,7 +244,7 @@ int pca9468_send_pd_message(struct pca9468_charger *pca9468,
 	/* PPS_Work: will reschedule */
 	pr_debug("%s: pps_ui = %d\n", __func__, pps_ui);
 	if (pps_ui > 0)
-		mod_delayed_work(system_wq, &pca9468->pps_work,
+		mod_delayed_work(system_percpu_wq, &pca9468->pps_work,
 				 msecs_to_jiffies(pps_ui));
 
 	return pps_ui;
