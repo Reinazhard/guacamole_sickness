@@ -547,6 +547,7 @@ static void zram_stat_compr_data_dec(struct zram *zram, unsigned int prio,
 #ifdef CONFIG_ZRAM_GS_WRITEBACK
 #define INVALID_BDEV_BLOCK		(~0UL)
 
+static void free_raw_scratch(struct zram *zram);
 static int read_from_zspool_raw(struct zram *zram, struct page *page,
 				u32 index);
 static int read_from_zspool(struct zram *zram, struct page *page, u32 index);
@@ -2522,8 +2523,12 @@ static void zram_meta_free(struct zram *zram, u64 disksize)
 
 	zs_destroy_pool(zram->mem_pool);
 #ifdef CONFIG_ZRAM_GS_WRITEBACK
-	free_percpu(zram->raw_scratch);
-	zram->raw_scratch = NULL;
+	/*
+	 * The pages the array points at are allocated lazily, so free them
+	 * before the array: free_percpu() alone leaks every page a CPU ever
+	 * touched.
+	 */
+	free_raw_scratch(zram);
 #endif
 	vfree(zram->table);
 	zram->table = NULL;
@@ -2722,11 +2727,47 @@ static int read_compressed_page(struct zram *zram, struct page *page, u32 index)
 }
 
 #if defined CONFIG_ZRAM_GS_WRITEBACK
+/*
+ * get_raw_scratch() allocates lazily, so a CPU that never ran
+ * read_from_zspool_raw() leaves its slot NULL and must be skipped.
+ */
+static void free_raw_scratch(struct zram *zram)
+{
+	void __percpu *scratch = zram->raw_scratch;
+	int cpu;
+
+	if (!scratch)
+		return;
+
+	for_each_possible_cpu(cpu) {
+		void *slot = *(void **)per_cpu_ptr(scratch, cpu);
+
+		if (slot)
+			free_page((unsigned long)slot);
+	}
+	free_percpu(scratch);
+	zram->raw_scratch = NULL;
+}
+
+/*
+ * GFP_ATOMIC is deliberate: the caller holds preemption disabled on the
+ * writeback read path, so this cannot sleep.
+ */
+static void *get_raw_scratch(struct zram *zram)
+{
+	void **slot = this_cpu_ptr(zram->raw_scratch);
+
+	if (!*slot)
+		*slot = (void *)__get_free_page(GFP_ATOMIC);
+
+	return *slot;
+}
+
 static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
 {
 	unsigned long handle;
 	unsigned int size;
-	void *src, *local_copy, **slot;
+	void *src, *local_copy;
 	int ret = 0;
 
 	handle = zram_get_handle(zram, index);
@@ -2741,15 +2782,11 @@ static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
 	 * used at all.
 	 */
 	preempt_disable();
-	slot = this_cpu_ptr(zram->raw_scratch);
-	if (!*slot) {
-		*slot = (void *)__get_free_page(GFP_ATOMIC);
-		if (!*slot) {
-			preempt_enable();
-			return -ENOMEM;
-		}
+	local_copy = get_raw_scratch(zram);
+	if (!local_copy) {
+		preempt_enable();
+		return -ENOMEM;
 	}
-	local_copy = *slot;
 
 	src = zs_obj_read_begin(zram->mem_pool, handle, size, local_copy);
 	memcpy_to_page(page, 0, src, size);
