@@ -2594,8 +2594,15 @@ void zram_recompress_slot_update(struct zram *zram, u32 index,
 	zram_set_obj_size(zram, index, comp_len);
 	zram_set_priority(zram, index, prio);
 
-	atomic64_add(comp_len, &zram->stats.compr_data_size);
-	atomic64_inc(&zram->stats.pages_stored);
+	/*
+	 * Account through the prio-aware helpers, like zram_slot_update()
+	 * does. zram_free_page() decrements slowpath_pages_stored /
+	 * slowpath_compr_data_size via the old prio, so incrementing only
+	 * the generic counters here would under-count the slowpath ones
+	 * permanently.
+	 */
+	zram_stat_compr_data_inc(zram, prio, comp_len);
+	zram_stat_page_stored_inc(zram, prio);
 }
 
 /*
