@@ -641,6 +641,8 @@ static void scan_and_kill(void)
 		 * next cycle escalates and over-kills.
 		 */
 		victim->score = get_reclaimable_pages(mm);
+		/* size was sampled in find_victims(); keep the two in step */
+		victim->size = victim->score;
 
 		/*
 		 * The kill is dispatched below, so these pages are now
