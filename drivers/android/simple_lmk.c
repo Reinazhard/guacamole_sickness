@@ -161,6 +161,53 @@ static unsigned long get_target_free_pages(void)
 	return deficit - pending;
 }
 
+/*
+ * Consecutive idle reclaim cycles required before the kill target steps down
+ * one tier. Hysteresis: a momentary lull between two pressure bursts must not
+ * undo the escalation, or the driver thrashes between tiers and kills a few
+ * extra apps each time it climbs back.
+ */
+#define LMK_RELAX_CYCLES 3
+
+/*
+ * Step the kill target back toward the least aggressive tier once the deficit
+ * has actually been resolved.
+ *
+ * target_min_adj is only ever lowered (PSI escalation and the OOM notifier
+ * both write it), so without this a single PSI spike or one uncaught OOM
+ * leaves the driver killing down to adj 200 for the rest of uptime -- even
+ * under mild pressure. That also silently disables the Tier 0 grace period,
+ * which is gated on target_min_adj == tier_min_adj[0].
+ *
+ * De-escalation is hysteretic: the target steps down at most one tier per
+ * call, and only after LMK_RELAX_CYCLES consecutive cycles have seen no
+ * deficit. While a deficit remains the counter resets, because dropping back
+ * to a higher adj would stop the very kills that are closing it.
+ */
+static void relax_min_adj(void)
+{
+	static unsigned int idle_cycles;
+	short cur = atomic_read(&target_min_adj);
+	int i;
+
+	if (get_target_free_pages() != 0) {
+		idle_cycles = 0;
+		return;
+	}
+
+	if (++idle_cycles < LMK_RELAX_CYCLES)
+		return;
+
+	idle_cycles = 0;
+
+	for (i = 0; i < LMK_TIERS; i++) {
+		if (tier_min_adj[i] > cur) {
+			atomic_set(&target_min_adj, tier_min_adj[i]);
+			break;
+		}
+	}
+}
+
 static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
 {
 	const struct victim_info *lhs = (typeof(lhs))lhs_ptr;
@@ -447,6 +494,13 @@ static void scan_and_kill(void)
 	 */
 	if (READ_ONCE(reclaim_active))
 		return;
+
+	/*
+	 * The previous cycle's kills may have closed the deficit; if so, stop
+	 * killing at the aggressive tier we escalated to and fall back toward
+	 * Tier 0. Must run before find_victims(), which snapshots target_min_adj.
+	 */
+	relax_min_adj();
 
 	/*
 	 * Release whatever the previous cycle left behind before touching the
