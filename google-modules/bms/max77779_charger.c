@@ -853,7 +853,7 @@ static int max77779_set_insel(struct max77779_chgr_data *data,
 	}
 
 	if (uc_data->wlc_notify_charge_disable)
-		mod_delayed_work(system_wq, &data->wcin_charge_disable_work, 0);
+		mod_delayed_work(system_percpu_wq, &data->wcin_charge_disable_work, 0);
 
 	if (from_uc != use_case || force_wlc || wlc_on) {
 		enum wlc_state_t state;

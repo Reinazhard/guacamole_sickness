@@ -420,7 +420,7 @@ struct bd_last_read_val {
 
 static void reschedule_chg_work(struct chg_drv *chg_drv)
 {
-	mod_delayed_work(system_wq, &chg_drv->chg_work, 0);
+	mod_delayed_work(system_percpu_wq, &chg_drv->chg_work, 0);
 	pr_debug("%s: rescheduling\n", __func__);
 }
 
@@ -2293,7 +2293,7 @@ static int chg_start_bd_work(struct chg_drv *chg_drv)
 	}
 
 	/* bd_work will keep track of time */
-	mod_delayed_work(system_wq, &chg_drv->bd_work, 0);
+	mod_delayed_work(system_percpu_wq, &chg_drv->bd_work, 0);
 	mutex_unlock(&chg_drv->bd_lock);
 
 	return 0;

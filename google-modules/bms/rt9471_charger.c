@@ -911,7 +911,7 @@ static void rt9471_buck_dwork_handler(struct work_struct *work)
 
 	if (chg_done && !chip->chg_done_once) {
 		chip->chg_done_once = true;
-		mod_delayed_work(system_wq, &chip->buck_dwork,
+		mod_delayed_work(system_percpu_wq, &chip->buck_dwork,
 				 msecs_to_jiffies(100));
 	}
 }
@@ -1055,7 +1055,7 @@ static int rt9471_chg_done_irq_handler(struct rt9471_chip *chip)
 		return 0;
 	cancel_delayed_work_sync(&chip->buck_dwork);
 	chip->chg_done_once = false;
-	mod_delayed_work(system_wq, &chip->buck_dwork, msecs_to_jiffies(100));
+	mod_delayed_work(system_percpu_wq, &chip->buck_dwork, msecs_to_jiffies(100));
 	return 0;
 }
 
@@ -1078,7 +1078,7 @@ static int rt9471_chg_rdy_irq_handler(struct rt9471_chip *chip)
 		return 0;
 	if (chip->chip_rev <= 3)
 		rt9471_bc12_done_handler(chip);
-	mod_delayed_work(system_wq, &chip->buck_dwork, msecs_to_jiffies(100));
+	mod_delayed_work(system_percpu_wq, &chip->buck_dwork, msecs_to_jiffies(100));
 	return 0;
 }
 

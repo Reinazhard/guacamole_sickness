@@ -726,7 +726,7 @@ static void google_dual_batt_work(struct work_struct *work)
 	gdbatt_select_cc_max(dual_fg_drv);
 
 done:
-	mod_delayed_work(system_wq, &dual_fg_drv->gdbatt_work,
+	mod_delayed_work(system_percpu_wq, &dual_fg_drv->gdbatt_work,
 			 msecs_to_jiffies(DUAL_FG_WORK_PERIOD_MS));
 }
 
@@ -968,7 +968,7 @@ static int gdbatt_gbms_set_property(struct power_supply *psy,
 		if (dual_fg_drv->cable_in)
 			dual_fg_drv->last_update = get_boot_sec();
 		mutex_unlock(&dual_fg_drv->stats_lock);
-		mod_delayed_work(system_wq, &dual_fg_drv->gdbatt_work, 0);
+		mod_delayed_work(system_percpu_wq, &dual_fg_drv->gdbatt_work, 0);
 		break;
 	case GBMS_PROP_HEALTH_ACT_IMPEDANCE:
 		/* TODO: discuss with BattEng to decide save data */
@@ -1243,7 +1243,7 @@ static void google_dual_batt_gauge_init_work(struct work_struct *work)
 
 	dual_fg_drv->init_complete = true;
 	dual_fg_drv->resume_complete = true;
-	mod_delayed_work(system_wq, &dual_fg_drv->gdbatt_work, 0);
+	mod_delayed_work(system_percpu_wq, &dual_fg_drv->gdbatt_work, 0);
 	dev_info(dual_fg_drv->device, "google_dual_batt_gauge_init_work done\n");
 
 	return;

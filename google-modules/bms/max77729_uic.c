@@ -451,7 +451,7 @@ static irqreturn_t max77729_uic_irq(int irq, void *client)
 		return IRQ_NONE;
 
 	if (uic_int & MAX77729_UIC_INT_VBUSDETI)
-		mod_delayed_work(system_wq, &data->noautoibus_work,
+		mod_delayed_work(system_percpu_wq, &data->noautoibus_work,
 				 msecs_to_jiffies(NAI_DWELL_TIME));
 
 	if (uic_int & MAX77729_UIC_INT_APCMDRESI)
@@ -492,7 +492,7 @@ static void max77729_noautoibus_worker(struct work_struct *work)
 	if (ret == 0)
 		nai = max77729_uic_noautoibus_get(data->client);
 	if (nai <= 0)
-		mod_delayed_work(system_wq, &data->noautoibus_work,
+		mod_delayed_work(system_percpu_wq, &data->noautoibus_work,
 				 msecs_to_jiffies(BC_CTRL1_DWELL_TIME));
 
 	dev_err(data->dev, "NoAutoIbus WORK ret = %d, nai=%d\n", ret, nai);

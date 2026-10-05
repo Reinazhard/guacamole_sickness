@@ -906,7 +906,7 @@ static void smfc_qos_release(struct work_struct *qos_work)
 static void g2d_pm_qos_reset_request(struct smfc_dev *smfc)
 {
 	/* TODO: Optimise delay time or initialise it using DT property */
-	mod_delayed_work(system_wq, &smfc->qos_work, msecs_to_jiffies(SMFC_QOS_WAIT));
+	mod_delayed_work(system_percpu_wq, &smfc->qos_work, msecs_to_jiffies(SMFC_QOS_WAIT));
 }
 #else
 static void g2d_pm_qos_add_request(struct device *dev, struct smfc_dev *smfc)
