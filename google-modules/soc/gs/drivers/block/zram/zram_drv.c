@@ -2248,7 +2248,24 @@ static ssize_t algorithm_params_store(struct device *dev,
 	if (prio < ZRAM_PRIMARY_COMP || prio >= ZRAM_MAX_COMPS)
 		return -EINVAL;
 
+	/*
+	 * zram->params[prio] is handed to the backend by reference at
+	 * zcomp_create() time, which builds by-reference state (e.g. the
+	 * zstd/lz4 CDict) over params->dict. comp_params_store() vfree()s
+	 * that dictionary, so changing it on a live device would free memory
+	 * the backend still reads. Refuse once the device is initialized,
+	 * like comp_algorithm_store() does.
+	 */
+	down_write(&zram->init_lock);
+	if (init_done(zram)) {
+		up_write(&zram->init_lock);
+		pr_info("Can't change algorithm params for initialized device\n");
+		return -EBUSY;
+	}
+
 	ret = comp_params_store(zram, prio, level, dict_path);
+	up_write(&zram->init_lock);
+
 	return ret ? ret : len;
 }
 
