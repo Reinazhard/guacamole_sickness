@@ -3368,6 +3368,15 @@ static void zram_slot_free_notify(struct block_device *bdev,
 	atomic64_inc(&zram->stats.notify_free);
 	if (!zram_slot_trylock(zram, index)) {
 		atomic64_inc(&zram->stats.miss_free);
+		/*
+		 * The slot is being freed but is busy, so we cannot take it to
+		 * free it here. Still drop any prefetch cache entry for this
+		 * index: leaving it in place would let the next occupant of the
+		 * slot reuse a stale backing-device block. The entry is
+		 * independent of the slot, so it is safe to drop without the
+		 * slot lock.
+		 */
+		zram_prefetch_cache_drop(zram, index);
 		return;
 	}
 
