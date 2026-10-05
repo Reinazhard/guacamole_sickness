@@ -1243,15 +1243,16 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 
 	/*
 	 * Retain blk_idx here and defer its release until
-	 * swap_slot_free_notify is triggered.
+	 * swap_slot_free_notify is triggered. The store returns 1 on success
+	 * and a negative errno on failure (it never returns 0), so the block
+	 * has to be released on the error path -- nothing else will.
 	 */
 	err = zram_prefetch_cache_store(zram, index, blk_idx);
 	if (err < 0) {
 		zram_slot_unlock(zram, index);
 		zs_free(zram->mem_pool, handle);
-		return err;
-	} else if (err == 0) {
 		zram_release_bdev_block(zram, blk_idx);
+		return err;
 	}
 
 	zram_proc_wb_stat_dec(zram, index);
