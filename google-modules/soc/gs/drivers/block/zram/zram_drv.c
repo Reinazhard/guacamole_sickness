@@ -3401,6 +3401,16 @@ static void zram_reset_device(struct zram *zram)
 	part_stat_set_all(zram->disk->part0, 0);
 
 	/* I/O operation under all of CPU are done so let's free */
+	/*
+	 * Destroy the compressors first: zcomp_eh_destroy() drains the EH
+	 * completion workqueue, and a deferred completion runs
+	 * zcomp_publish_buffer() -> zram_slot_update(), which touches
+	 * zram->table and zram->mem_pool. Freeing those in zram_meta_free()
+	 * before this would leave the drained work dereferencing freed
+	 * memory.
+	 */
+	zram_destroy_comps(zram);
+
 	zram_meta_free(zram, zram->disksize);
 	zram->disksize = 0;
 #if IS_ENABLED(CONFIG_ZRAM_GS_SLOWPATH_COMP)
@@ -3408,7 +3418,6 @@ static void zram_reset_device(struct zram *zram)
 	zram->algo_interleave = false;
 	zram->slowpath_comp = false;
 #endif
-	zram_destroy_comps(zram);
 	memset(&zram->stats, 0, sizeof(zram->stats));
 	atomic_set(&zram->pp_in_progress, 0);
 	reset_bdev(zram);
