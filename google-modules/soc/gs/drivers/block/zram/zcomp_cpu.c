@@ -167,8 +167,16 @@ static int zcomp_strm_init(struct zcomp *comp, struct zcomp_strm *zstrm)
 	int ret;
 
 	ret = zcomp_cpu->ops->create_ctx(comp->params, &zstrm->ctx);
-	if (ret)
-		goto err_out;
+	if (ret) {
+		/*
+		 * create_ctx() cleans up its own context on failure. Do not
+		 * call destroy_ctx() here: the backends free ctx->context
+		 * before returning an error but leave the pointer set, so a
+		 * second destroy would free it again.
+		 */
+		zstrm->ctx.context = NULL;
+		return ret;
+	}
 
 	/*
 	 * allocate 2 pages. 1 for compressed data, plus 1 extra for the
