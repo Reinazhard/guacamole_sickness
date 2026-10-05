@@ -161,6 +161,45 @@ static unsigned long get_target_free_pages(void)
 	return deficit - pending;
 }
 
+/*
+ * Idle reclaim cycles before the kill target steps down one tier.
+ */
+#define LMK_RELAX_CYCLES 3
+
+/*
+ * Step the kill target back toward the least aggressive tier once the deficit
+ * has been resolved.
+ *
+ * target_min_adj is only ever lowered (PSI escalation and the OOM notifier
+ * both write it), so without this a single PSI spike or one uncaught OOM
+ * leaves the driver killing down to adj 200 for the rest of uptime. That also
+ * disables the Tier 0 grace period in find_victims(), which is gated on
+ * target_min_adj == tier_min_adj[0].
+ */
+static void relax_min_adj(void)
+{
+	static unsigned int idle_cycles;
+	short cur = atomic_read(&target_min_adj);
+	int i;
+
+	if (get_target_free_pages() != 0) {
+		idle_cycles = 0;
+		return;
+	}
+
+	if (++idle_cycles < LMK_RELAX_CYCLES)
+		return;
+
+	idle_cycles = 0;
+
+	for (i = 0; i < LMK_TIERS; i++) {
+		if (tier_min_adj[i] > cur) {
+			atomic_set(&target_min_adj, tier_min_adj[i]);
+			break;
+		}
+	}
+}
+
 static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
 {
 	const struct victim_info *lhs = (typeof(lhs))lhs_ptr;
@@ -447,6 +486,11 @@ static void scan_and_kill(void)
 	 */
 	if (READ_ONCE(reclaim_active))
 		return;
+
+	/*
+	 * Must run before find_victims(), which snapshots target_min_adj.
+	 */
+	relax_min_adj();
 
 	/*
 	 * Release whatever the previous cycle left behind before touching the
