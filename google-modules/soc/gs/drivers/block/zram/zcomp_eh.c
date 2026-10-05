@@ -46,7 +46,20 @@ static void zcomp_unplug(struct blk_plug_cb *cb, bool from_schedule)
  */
 static void zcomp_eh_drain(void *priv)
 {
-	zcomp_flush((struct zcomp_eh *)priv);
+	struct zcomp_eh *zcomp_eh = priv;
+	unsigned int noio_flag;
+
+	/*
+	 * This runs on behalf of a suspending/removing task, not the
+	 * submitter, so it does not hold PF_MEMALLOC the way the reclaim path
+	 * that owns these cookies does. eh_compress_page() and the backends
+	 * rely on that flag to make forward progress under memory pressure
+	 * (zstd_custom_alloc falls back to GFP_ATOMIC when !preemptible()),
+	 * so raise it here for the drain.
+	 */
+	noio_flag = memalloc_noio_save();
+	zcomp_flush(zcomp_eh);
+	memalloc_noio_restore(noio_flag);
 }
 
 /*
@@ -344,6 +357,15 @@ static int zcomp_eh_decompress(struct zcomp *comp, void *src,
 static void zcomp_eh_destroy(struct zcomp *comp)
 {
 	struct zcomp_eh *zcomp_eh = comp->private;
+
+	/*
+	 * Flush anything still batched on the block plug. zcomp_eh_compress()
+	 * appends cookies to the shared request_list and takes a bio reference
+	 * for each but does not count them in nr_inflight, so nothing else
+	 * retires them: leaving them here abandons the bios and lets a later
+	 * zcomp_unplug() run against the zcomp_eh we are about to free.
+	 */
+	zcomp_flush(zcomp_eh);
 
 	/*
 	 * Drains, so every deferred completion has finished and returned its
