@@ -1415,7 +1415,14 @@ static int eh_of_probe(struct platform_device *pdev)
 	ret = exynos_get_idle_ip_index(dev_name(&pdev->dev));
 	if (ret < 0) {
 		pr_err("fail to get idle ip index\n");
-		goto free_ehdev;
+		/*
+		 * eh_init() succeeded, so the compression thread is running,
+		 * both IRQs are registered and the fifo/completions/buffers
+		 * are allocated. Tear all of that down before freeing; a bare
+		 * kfree() here would leave the kthread and the IRQ handlers
+		 * pointing at freed memory.
+		 */
+		goto deinit_ehdev;
 	}
 	eh_dev->ip_index = ret;
 #endif
@@ -1425,6 +1432,15 @@ static int eh_of_probe(struct platform_device *pdev)
 	pr_info("starting probing done\n");
 	return 0;
 
+#ifdef CONFIG_SOC_ZUMA
+deinit_ehdev:
+	wake_up(&eh_dev->comp_wq);
+	kthread_stop(eh_dev->comp_thread);
+	cpu_latency_qos_remove_request(&eh_dev->pm_qos_req);
+	free_irq(eh_dev->error_irq, eh_dev);
+	free_irq(eh_dev->comp_irq, eh_dev);
+	eh_hw_deinit(eh_dev);
+#endif
 free_ehdev:
 	kfree(eh_dev);
 put_disable_clk:
