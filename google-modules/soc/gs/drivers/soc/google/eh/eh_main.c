@@ -1201,6 +1201,16 @@ static void eh_setup_dcmd(struct eh_device *eh_dev, unsigned int index,
 int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 {
 	/*
+	 * Refuse admission while suspended or removed. A request admitted in
+	 * the window between eh_suspend()'s in-flight check and the clock gate
+	 * would be silently discarded when eh_resume() -> eh_compr_fifo_init()
+	 * resets the descriptor index registers, stranding its submitter.
+	 * Callers retry on -EBUSY.
+	 */
+	if (unlikely(READ_ONCE(eh_dev->suspended) || READ_ONCE(eh_dev->removed)))
+		return -EBUSY;
+
+	/*
 	 * Counted here, at the single point where a request enters the
 	 * driver, and released only once its completion callback has
 	 * returned. Everything between those two points -- hardware ring,
@@ -1213,6 +1223,12 @@ int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 	 * still outstanding.
 	 */
 	atomic_inc(&eh_dev->nr_inflight);
+
+	/* Re-check after publishing the count, to close the race with suspend */
+	if (unlikely(READ_ONCE(eh_dev->suspended) || READ_ONCE(eh_dev->removed))) {
+		eh_request_done(eh_dev);
+		return -EBUSY;
+	}
 
 	/*
 	 * If sw_fifo is not empty, it means hw fifo is already full so
@@ -1553,6 +1569,14 @@ static int eh_suspend(struct device *dev)
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
 
 	/*
+	 * Stop admitting new requests before draining, so the in-flight
+	 * count can only fall from here. Without this a request admitted in
+	 * the window between the check below and the clock gate would be
+	 * discarded by eh_compr_fifo_init() on resume.
+	 */
+	WRITE_ONCE(eh_dev->suspended, true);
+
+	/*
 	 * Take back anything the upper layer is still holding. Requests
 	 * batched on a block plug are released only when the owning task
 	 * unplugs, and a task the freezer has already stopped will never
@@ -1579,6 +1603,8 @@ static int eh_suspend(struct device *dev)
 				msecs_to_jiffies(EH_SUSPEND_DRAIN_MS))) {
 		pr_warn("block suspend (%d requests in flight)\n",
 			atomic_read(&eh_dev->nr_inflight));
+		/* Refused: do not leave the device refusing admission */
+		WRITE_ONCE(eh_dev->suspended, false);
 		return -EBUSY;
 	}
 
@@ -1616,6 +1642,9 @@ static int eh_resume(struct device *dev)
 	/* re-enable all interrupts */
 	eh_write_register(eh_dev, EH_REG_INTRP_MASK_ERROR, 0);
 	eh_write_register(eh_dev, EH_REG_INTRP_MASK_DCMP, 0);
+
+	/* Admit requests again now that the ring is ready */
+	WRITE_ONCE(eh_dev->suspended, false);
 
 	dev_dbg(dev, "EH resumed\n");
 	return 0;
