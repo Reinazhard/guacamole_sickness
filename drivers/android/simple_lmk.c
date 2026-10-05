@@ -242,8 +242,15 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
 
 /*
  * Pages a task is holding that only killing it would release: resident
- * anonymous memory, plus the swap slots its entries occupy. File pages are
- * left out because the kernel can drop those without killing anything.
+ * anonymous memory, tmpfs (shmem) pages, plus the swap slots its entries
+ * occupy. File pages are left out because the kernel can drop those without
+ * killing anything.
+ *
+ * shmem is included because exit_mmap() frees it with the rest of the address
+ * space, and it is a large, common consumer on Android. It is charged to
+ * MM_SHMEMPAGES, not MM_ANONPAGES, so omitting it makes get_reclaimable_pages()
+ * under-report exactly the processes sitting on the most reclaimable memory.
+ * The kernel's own oom_badness() counts it too, via get_mm_rss(mm).
  *
  * Freeing the swap slots matters here specifically: this device runs zram
  * near capacity, so reclaim cannot push further anon pages out until some
@@ -263,7 +270,9 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
  */
 static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 {
-	return get_mm_counter(mm, MM_ANONPAGES) + get_mm_counter(mm, MM_SWAPENTS);
+	return get_mm_counter(mm, MM_ANONPAGES) +
+	       get_mm_counter(mm, MM_SHMEMPAGES) +
+	       get_mm_counter(mm, MM_SWAPENTS);
 }
 
 static unsigned long find_victims(int *vindex)
