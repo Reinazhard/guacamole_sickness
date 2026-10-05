@@ -282,7 +282,9 @@ static unsigned long find_victims(int *vindex)
 		old_vindex = *vindex;
 		do {
 			struct task_struct *vtsk;
+			struct mm_struct *vmm;
 			unsigned long pages = 0;
+			int vi;
 
 			next = tsk->simple_lmk_next;
 
@@ -312,16 +314,43 @@ static unsigned long find_victims(int *vindex)
 				goto drop_ref;
 			}
 
+			/*
+			 * Cache the mm and its reference while task_lock is held
+			 * so the slot records the same object that is grabbed.
+			 * Re-reading vtsk->mm after the unlock could observe a
+			 * cleared mm while the reference was taken on the old
+			 * one, leaving a slot with a NULL mm and a stranded ref.
+			 */
+			vmm = vtsk->mm;
 			get_task_struct(vtsk);
-			mmgrab(vtsk->mm);
+			mmgrab(vmm);
 			task_unlock(vtsk);
 			rcu_read_unlock();
 
-		victims[*vindex].tsk = vtsk;
-		victims[*vindex].mm = vtsk->mm;
-		victims[*vindex].size = pages;
-		/* Not killed yet, so nothing is pending on its account */
-		victims[*vindex].pending = 0;
+			/*
+			 * An mm can be shared by more than one thread group, in
+			 * which case it is reachable from more than one leader
+			 * and would otherwise get a slot and an mmgrab() of its
+			 * own per leader. simple_lmk_mm_freed() releases the
+			 * reference through a single slot when the mm dies, so
+			 * duplicates would strand the others. Skip any mm that
+			 * already has a slot.
+			 */
+			for (vi = 0; vi < *vindex; vi++) {
+				if (victims[vi].mm == vmm)
+					break;
+			}
+			if (vi < *vindex) {
+				mmdrop(vmm);
+				put_task_struct(vtsk);
+				goto drop_ref;
+			}
+
+			victims[*vindex].tsk = vtsk;
+			victims[*vindex].mm = vmm;
+			victims[*vindex].size = pages;
+			/* Not killed yet, so nothing is pending on its account */
+			victims[*vindex].pending = 0;
 
 			pages_found += pages;
 
@@ -381,7 +410,8 @@ static int process_victims(int vlen)
 
 		/* The victim's mm and task refs were taken in find_victims */
 		if (pages_found >= target_pages) {
-			mmdrop(victim->mm);
+			if (victim->mm)
+				mmdrop(victim->mm);
 			put_task_struct(vtsk);
 			victim->mm = NULL;
 			victim->tsk = NULL;
@@ -544,13 +574,21 @@ static void scan_and_kill(void)
 		/* Allow the victim to run on any CPU. This won't schedule. */
 		set_cpus_allowed_ptr(vtsk, cpu_possible_mask);
 
-		/* Store the number of anon pages to sort victims for reaping */
-		victim->score = get_mm_counter(mm, MM_ANONPAGES);
+		/*
+		 * Credit the pages the kill is expected to release. This must
+		 * match get_reclaimable_pages(), which is what victim->size
+		 * (and thus the deficit accounting) is based on: resident
+		 * anonymous pages plus the swap slots their entries occupy.
+		 * Counting only MM_ANONPAGES here under-credits the kill, so
+		 * get_target_free_pages() re-charges the same deficit and the
+		 * next cycle escalates and over-kills.
+		 */
+		victim->score = get_reclaimable_pages(mm);
 
 		/*
-		 * The kill is dispatched below, so this victim's resident
-		 * anonymous pages are now guaranteed to be freed even though
-		 * nr_free_pages() will not reflect that for some time.
+		 * The kill is dispatched below, so these pages are now
+		 * guaranteed to be freed even though nr_free_pages() will not
+		 * reflect that for some time.
 		 */
 		victim->pending = victim->score;
 
@@ -803,7 +841,12 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 		if (victims[i].mm == mm) {
 			victims[i].mm = NULL;
 			matched = true;
-			break;
+			/*
+			 * Keep scanning: nothing else should hold a duplicate
+			 * slot now that find_victims() dedups, but if one ever
+			 * does, releasing only the first would strand its
+			 * mmgrab() and leak the mm.
+			 */
 		}
 	}
 	spin_unlock_irqrestore(&victims_lock, flags);
