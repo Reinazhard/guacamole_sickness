@@ -1150,7 +1150,9 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 			goto fail;
 		}
 
-		WARN_ON(register_oom_notifier(&simple_lmk_oom_nb));
+		ret = register_oom_notifier(&simple_lmk_oom_nb);
+		if (ret)
+			goto fail;
 
 		complete(&psi_init_done);
 	}
@@ -1161,7 +1163,14 @@ fail:
 	/*
 	 * Roll back any partially created state and allow lmkd to retry
 	 * initialization on a subsequent write to the minfree parameter.
+	 *
+	 * The psi thread blocks on psi_init_done before it ever touches
+	 * psi_triggers[], and that completion is only posted on the success
+	 * path. Release it before stopping the thread, or a failure that
+	 * happens after the thread is created would leave it parked in
+	 * wait_for_completion() and kthread_stop() would block forever.
 	 */
+	complete(&psi_init_done);
 	if (psi_thread)
 		kthread_stop(psi_thread);
 	for (i = 0; i < LMK_TIERS; i++) {
