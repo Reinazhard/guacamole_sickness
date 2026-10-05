@@ -2517,6 +2517,10 @@ static void zram_meta_free(struct zram *zram, u64 disksize)
 	}
 
 	zs_destroy_pool(zram->mem_pool);
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
+	free_percpu(zram->raw_scratch);
+	zram->raw_scratch = NULL;
+#endif
 	vfree(zram->table);
 	zram->table = NULL;
 }
@@ -2536,6 +2540,17 @@ static bool zram_meta_alloc(struct zram *zram, u64 disksize)
 		zram->table = NULL;
 		return false;
 	}
+
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
+	zram->raw_scratch = alloc_percpu(void *);
+	if (!zram->raw_scratch) {
+		zs_destroy_pool(zram->mem_pool);
+		zram->mem_pool = NULL;
+		vfree(zram->table);
+		zram->table = NULL;
+		return false;
+	}
+#endif
 
 	for (index = 0; index < num_pages; index++)
 		spin_lock_init(&zram->table[index].lock);
@@ -2707,28 +2722,39 @@ static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
 {
 	unsigned long handle;
 	unsigned int size;
-	void *src;
+	void *src, *local_copy, **slot;
+	int ret = 0;
 
 	handle = zram_get_handle(zram, index);
 	size = zram_get_obj_size(zram, index);
 
 	/*
 	 * No decompression takes place here, as we read raw compressed data.
+	 *
+	 * Stage through a per-CPU scratch page instead of allocating one per
+	 * I/O: this is on the writeback read path, GFP_ATOMIC can fail under
+	 * memory pressure, and for a single-page object the buffer is never
+	 * used at all.
 	 */
-	void *local_copy;
-
-	local_copy = kmalloc(PAGE_SIZE, GFP_ATOMIC);
-	if (!local_copy)
-		return -ENOMEM;
+	preempt_disable();
+	slot = this_cpu_ptr(zram->raw_scratch);
+	if (!*slot) {
+		*slot = (void *)__get_free_page(GFP_ATOMIC);
+		if (!*slot) {
+			preempt_enable();
+			return -ENOMEM;
+		}
+	}
+	local_copy = *slot;
 
 	src = zs_obj_read_begin(zram->mem_pool, handle, size, local_copy);
 	memcpy_to_page(page, 0, src, size);
 	zs_obj_read_end(zram->mem_pool, handle, size, src);
-	kfree(local_copy);
+	preempt_enable();
 
 	memzero_page(page, size, PAGE_SIZE - size);
 
-	return 0;
+	return ret;
 }
 #endif
 
