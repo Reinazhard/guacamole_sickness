@@ -29,17 +29,14 @@
 /* Android oom_score_adj range is 0 to 1000 */
 #define ADJ_MAX 1000
 
+/* Idle cycles required before the kill target steps back toward Tier 0 */
+#define LMK_RELAX_CYCLES 3
+
 /*
- * PSI stall thresholds.
- *
- * Full stall indicates all non-idle tasks are stalled on memory contention,
- * leaving CPUs with no productive work. On a 120 Hz display (8.3 ms deadline),
- * 100 ms of CPU stall represents ~12 dropped frames (perceptible UI stutter).
- * 150 ms drops ~18 frames (hitch), and 200 ms drops ~24 frames (severe near-OOM).
- *
- * Latency tolerance is a human perception and display invariant across
- * devices, while the kill volume automatically self-calibrates to device RAM
- * capacity via totalreserve_pages and get_target_free_pages().
+ * PSI stall thresholds, one per kill tier. Full stall means every non-idle task
+ * is blocked on memory, so the bound is a latency budget: 100 ms is about
+ * twelve dropped frames on a 120 Hz panel, 200 ms is near-OOM. Perception and
+ * the display fix these, not RAM size.
  */
 #define LMK_PSI_WINDOW_MS 1000
 #define LMK_PSI_THRESHOLD_LOW_US 100000
@@ -48,16 +45,32 @@
 
 #define LMK_TIERS 3
 
-/*
- * Stall thresholds, one per tier, in the same order as tier_min_adj: index 0
- * is Tier 0 (cached, most protected, easiest to trip) and index LMK_TIERS - 1
- * is the most aggressive. tier_reach_adj() also uses these as the reference
- * stall for each tier's depth.
- */
 static const int psi_thresholds[LMK_TIERS] = {
 	LMK_PSI_THRESHOLD_LOW_US,
 	LMK_PSI_THRESHOLD_MED_US,
 	LMK_PSI_THRESHOLD_HIGH_US
+};
+
+/*
+ * Tier adj ceilings, from the Android priority brackets. A tier is entered
+ * when its PSI threshold is crossed; these are the shallowest adj each tier may
+ * reach, i.e. the shortest list of processes it will ever consider.
+ */
+#define LMK_TIER0_MIN_ADJ 800
+#define LMK_TIER1_MIN_ADJ 500
+#define LMK_TIER2_MIN_ADJ 200
+
+/*
+ * Nothing below this adj is ever killed regardless of pressure: it is the
+ * foreground/visible band. If RAM runs out under adj < 200 the core OOM killer
+ * takes over.
+ */
+#define LMK_TIER_FLOOR_ADJ 200
+
+static const short tier_min_adj[LMK_TIERS] = {
+	LMK_TIER0_MIN_ADJ,
+	LMK_TIER1_MIN_ADJ,
+	LMK_TIER2_MIN_ADJ
 };
 
 struct victim_info {
@@ -65,12 +78,7 @@ struct victim_info {
 	struct mm_struct *mm;
 	unsigned long size;
 	unsigned long score;
-	/*
-	 * Resident anonymous pages credited against the memory deficit for
-	 * this victim. Zero until the kill is actually dispatched, so that
-	 * candidates that were selected but never killed are not counted as
-	 * memory already on its way to being freed.
-	 */
+	/* Pages credited against the deficit once the kill is dispatched */
 	unsigned long pending;
 };
 
@@ -81,69 +89,21 @@ static DECLARE_WAIT_QUEUE_HEAD(oom_waitq);
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 static DECLARE_COMPLETION(psi_init_done);
 
+/* Ceiling the current cycle may reach, set by PSI or the OOM notifier */
+static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
+static atomic_t needs_reclaim = ATOMIC_INIT(0);
+static atomic_t needs_reap = ATOMIC_INIT(0);
+static atomic_t oom_attempts = ATOMIC_INIT(0);
+
 static int nr_victims;
 static bool reclaim_active;
 
 /*
- * Android oom_score_adj tier boundaries:
- * - Tier 0: Cached processes (CACHED_APP_MIN_ADJ, SERVICE_B_ADJ)
- * - Tier 1: Non-perceptible background (SERVICE_ADJ, HOME_APP_ADJ, PREVIOUS_APP_ADJ)
- * - Tier 2: Perceptible background (PERCEPTIBLE_APP_ADJ to HEAVYWEIGHT_APP_ADJ)
- *
- * A tier is entered when its PSI stall threshold is breached (see
- * LMK_PSI_THRESHOLD_*). The threshold is a latency bound -- how long an
- * allocation may be stalled before it is perceptible -- so it is a fixed
- * property of the display and of human perception, not of RAM size. The
- * tier values below are the *shallowest* adj each tier may reach.
- *
- * How deep *within* a tier a reclaim cycle actually reaches is not a constant
- * and not a tunable: it is derived from the memory stall the device is
- * actually measuring (see tier_reach_adj()). A device that is stalling hard
- * relative to the tier's own threshold is allowed to reach its floor; one
- * stalling only just past the threshold stays near the ceiling. The reference
- * for "how hard" is the tier's threshold itself, so there is no separate
- * coefficient to set.
- *
- * Hard floor: processes with adj < LMK_TIER_FLOOR_ADJ (VISIBLE_APP_ADJ = 100,
- * foreground activities, persistent system services like .gms.persistent,
- * SystemUI, init) must NEVER be killed by simple_lmk. If physical RAM is
- * exhausted by foreground/visible tasks, the core kernel OOM killer handles it
- * by terminating the largest memory consumer.
- */
-#define LMK_TIER0_MIN_ADJ 800
-#define LMK_TIER1_MIN_ADJ 500
-#define LMK_TIER2_MIN_ADJ 200
-
-/* Absolute floor: no tier may ever select a task with a lower adj than this. */
-#define LMK_TIER_FLOOR_ADJ 200
-
-static const short tier_min_adj[LMK_TIERS] = {
-	LMK_TIER0_MIN_ADJ,
-	LMK_TIER1_MIN_ADJ,
-	LMK_TIER2_MIN_ADJ
-};
-
-static atomic_t needs_reclaim = ATOMIC_INIT(0);
-static atomic_t needs_reap = ATOMIC_INIT(0);
-static atomic_t oom_attempts = ATOMIC_INIT(0);
-static atomic_t target_min_adj = ATOMIC_INIT(tier_min_adj[0]);
-
-/*
- * Anonymous pages belonging to victims that have been killed but whose memory
- * has not yet been reaped or released by exit. nr_free_pages() still counts
- * these against us, even though they are already committed to being freed.
- *
- * Derived by summing the victims array rather than maintained as a counter:
- * a victim's memory can stop pending by any of three paths -- a successful
- * __oom_reap_task_mm(), exit_mmap() via simple_lmk_mm_freed(), or the
- * force-give-up path in next_reap_victim() -- and any of them can race.
- * Summing current state cannot double-subtract or leak the way an
- * event-driven counter can.
- *
- * This is the same invariant Sultan's synchronous design obtained by waiting
- * for each victim's memory to be freed before proceeding to kill more,
- * expressed as accounting so the kill path stays asynchronous and needs no
- * artificial cooldown.
+ * Pages belonging to killed victims whose memory has not landed yet. Summed
+ * from the victims array rather than counted: a victim stops pending through
+ * any of three racing paths (__oom_reap_task_mm, exit_mmap, the force-give-up
+ * in next_reap_victim), and summing current state cannot double-count or leak
+ * the way an event-driven counter can.
  */
 static unsigned long pages_pending_free(void)
 {
@@ -155,7 +115,6 @@ static unsigned long pages_pending_free(void)
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
 		struct mm_struct *mm = victims[i].mm;
 
-		/* No victim, or its memory has already been accounted as free */
 		if (!mm || test_bit(MMF_OOM_SKIP, &mm->flags))
 			continue;
 
@@ -166,6 +125,12 @@ static unsigned long pages_pending_free(void)
 	return total;
 }
 
+/*
+ * How far below the free-page reserve we are, less the pages already committed
+ * to earlier kills. Without that subtraction the same deficit is charged every
+ * cycle until the memory lands, and the driver keeps escalating past what the
+ * deficit needed.
+ */
 static unsigned long get_target_free_pages(void)
 {
 	unsigned long deficit, pending;
@@ -176,15 +141,6 @@ static unsigned long get_target_free_pages(void)
 	deficit = totalreserve_pages - nr_free_pages();
 	deficit += (deficit >> 3); /* 12.5% margin */
 
-	/*
-	 * Do not charge this cycle for memory that earlier kills have already
-	 * committed to freeing. Without this, the deficit is charged for the
-	 * same pages on every cycle until the victim's memory actually lands:
-	 * a cycle then sees a deficit that is already being resolved, finds no
-	 * victims left at the current tier, and escalates -- which is how the
-	 * driver reaches the most aggressive tier and kills far more than the
-	 * deficit ever required.
-	 */
 	pending = pages_pending_free();
 	if (pending >= deficit)
 		return 0;
@@ -193,19 +149,11 @@ static unsigned long get_target_free_pages(void)
 }
 
 /*
- * Measured memory-stall duty cycle.
- *
- * PSI accumulates the time tasks spend fully stalled on memory reclaim in
- * psi_system.total[PSI_POLL][PSI_MEM_FULL], in nanoseconds. Sample it and the
- * clock at each reclaim cycle; the difference is the stall the device actually
- * experienced over that interval. Dividing by the wall time gives a duty cycle
- * in [0, 100]: the fraction of the interval during which allocation was
- * blocked on memory.
- *
- * This is the same quantity PSI compares against a trigger's threshold before
- * firing, so using it to size the kill needs no new constant: the tier's own
- * threshold, expressed as a duty, is the reference for "the stall we already
- * agreed was too much".
+ * Fraction of the last interval, in percent, spent fully stalled on memory.
+ * Sample the PSI poll counter and the clock each cycle; the growth over the
+ * wall time is the same stall PSI compares against a trigger threshold, so it
+ * measures how hard reclaim is actually losing rather than just that a
+ * threshold fired.
  */
 static u64 stall_ns_last;
 static unsigned long stall_jiffies_last;
@@ -229,11 +177,6 @@ static unsigned long measure_stall_pct(unsigned long interval_jiffies)
 	return div_u64(delta_ns * 100, window_ns);
 }
 
-/*
- * Map a tier ceiling back to its tier index. Ceilings are distinct, so the
- * first match wins; anything unrecognised is treated as the most aggressive
- * tier.
- */
 static short tier_of_ceil(short ceil_adj)
 {
 	int i;
@@ -247,23 +190,15 @@ static short tier_of_ceil(short ceil_adj)
 }
 
 /*
- * Depth (lowest adj) a tier may reach, from the stall the device measured.
- *
- * The tier's threshold is the stall it took to enter the tier, so it is also
- * the reference for how deep that tier is entitled to go: reaching it means we
- * are at exactly the pressure the tier was defined for, and each further
- * multiple of it is more evidence that reclaim is losing. The driver therefore
- * descends from the tier's shallowest adj toward LMK_TIER_FLOOR_ADJ in
- * proportion to measured_stall / tier_threshold, saturating at the floor.
- *
- * Neither the reference nor the span is a chosen number: the reference is
- * LMK_PSI_THRESHOLD_*, already fixed by perception, and the span is the gap
- * between two adj values that come from the Android priority brackets.
+ * Lowest adj a tier may reach given the measured stall. The tier's own
+ * threshold is the reference: at it the tier is at exactly the pressure it was
+ * defined for and stays near its ceiling, and each further multiple of it lets
+ * the tier descend toward LMK_TIER_FLOOR_ADJ. Both the reference and the span
+ * come from values already fixed above, so there is nothing to tune.
  */
 static short tier_reach_adj(short tier_index, unsigned long stall_pct)
 {
-	unsigned long target_duty;
-	unsigned long span, reached;
+	unsigned long target_duty, span;
 
 	if (tier_index < 0 || tier_index >= LMK_TIERS)
 		tier_index = LMK_TIERS - 1;
@@ -271,16 +206,7 @@ static short tier_reach_adj(short tier_index, unsigned long stall_pct)
 	if (tier_min_adj[tier_index] <= LMK_TIER_FLOOR_ADJ)
 		return LMK_TIER_FLOOR_ADJ;
 
-	/*
-	 * The tier's threshold as a duty cycle. psi_thresholds[] is in
-	 * microseconds and the sampling window is LMK_PSI_WINDOW_MS
-	 * milliseconds, so the fraction of the window the stall would have to
-	 * fill to trip the threshold is:
-	 *
-	 *     threshold_us * 100 / (window_ms * 1000)   [percent]
-	 *
-	 * measured_stall_pct is in the same units, so the two compare directly.
-	 */
+	/* The tier threshold as a percentage of the sampling window */
 	target_duty = (unsigned long)psi_thresholds[tier_index] * 100 /
 		      (LMK_PSI_WINDOW_MS * 1000);
 	if (!target_duty)
@@ -290,33 +216,16 @@ static short tier_reach_adj(short tier_index, unsigned long stall_pct)
 		return LMK_TIER_FLOOR_ADJ;
 
 	span = tier_min_adj[tier_index] - LMK_TIER_FLOOR_ADJ;
-	reached = span * stall_pct / target_duty;
-
-	return tier_min_adj[tier_index] - (short)reached;
+	return tier_min_adj[tier_index] -
+	       (short)(span * stall_pct / target_duty);
 }
 
 /*
- * Consecutive idle reclaim cycles required before the kill target steps down
- * one tier. Hysteresis: a momentary lull between two pressure bursts must not
- * undo the escalation, or the driver thrashes between tiers and kills a few
- * extra apps each time it climbs back.
- */
-#define LMK_RELAX_CYCLES 3
-
-/*
- * Step the kill target back toward the least aggressive tier once the deficit
- * has actually been resolved.
- *
- * target_min_adj is only ever lowered (PSI escalation and the OOM notifier
- * both write it), so without this a single PSI spike or one uncaught OOM
- * leaves the driver killing down to adj 200 for the rest of uptime -- even
- * under mild pressure. That also silently disables the Tier 0 grace period,
- * which is gated on target_min_adj == tier_min_adj[0].
- *
- * De-escalation is hysteretic: the target steps down at most one tier per
- * call, and only after LMK_RELAX_CYCLES consecutive cycles have seen no
- * deficit. While a deficit remains the counter resets, because dropping back
- * to a higher adj would stop the very kills that are closing it.
+ * Raise the target one tier after LMK_RELAX_CYCLES idle cycles. target_min_adj
+ * is only ever lowered elsewhere, so without this one PSI spike or uncaught OOM
+ * would keep the driver killing to adj 200 for the rest of uptime -- and keep
+ * the Tier 0 grace period disabled, since it is gated on the target. A cycle
+ * with any deficit left resets the count.
  */
 static void relax_min_adj(void)
 {
@@ -347,11 +256,7 @@ static int victim_cmp(const void *lhs_ptr, const void *rhs_ptr)
 	const struct victim_info *lhs = (typeof(lhs))lhs_ptr;
 	const struct victim_info *rhs = (typeof(rhs))rhs_ptr;
 
-	if (rhs->score > lhs->score)
-		return 1;
-	if (rhs->score < lhs->score)
-		return -1;
-	return 0;
+	return rhs->score - lhs->score;
 }
 
 static int victim_cmp_size(const void *lhs_ptr, const void *rhs_ptr)
@@ -359,11 +264,7 @@ static int victim_cmp_size(const void *lhs_ptr, const void *rhs_ptr)
 	const struct victim_info *lhs = (typeof(lhs))lhs_ptr;
 	const struct victim_info *rhs = (typeof(rhs))rhs_ptr;
 
-	if (rhs->size > lhs->size)
-		return 1;
-	if (rhs->size < lhs->size)
-		return -1;
-	return 0;
+	return rhs->size - lhs->size;
 }
 
 static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
@@ -375,32 +276,10 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
 }
 
 /*
- * Pages a task is holding that only killing it would release: resident
- * anonymous memory, tmpfs (shmem) pages, plus the swap slots its entries
- * occupy. File pages are left out because the kernel can drop those without
- * killing anything.
- *
- * shmem is included because exit_mmap() frees it with the rest of the address
- * space, and it is a large, common consumer on Android. It is charged to
- * MM_SHMEMPAGES, not MM_ANONPAGES, so omitting it makes get_reclaimable_pages()
- * under-report exactly the processes sitting on the most reclaimable memory.
- * The kernel's own oom_badness() counts it too, via get_mm_rss(mm).
- *
- * Freeing the swap slots matters here specifically: this device runs zram
- * near capacity, so reclaim cannot push further anon pages out until some
- * slots are released.
- *
- * No attempt is made to weight these pages by how cold they are. Android
- * already orders the cached tiers by recency, so oom_score_adj carries that
- * information and find_victims() selects on it. Re-deriving coldness here
- * from how long a task has been backgrounded double-counts the same signal,
- * needs tunables to describe, and is not checkable -- MGLRU generations and
- * workingset are authoritative, and a killer should not compete with them.
- *
- * This is also what makes the deficit arithmetic sound. get_target_free_pages()
- * credits kills with the pages actually pending free, so victim sizes have to
- * mean real pages; a discounted estimate would understate the credit and
- * drive the driver to kill again.
+ * Pages only a kill would release: anonymous memory, tmpfs, and the swap slots
+ * their entries occupy. tmpfs counts because exit_mmap() frees it, and it is
+ * charged to MM_SHMEMPAGES rather than MM_ANONPAGES. File pages are left out
+ * because reclaim frees those without killing anything.
  */
 static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 {
@@ -409,53 +288,33 @@ static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 	       get_mm_counter(mm, MM_SWAPENTS);
 }
 
-static unsigned long find_victims(int *vindex, unsigned long *target_out,
-				  unsigned long stall_pct)
+/*
+ * Fill the victims array with the least important killable tasks, hand back the
+ * deficit they were selected against, and return their count. The return value
+ * is not used by the caller, so this reports through *vindex.
+ */
+static void find_victims(int *vindex, unsigned long *target_out,
+			 unsigned long stall_pct)
 {
 	short i, min_adj = ADJ_MAX, max_adj = 0;
 	short tier_ceil = atomic_read(&target_min_adj);
-	short tier, limit_adj;
+	short limit_adj = tier_reach_adj(tier_of_ceil(tier_ceil), stall_pct);
 	unsigned long pages_found = 0;
 	unsigned long target_pages = get_target_free_pages();
 	struct task_struct *tsk;
 
-	/*
-	 * The tier PSI selected sets the ceiling; the stall the device actually
-	 * measured sets how deep within that tier this cycle may reach. Map the
-	 * ceiling back to its tier index, then derive the effective adj once
-	 * per cycle so find_victims(), the grace-period gate and the sort all
-	 * agree on it.
-	 */
-	tier = tier_of_ceil(tier_ceil);
-	limit_adj = tier_reach_adj(tier, stall_pct);
-
-	/*
-	 * Hand the deficit this scan selected against back to the caller so the
-	 * kill-count pass reuses the same snapshot. Recomputing it there would
-	 * sample nr_free_pages() and pages_pending_free() a second time, so the
-	 * number of victims chosen and the number actually killed would be
-	 * decided against two different deficits.
-	 */
 	*target_out = target_pages;
 
 	/*
-	 * Phase 1: Walk the process list under RCU to collect pinned
-	 * candidates. get_task_struct() prevents the task from being freed
-	 * after we drop RCU, so the bucket chains remain valid.
+	 * Walk the process list under RCU and pin every candidate, so the
+	 * bucket chains stay valid after RCU is dropped. Zero and negative adjs
+	 * are excluded, which naturally skips init and kthreads.
 	 */
 	rcu_read_lock();
 	for_each_process(tsk) {
 		struct signal_struct *sig;
 		short adj;
 
-		/*
-		 * Search for suitable tasks with a positive adj (importance).
-		 * Since only tasks with a positive adj can be targeted, that
-		 * naturally excludes tasks which shouldn't be killed, like init
-		 * and kthreads. Although oom_score_adj can still be changed
-		 * while this code runs, it doesn't really matter; we just need
-		 * a snapshot of the task's adj.
-		 */
 		sig = tsk->signal;
 		adj = READ_ONCE(sig->oom_score_adj);
 		if (adj < limit_adj || adj > ADJ_MAX ||
@@ -474,12 +333,7 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out,
 	}
 	rcu_read_unlock();
 
-	/*
-	 * Phase 2: Evaluate pinned candidates. Each candidate gets a brief
-	 * RCU critical section only around find_lock_task_mm() (which needs
-	 * RCU for for_each_thread()). This avoids holding rcu_read_lock()
-	 * across the entire process walk and evaluation pass.
-	 */
+	/* Evaluate candidates from most to least important adj */
 	for (i = max_adj; i >= min_adj; i--) {
 		int old_vindex;
 		struct task_struct *next;
@@ -500,13 +354,9 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out,
 			next = tsk->simple_lmk_next;
 
 			/*
-			 * Grace period: protect recently backgrounded apps from
-			 * Tier 0 kills. When an app enters the cached tier
-			 * (adj >= 800), it gets a 5-second grace period.
-			 * Only applies during mild Tier 0 pressure. Gate on the
-			 * tier PSI selected, not on the derived reach, so the
-			 * protection tracks the tier rather than the current
-			 * measured stall.
+			 * 5 s grace for apps that just entered the cached tier,
+			 * and only at Tier 0. Gate on the selected tier so the
+			 * protection does not depend on the measured stall.
 			 */
 			if (tier_ceil == tier_min_adj[0] &&
 			    time_before(jiffies, tsk->simple_lmk_cache_time + msecs_to_jiffies(GRACE_PERIOD_MS)))
@@ -529,11 +379,10 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out,
 			}
 
 			/*
-			 * Cache the mm and its reference while task_lock is held
-			 * so the slot records the same object that is grabbed.
-			 * Re-reading vtsk->mm after the unlock could observe a
-			 * cleared mm while the reference was taken on the old
-			 * one, leaving a slot with a NULL mm and a stranded ref.
+			 * Take the mm and its reference under task_lock, so the
+			 * slot records the same object the reference was taken
+			 * on. Reading vtsk->mm again after the unlock could grab
+			 * a cleared mm while the slot stores the old one.
 			 */
 			vmm = vtsk->mm;
 			get_task_struct(vtsk);
@@ -542,13 +391,9 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out,
 			rcu_read_unlock();
 
 			/*
-			 * An mm can be shared by more than one thread group, in
-			 * which case it is reachable from more than one leader
-			 * and would otherwise get a slot and an mmgrab() of its
-			 * own per leader. simple_lmk_mm_freed() releases the
-			 * reference through a single slot when the mm dies, so
-			 * duplicates would strand the others. Skip any mm that
-			 * already has a slot.
+			 * An mm shared by several thread groups is reachable
+			 * from several leaders. simple_lmk_mm_freed() releases
+			 * it through a single slot, so keep only the first.
 			 */
 			for (vi = 0; vi < *vindex; vi++) {
 				if (victims[vi].mm == vmm)
@@ -563,18 +408,13 @@ static unsigned long find_victims(int *vindex, unsigned long *target_out,
 			victims[*vindex].tsk = vtsk;
 			victims[*vindex].mm = vmm;
 			victims[*vindex].size = pages;
-			/* Not killed yet, so nothing is pending on its account */
 			victims[*vindex].pending = 0;
 
 			pages_found += pages;
 
 			if (++*vindex == MAX_VICTIMS) {
 				put_task_struct(tsk);
-				/*
-				 * Drain the rest of this bucket's chain
-				 * since task_bucket[i] is already NULL
-				 * and drain_remaining won't find them.
-				 */
+				/* Drain the rest of this bucket's chain */
 				while (next) {
 					tsk = next;
 					next = tsk->simple_lmk_next;
@@ -594,7 +434,7 @@ drop_ref:
 	}
 
 drain_remaining:
-	/* Release refs for any candidates still in buckets we didn't visit */
+	/* Release candidates in buckets we stopped before reaching */
 	for (i = min_adj; i <= max_adj; i++) {
 		tsk = task_bucket[i];
 		task_bucket[i] = NULL;
@@ -604,26 +444,21 @@ drain_remaining:
 			tsk = next;
 		}
 	}
-
-	return pages_found;
 }
 
+/*
+ * Keep only as many victims as the deficit needs, releasing the rest. Making
+ * the kill count agree with find_victims() means both use one target snapshot.
+ */
 static int process_victims(int vlen, unsigned long target_pages)
 {
 	unsigned long pages_found = 0;
 	int i, nr_to_kill = 0;
 
-	/*
-	 * Calculate the number of tasks that need to be killed and quickly
-	 * release the references to those that'll live. target_pages is the
-	 * deficit find_victims() selected against, so selection and truncation
-	 * agree on how much memory this cycle is trying to free.
-	 */
 	for (i = 0; i < vlen; i++) {
 		struct victim_info *victim = &victims[i];
 		struct task_struct *vtsk = victim->tsk;
 
-		/* The victim's mm and task refs were taken in find_victims */
 		if (pages_found >= target_pages) {
 			if (victim->mm)
 				mmdrop(victim->mm);
@@ -657,42 +492,21 @@ static void scan_and_kill(void)
 	unsigned long flags;
 	int num_drop;
 
-	/*
-	 * If the reaper is still processing the previous victim set, do not
-	 * overwrite the shared victims array. Skip this cycle; PSI will
-	 * re-fire if memory pressure persists.
-	 */
+	/* The reaper still owns the array; PSI will re-fire if pressure holds */
 	if (READ_ONCE(reclaim_active))
 		return;
 
-	/*
-	 * The previous cycle's kills may have closed the deficit; if so, stop
-	 * killing at the aggressive tier we escalated to and fall back toward
-	 * Tier 0. Must run before find_victims(), which snapshots target_min_adj.
-	 */
 	relax_min_adj();
 
-	/*
-	 * Sample how hard the device is actually stalling since the last
-	 * cycle. This is what sizes the kill depth for this cycle; it is
-	 * measured, not configured.
-	 */
 	stall_pct = measure_stall_pct(jiffies - stall_jiffies_last);
 	stall_jiffies_last = jiffies;
 
 	/*
-	 * Release whatever the previous cycle left behind before touching the
-	 * array.
-	 *
-	 * A victim that was reaped successfully keeps its slot until its task
-	 * exits, because simple_lmk_mm_freed() is the only thing that releases
-	 * its reference -- and reclaim_active is cleared once reaping is done,
-	 * not once every victim has exited. find_victims() then writes slots
-	 * unconditionally, so without this sweep a live reference gets
-	 * overwritten and lost: nothing ever calls mmdrop(), mm_count never
-	 * reaches zero, and the mm_struct leaks.
-	 *
-	 * Sweep under victims_lock so simple_lmk_mm_freed() cannot race.
+	 * A successfully reaped victim keeps its slot until its task exits,
+	 * because simple_lmk_mm_freed() is the only thing that releases its
+	 * reference. find_victims() writes slots unconditionally, so sweep the
+	 * old ones here or the reference is lost and the mm leaks. Under
+	 * victims_lock so simple_lmk_mm_freed() cannot race.
 	 */
 	num_drop = 0;
 	spin_lock_irqsave(&victims_lock, flags);
@@ -709,34 +523,20 @@ static void scan_and_kill(void)
 	for (i = 0; i < num_drop; i++)
 		mmdrop(drop_mms[i]);
 
-	/* Populate the victims array with tasks sorted by adj and then size */
 	find_victims(&nr_found, &target_pages, stall_pct);
 	if (unlikely(!nr_found))
 		return;
 
-	/*
-	 * Report the measured stall, the tier PSI selected, the depth that
-	 * stall entitled it to, and the deficit. Reading these across a boot is
-	 * what says whether the derived depth tracks pressure sensibly, instead
-	 * of assuming a fixed adj ladder is right for every device.
-	 */
 	pr_info("stall %lu%%, tier %d, reached adj %d, deficit %lu pages, %d candidate(s)\n",
 		stall_pct, tier_of_ceil(atomic_read(&target_min_adj)),
 		tier_reach_adj(tier_of_ceil(atomic_read(&target_min_adj)),
 			       stall_pct),
 		target_pages, nr_found);
 
-	/*
-	 * Sort all victims by size (descending) to kill largest first,
-	 * then select the minimum number needed to meet the target.
-	 */
+	/* Kill the largest first, then stop once the target is met */
 	sort(victims, nr_found, sizeof(*victims), victim_cmp_size, victim_swap);
 	nr_to_kill = process_victims(nr_found, target_pages);
 
-	/*
-	 * Store the final number of victims for simple_lmk_mm_freed() and the
-	 * reaper thread, and indicate that reclaim is active.
-	 */
 	num_drop = 0;
 	spin_lock_irqsave(&victims_lock, flags);
 	WRITE_ONCE(nr_victims, nr_to_kill);
@@ -754,20 +554,12 @@ static void scan_and_kill(void)
 	for (i = 0; i < num_drop; i++)
 		mmdrop(drop_mms[i]);
 
-	/* Kill the victims */
 	for (i = 0; i < nr_to_kill; i++) {
 		struct victim_info *victim = &victims[i];
 		struct task_struct *t, *vtsk = victim->tsk;
 		struct mm_struct *mm = victim->mm;
 
-		/*
-		 * Released above rather than killed: its memory was already
-		 * gone before we selected it, so there is nothing here to
-		 * reclaim. Killing it anyway would only emit a
-		 * "Killing ... to free N KiB" line for memory that will never
-		 * be freed, and inflate the kill count for anyone reading the
-		 * log to judge whether the driver is over-killing.
-		 */
+		/* Released above: its memory was already gone, so nothing to kill */
 		if (!mm) {
 			victim->score = 0;
 			victim->pending = 0;
@@ -780,12 +572,7 @@ static void scan_and_kill(void)
 			vtsk->signal->oom_score_adj,
 			victim->size << (PAGE_SHIFT - 10));
 
-		/*
-		 * Thaw the victim first so it can receive and process the
-		 * kill signal immediately. Signals can't wake frozen tasks;
-		 * only a thaw operation can. Thaw all threads in the group
-		 * so zap_other_threads() does not block on frozen siblings.
-		 */
+		/* Thaw first: a frozen task cannot process the kill signal */
 		rcu_read_lock();
 		for_each_thread(vtsk, t) {
 			if (frozen(t))
@@ -793,76 +580,40 @@ static void scan_and_kill(void)
 		}
 		rcu_read_unlock();
 
-		/* Accelerate the victim's death by forcing the kill signal */
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, vtsk, PIDTYPE_TGID);
 
 		set_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags);
 
-		/*
-		 * Drop the victim's oom_score_adj to OOM_SCORE_ADJ_MIN.
-		 * This cleanly ensures Android and the kernel's scheduler
-		 * prioritize the dying task's teardown.
-		 */
 		WRITE_ONCE(vtsk->signal->oom_score_adj, OOM_SCORE_ADJ_MIN);
 
 		/*
-		 * Mark the thread group dead so that the page allocator knows
-		 * to give these tasks emergency memory priority (ALLOC_NO_WATERMARKS).
-		 * Without this, victims stall during exit under extreme pressure.
+		 * Mark the group dead so the allocator gives it emergency
+		 * memory priority; otherwise victims stall during exit.
 		 */
 		rcu_read_lock();
 		for_each_thread(vtsk, t)
 			set_tsk_thread_flag(t, TIF_MEMDIE);
 		rcu_read_unlock();
 
-		/* Allow the victim to run on any CPU. This won't schedule. */
 		set_cpus_allowed_ptr(vtsk, cpu_possible_mask);
 
 		/*
-		 * Credit the pages the kill is expected to release. This must
-		 * match get_reclaimable_pages(), which is what victim->size
-		 * (and thus the deficit accounting) is based on: resident
-		 * anonymous pages plus the swap slots their entries occupy.
-		 * Counting only MM_ANONPAGES here under-credits the kill, so
-		 * get_target_free_pages() re-charges the same deficit and the
-		 * next cycle escalates and over-kills.
+		 * Credit what the kill should release, using the same
+		 * measurement as get_reclaimable_pages(), refreshed because the
+		 * task has been running since selection.
 		 */
 		victim->score = get_reclaimable_pages(mm);
-		/*
-		 * Refresh size to the same measurement used for the credit below.
-		 * size was sampled back in find_victims() and the task has been
-		 * running since, so leaving the two to disagree would credit the
-		 * deficit with a different page count than the one the victim was
-		 * selected and sorted on.
-		 */
 		victim->size = victim->score;
-
-		/*
-		 * The kill is dispatched below, so these pages are now
-		 * guaranteed to be freed even though nr_free_pages() will not
-		 * reflect that for some time.
-		 */
 		victim->pending = victim->score;
 
-		/* We don't need the task_struct anymore */
 		put_task_struct(vtsk);
 		victim->tsk = NULL;
 	}
 
-	/*
-	 * Sort the victims by descending order of anonymous pages so the reaper
-	 * thread can prioritize reaping the victims with the most anonymous
-	 * pages first. Then wake the reaper thread if it's asleep.
-	 *
-	 * reclaim_active stays true until the reaper confirms all victims are
-	 * done (see next_reap_victim). The smp_wmb() ensures the reaper sees
-	 * the fully-populated victims array and nr_victims before it observes
-	 * needs_reap == 1.
-	 */
+	/* Reap the biggest victims first; the reaper takes it from here */
 	spin_lock_irqsave(&victims_lock, flags);
 	sort(victims, nr_to_kill, sizeof(*victims), victim_cmp, victim_swap);
 	spin_unlock_irqrestore(&victims_lock, flags);
-	/* Pairs with wait_event_freezable in reaper thread */
 	smp_wmb();
 	atomic_set(&needs_reap, 1);
 	atomic_set(&oom_attempts, 0);
@@ -871,7 +622,6 @@ static void scan_and_kill(void)
 
 static int simple_lmk_reclaim_thread(void *data)
 {
-	/* Use maximum RT priority */
 	set_task_rt_prio(current, MAX_RT_PRIO - 1);
 	set_freezable();
 
@@ -882,11 +632,7 @@ static int simple_lmk_reclaim_thread(void *data)
 				     kthread_should_stop());
 		if (kthread_should_stop())
 			break;
-		/*
-		 * Clear needs_reclaim before scanning so that any escalation
-		 * signal set by scan_and_kill() (or a new PSI event arriving
-		 * during the scan) is not lost.
-		 */
+		/* Cleared first so an escalation during the scan is not lost */
 		atomic_set(&needs_reclaim, 0);
 		scan_and_kill();
 	}
@@ -894,6 +640,11 @@ static int simple_lmk_reclaim_thread(void *data)
 	return 0;
 }
 
+/*
+ * Hand the reaper the next victim mm, or ERR_PTR(-EAGAIN) if one is busy, or
+ * NULL when nothing is left. Inspected under victims_lock so exit_mmap() cannot
+ * free an mm mid-scan.
+ */
 static struct mm_struct *next_reap_victim(bool force)
 {
 	struct mm_struct *mm = NULL;
@@ -901,10 +652,6 @@ static struct mm_struct *next_reap_victim(bool force)
 	bool should_retry = false;
 	int i;
 
-	/*
-	 * Scan the victims array under victims_lock so mm pointers cannot be
-	 * freed by exit_mmap() while we inspect them.
-	 */
 	for (i = 0; i < READ_ONCE(nr_victims); i++, mm = NULL) {
 		spin_lock_irqsave(&victims_lock, flags);
 		mm = victims[i].mm;
@@ -914,12 +661,9 @@ static struct mm_struct *next_reap_victim(bool force)
 		}
 
 		/*
-		 * Do a trylock so the reaper thread doesn't sleep. If the
-		 * trylock fails and we've exhausted the retry deadline (force
-		 * == true), give up on this victim: mark it OOM_SKIP, clear
-		 * it from the array, and drop our mm_count reference. The
-		 * victim already has SIGKILL + TIF_MEMDIE, so it will exit
-		 * and its pages will be freed by exit_mmap() without us.
+		 * trylock, so the reaper never sleeps. On a failed trylock past
+		 * the deadline, give up on this victim: it already has SIGKILL
+		 * and TIF_MEMDIE, so exit_mmap() will free it without us.
 		 */
 		if (!mmap_read_trylock(mm)) {
 			if (force) {
@@ -941,12 +685,8 @@ static struct mm_struct *next_reap_victim(bool force)
 		}
 
 		/*
-		 * Check MMF_OOM_SKIP again under mmap_read_lock in case this
-		 * mm was reaped by exit_mmap() and had its page tables
-		 * destroyed. While mmap_read_lock is held, exit_mmap() is
-		 * serialized on mmap_write_lock, keeping the address space
-		 * intact. Precluding mmget() prevents the reaper kthread from
-		 * ever calling mmput() and stalling on process teardown.
+		 * Re-check under mmap_read_lock: exit_mmap() is serialized on
+		 * mmap_write_lock, so the address space is stable here.
 		 */
 		if (!test_bit(MMF_OOM_SKIP, &mm->flags)) {
 			spin_unlock_irqrestore(&victims_lock, flags);
@@ -959,32 +699,19 @@ static struct mm_struct *next_reap_victim(bool force)
 
 	if (!mm) {
 		if (should_retry) {
-			/* Return ERR_PTR(-EAGAIN) to try reaping again later */
 			mm = ERR_PTR(-EAGAIN);
 		} else {
 			/*
-			 * Nothing left to reap. Clear reclaim_active so
-			 * simple_lmk_mm_freed() stops searching the victims
-			 * array, and so scan_and_kill() can start a new cycle.
-			 * The smp_mb() pairs with the smp_wmb() in
-			 * scan_and_kill() to ensure all prior victim mm
-			 * pointers are visible as NULL before we declare
-			 * reclaim inactive.
-			 *
-			 * This must stay inside the else: clearing the flag
-			 * while we are handing back -EAGAIN lets a concurrent
-			 * scan_and_kill() overwrite the victims array that
-			 * next_reap_victim() and simple_lmk_mm_freed() are
-			 * still walking.
+			 * Done. Clearing reclaim_active lets
+			 * simple_lmk_mm_freed() and scan_and_kill() move on; the
+			 * barrier orders the cleared slots before it. Keeping
+			 * this in the else is load-bearing -- clearing it while
+			 * returning -EAGAIN would let a new scan overwrite the
+			 * array being walked.
 			 */
 			smp_mb();
 			WRITE_ONCE(reclaim_active, false);
-			/*
-			 * Pairs with the smp_mb() in the PSI path: order the clear
-			 * of reclaim_active before sampling needs_reclaim so a
-			 * concurrent escalation cannot be missed by both sides
-			 * (see the comment there).
-			 */
+			/* Order the clear before sampling needs_reclaim */
 			smp_mb();
 			if (atomic_read(&needs_reclaim))
 				wake_up(&oom_waitq);
@@ -1002,31 +729,21 @@ static void reap_victims(void)
 
 	while ((mm = next_reap_victim(force))) {
 		if (IS_ERR(mm)) {
-			/*
-			 * A victim's mmap_read_trylock failed. Retry with a
-			 * bounded deadline derived from
-			 * CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC. If the
-			 * deadline expires, force-give-up on stuck victims
-			 * instead of spinning forever.
-			 */
+			/* A busy mm: retry until the deadline, then force past it */
 			if (!retry_deadline) {
 				retry_deadline = jiffies + REAP_RETRY_JIFFIES;
 			} else if (time_after(jiffies, retry_deadline)) {
 				force = true;
 				retry_deadline = 0;
 			}
-			/* Wait one jiffy before trying to reap again */
 			schedule_timeout_uninterruptible(1);
 			continue;
 		}
 
 		/*
-		 * Try to reap the victim. If reaping succeeds, mark it
-		 * as reaped with MMF_OOM_SKIP and reset retry state.
-		 * If reaping fails (e.g. non-blocking MMU notifiers in
-		 * device drivers returned -EAGAIN), retry until the
-		 * deadline expires, then force-give-up to avoid spinning
-		 * at RT priority.
+		 * Reap it. A failure (e.g. a driver's non-blocking MMU notifier
+		 * returned -EAGAIN) is retried until the deadline, then given up
+		 * so the reaper does not spin at RT priority.
 		 */
 		if (__oom_reap_task_mm(mm)) {
 			set_bit(MMF_OOM_SKIP, &mm->flags);
@@ -1044,14 +761,12 @@ static void reap_victims(void)
 		}
 		mmap_read_unlock(mm);
 
-		/* Yield to let RCU grace periods and other work proceed */
 		cond_resched();
 	}
 }
 
 static int simple_lmk_reaper_thread(void *data)
 {
-	/* Use a lower priority than the reclaim thread */
 	set_task_rt_prio(current, MAX_RT_PRIO - 2);
 	set_freezable();
 
@@ -1074,38 +789,22 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 	int i;
 	bool matched = false;
 
-	/*
-	 * Victims are guaranteed to have MMF_OOM_SKIP set after exit_mmap()
-	 * finishes. Use this to ignore unrelated dying processes.
-	 */
-	if (!test_bit(MMF_OOM_SKIP, &mm->flags) || !test_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags))
+	/* Only reaped victims carry MMF_OOM_SKIP here; ignore other dying mms */
+	if (!test_bit(MMF_OOM_SKIP, &mm->flags) ||
+	    !test_bit(MMF_SIMPLE_LMK_VICTIM, &mm->flags))
 		return;
 
 	/*
-	 * No fast path on reclaim_active here, and that is deliberate.
-	 *
-	 * reclaim_active is cleared by next_reap_victim() once *reaping* is
-	 * done, but a victim that was reaped successfully has not *exited*
-	 * yet -- and this function runs from __mmput() after exit_mmap(). For
-	 * such a victim this is the only place its mmgrab() reference is
-	 * released, so skipping the search strands it: __mmput() then drops
-	 * its own reference at the end without ours ever being dropped,
-	 * mm_count never reaches zero, and the mm_struct is leaked outright.
-	 *
-	 * Search and clear under victims_lock so concurrent array updates,
-	 * reap inspection, and sorting do not race.
+	 * This runs from __mmput() after exit_mmap(), and for a victim that was
+	 * reaped but has not exited yet it is the only place our mmgrab()
+	 * reference is dropped. Searched even when reclaim is inactive, or that
+	 * reference would never be released and the mm would leak.
 	 */
 	spin_lock_irqsave(&victims_lock, flags);
 	for (i = 0; i < READ_ONCE(nr_victims); i++) {
 		if (victims[i].mm == mm) {
 			victims[i].mm = NULL;
 			matched = true;
-			/*
-			 * Keep scanning: nothing else should hold a duplicate
-			 * slot now that find_victims() dedups, but if one ever
-			 * does, releasing only the first would strand its
-			 * mmgrab() and leak the mm.
-			 */
 		}
 	}
 	spin_unlock_irqrestore(&victims_lock, flags);
@@ -1122,33 +821,21 @@ static int simple_lmk_psi_thread(void *data)
 	set_task_rt_prio(current, MAX_RT_PRIO - 3);
 	set_freezable();
 
-	/* Wait for PSI triggers to be created before accessing them */
 	wait_for_completion(&psi_init_done);
 
 	while (!kthread_should_stop()) {
 		short min_adj = ADJ_MAX;
 		bool high, med, low;
 
-		/*
-		 * Sleep until a PSI trigger fires. wait_event_freezable
-		 * checks try_to_freeze() before sleeping, allowing the
-		 * freezer to suspend us.
-		 */
 		wait_event_freezable(psi_waitq,
 				     READ_ONCE(psi_triggers[0]->event) ||
 				     READ_ONCE(psi_triggers[1]->event) ||
 				     READ_ONCE(psi_triggers[2]->event));
 
 		/*
-		 * Atomically sample and clear all trigger events.
-		 *
-		 * Sampling and clearing every trigger on wake is essential:
-		 * if a severe event fires (e.g. tier 2), milder triggers (tier 1
-		 * and tier 0) have also breached their lower thresholds and set
-		 * event = 1. If only the highest is cleared, the remaining
-		 * triggers keep event = 1, immediately waking this thread on the
-		 * next iteration to execute spurious back-to-back reclaim cycles
-		 * for lower tiers.
+		 * Sample and clear all three. A severe event also leaves the
+		 * milder triggers set, so clearing only the highest would wake
+		 * this thread again immediately for spurious lower-tier cycles.
 		 */
 		high = cmpxchg(&psi_triggers[2]->event, 1, 0);
 		med  = cmpxchg(&psi_triggers[1]->event, 1, 0);
@@ -1161,52 +848,34 @@ static int simple_lmk_psi_thread(void *data)
 		else if (low)
 			min_adj = tier_min_adj[0];
 
+		if (min_adj == ADJ_MAX)
+			continue;
+
+		/* Record a more severe tier; otherwise only when idle */
+		if (READ_ONCE(reclaim_active) &&
+		    min_adj >= atomic_read(&target_min_adj))
+			continue;
+
+		atomic_set(&target_min_adj, min_adj);
+		atomic_set(&oom_attempts, 0);
+		atomic_set(&needs_reclaim, 1);
 		/*
-		 * Map PSI stall events to target adj levels. If reclaim is active,
-		 * record escalation if this event is more severe than the current target.
+		 * Order the store above before reading reclaim_active, so the
+		 * reaper cannot clear it and miss the flag in the same window.
 		 */
-		if (min_adj != ADJ_MAX) {
-			if (!READ_ONCE(reclaim_active) || min_adj < atomic_read(&target_min_adj)) {
-				pr_info_ratelimited("PSI wake: Tier %d (min_adj=%d), free=%lu, reserve=%lu\n",
-						    min_adj == tier_min_adj[2] ? 2 :
-						    (min_adj == tier_min_adj[1] ? 1 : 0),
-						    min_adj, nr_free_pages(), totalreserve_pages);
-				atomic_set(&target_min_adj, min_adj);
-				atomic_set(&oom_attempts, 0);
-				atomic_set(&needs_reclaim, 1);
-				/*
-				 * Pairs with the smp_mb() in next_reap_victim().
-				 * Without a barrier on both sides a store-buffer
-				 * reordering lets this CPU read reclaim_active as
-				 * still true while the reaper reads needs_reclaim as
-				 * still zero, so neither side wakes the reclaim
-				 * thread and the raised tier sits unpulled.
-				 */
-				smp_mb();
-				if (!READ_ONCE(reclaim_active))
-					wake_up(&oom_waitq);
-			}
-		}
+		smp_mb();
+		if (!READ_ONCE(reclaim_active))
+			wake_up(&oom_waitq);
 	}
 
 	return 0;
 }
 
 /*
- * Stamp simple_lmk_cache_time only when the task *enters* the cached tier.
- *
- * This hook runs on every oom_score_adj write, and ActivityManager rewrites
- * adj for cached apps on many state changes. Stamping unconditionally made
- * cache_time mean "last written" rather than "entered the tier", while its
- * only reader -- the grace period in find_victims() -- means the latter: it
- * drops any candidate stamped within GRACE_PERIOD_MS, so an app rewritten
- * more often than that is never killable at Tier 0 at all.
- *
- * That is the under-killing counterpart to the over-killing fixed by
- * accounting for pages already pending free.
- *
- * Called before the new value is assigned, so task->signal->oom_score_adj
- * still holds the previous one and the transition is visible.
+ * Stamp cache_time only on entry to the cached tier. This runs on every adj
+ * write, and ActivityManager rewrites cached adjs often, so stamping
+ * unconditionally would make the Tier 0 grace period re-arm forever and keep
+ * the app unkillable. Called before the new adj is assigned.
  */
 void simple_lmk_update_adj(struct task_struct *task, int new_adj)
 {
@@ -1221,10 +890,7 @@ static int simple_lmk_oom_notify(struct notifier_block *self,
 {
 	unsigned long *freed = data;
 
-	/*
-	 * If earlier kills are still being reaped, memory is already on its
-	 * way to being freed. Tell the core OOM killer to retry.
-	 */
+	/* Earlier kills are already freeing memory: let the allocator retry */
 	if (pages_pending_free() > 0) {
 		*freed = 1;
 		atomic_set(&oom_attempts, 0);
@@ -1232,21 +898,15 @@ static int simple_lmk_oom_notify(struct notifier_block *self,
 	}
 
 	/*
-	 * This is an uncaught OOM event (e.g. huge sudden allocation) that
-	 * PSI missed. Wake the reclaim thread at maximum tier (adj >= 200).
-	 *
-	 * On the first attempt, tell the core OOM killer we are handling it
-	 * (*freed = 1) so simple_lmkd can attempt to reclaim background tasks.
-	 * If simple_lmkd finds no victims (or all tasks with adj >= 200 are
-	 * already dead) and OOM re-triggers without pending pages, do NOT
-	 * set *freed. Allow the core OOM killer to terminate the runaway
-	 * memory hog (e.g. the foreground game) instead of deadlocking or
-	 * killing system components.
+	 * An OOM PSI did not catch. Try once at the most aggressive tier; if it
+	 * comes back without pending pages there was nothing for us to kill, so
+	 * hand the runaway consumer to the core OOM killer instead of
+	 * suppressing it forever.
 	 */
 	if (atomic_inc_return(&oom_attempts) == 1) {
 		atomic_set(&target_min_adj, tier_min_adj[2]);
 		atomic_set(&needs_reclaim, 1);
-		/* Pairs with the smp_mb() in next_reap_victim() */
+		/* Order the store above before reading reclaim_active */
 		smp_mb();
 		if (!READ_ONCE(reclaim_active))
 			wake_up(&oom_waitq);
@@ -1288,17 +948,13 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 			goto fail;
 		}
 
-		/*
-		 * Create PSI triggers before the PSI monitor thread so
-		 * the triggers are ready when the thread wakes up.
-		 */
 		for (i = 0; i < LMK_TIERS; i++) {
 			char buf[64];
 
 			snprintf(buf, sizeof(buf), "full %d %d", psi_thresholds[i],
 				 LMK_PSI_WINDOW_MS * 1000);
-			psi_triggers[i] = psi_trigger_create(&psi_system, buf, PSI_MEM,
-							       NULL, NULL);
+			psi_triggers[i] = psi_trigger_create(&psi_system, buf,
+							     PSI_MEM, NULL, NULL);
 			if (IS_ERR(psi_triggers[i])) {
 				ret = PTR_ERR(psi_triggers[i]);
 				psi_triggers[i] = NULL;
@@ -1326,14 +982,9 @@ static int simple_lmk_init_set(const char *val, const struct kernel_param *kp)
 
 fail:
 	/*
-	 * Roll back any partially created state and allow lmkd to retry
-	 * initialization on a subsequent write to the minfree parameter.
-	 *
-	 * The psi thread blocks on psi_init_done before it ever touches
-	 * psi_triggers[], and that completion is only posted on the success
-	 * path. Release it before stopping the thread, or a failure that
-	 * happens after the thread is created would leave it parked in
-	 * wait_for_completion() and kthread_stop() would block forever.
+	 * Roll back so lmkd can retry on a later write. The psi thread blocks
+	 * on psi_init_done, which the success path posts, so post it here too or
+	 * a failure past its creation leaves kthread_stop() waiting forever.
 	 */
 	complete(&psi_init_done);
 	if (psi_thread)
