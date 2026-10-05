@@ -1278,7 +1278,13 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
 
 	timeout = jiffies + msecs_to_jiffies(EH_POLL_DELAY_MS);
 	do {
-		cpu_relax();
+		/*
+		 * Back off a little between status reads instead of spinning
+		 * on the register at full speed. This runs with preemption
+		 * disabled (get_cpu above) while the caller holds the zram slot
+		 * lock, so keep the poll cheap; the ceiling is unchanged.
+		 */
+		udelay(1);
 		if (time_after(jiffies, timeout)) {
 			pr_err("poll timeout on decompression\n");
 			eh_dump_regs(eh_dev);
