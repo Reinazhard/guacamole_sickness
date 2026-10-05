@@ -80,14 +80,24 @@ struct zram_table_entry {
 };
 
 struct zram_stats {
-	atomic64_t compr_data_size;	/* compressed size of pages stored */
+	/*
+	 * The counters below are updated on every page store/free and are
+	 * grouped on their own cache lines so that those hot atomic updates
+	 * do not ping-pong with the rarely updated ones.
+	 */
+	atomic64_t pages_stored ____cacheline_aligned_in_smp;
+					/* no. of pages currently stored */
+	atomic64_t compr_data_size ____cacheline_aligned_in_smp;
+					/* compressed size of pages stored */
+	atomic64_t same_pages ____cacheline_aligned_in_smp;
+					/* no. of same element filled pages */
+	atomic64_t huge_pages ____cacheline_aligned_in_smp;
+					/* no. of huge pages */
+
 	atomic64_t failed_reads;	/* can happen when memory is too low */
 	atomic64_t failed_writes;	/* can happen when memory is too low */
 	atomic64_t notify_free;	/* no. of swap slot free notifications */
-	atomic64_t same_pages;		/* no. of same element filled pages */
-	atomic64_t huge_pages;		/* no. of huge pages */
 	atomic64_t huge_pages_since;	/* no. of huge pages since zram set up */
-	atomic64_t pages_stored;	/* no. of pages currently stored */
 	atomic_long_t max_used_pages;	/* no. of maximum pages stored */
 	atomic64_t writestall;		/* no. of write slow paths */
 	atomic64_t miss_free;		/* no. of missed free */

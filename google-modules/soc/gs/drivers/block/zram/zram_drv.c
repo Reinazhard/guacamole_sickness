@@ -470,10 +470,14 @@ static unsigned int zram_calc_prio(struct zram *zram)
 			zram->slowpath_comp = !zram->slowpath_comp;
 		}
 	} else {
-		unsigned long free_pages = nr_free_pages();
-
+		/*
+		 * Only read the global free-page counter when a slowpath
+		 * algorithm is configured: this runs on every write, and
+		 * nr_free_pages() is a global per-zone atomic read that
+		 * otherwise costs every store for nothing.
+		 */
 		if (zram->comp_algs[ZRAM_SLOWPATH_COMP] &&
-		    (((u64)free_pages << PAGE_SHIFT) > zram->free_mem_threshold))
+		    (((u64)nr_free_pages() << PAGE_SHIFT) > zram->free_mem_threshold))
 			prio = ZRAM_SLOWPATH_COMP;
 	}
 
@@ -2849,6 +2853,14 @@ static void scan_slots_for_recompress(struct zram *zram, u32 mode, u32 prio_max,
 	unsigned long index;
 
 	for (index = 0; index < nr_pages; index++) {
+		/*
+		 * This walks the whole device on every recompress/idle trigger
+		 * and takes a slot lock per page. Yield periodically so a large
+		 * device does not hold the CPU for the entire scan.
+		 */
+		if (!(index & 0x3ff))
+			cond_resched();
+
 		if (!pps)
 			pps = kmalloc(sizeof(*pps), GFP_KERNEL);
 		if (!pps)
