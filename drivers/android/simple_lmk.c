@@ -275,13 +275,22 @@ static unsigned long get_reclaimable_pages(struct mm_struct *mm)
 	       get_mm_counter(mm, MM_SWAPENTS);
 }
 
-static unsigned long find_victims(int *vindex)
+static unsigned long find_victims(int *vindex, unsigned long *target_out)
 {
 	short i, min_adj = ADJ_MAX, max_adj = 0;
 	short limit_adj = atomic_read(&target_min_adj);
 	unsigned long pages_found = 0;
 	unsigned long target_pages = get_target_free_pages();
 	struct task_struct *tsk;
+
+	/*
+	 * Hand the deficit this scan selected against back to the caller so the
+	 * kill-count pass reuses the same snapshot. Recomputing it there would
+	 * sample nr_free_pages() and pages_pending_free() a second time, so the
+	 * number of victims chosen and the number actually killed would be
+	 * decided against two different deficits.
+	 */
+	*target_out = target_pages;
 
 	/*
 	 * Phase 1: Walk the process list under RCU to collect pinned
@@ -450,15 +459,16 @@ drain_remaining:
 	return pages_found;
 }
 
-static int process_victims(int vlen)
+static int process_victims(int vlen, unsigned long target_pages)
 {
 	unsigned long pages_found = 0;
-	unsigned long target_pages = get_target_free_pages();
 	int i, nr_to_kill = 0;
 
 	/*
 	 * Calculate the number of tasks that need to be killed and quickly
-	 * release the references to those that'll live.
+	 * release the references to those that'll live. target_pages is the
+	 * deficit find_victims() selected against, so selection and truncation
+	 * agree on how much memory this cycle is trying to free.
 	 */
 	for (i = 0; i < vlen; i++) {
 		struct victim_info *victim = &victims[i];
@@ -493,6 +503,7 @@ static void scan_and_kill(void)
 {
 	static struct mm_struct *drop_mms[MAX_VICTIMS];
 	int i, nr_to_kill, nr_found = 0;
+	unsigned long target_pages = 0;
 	unsigned long flags;
 	int num_drop;
 
@@ -541,7 +552,7 @@ static void scan_and_kill(void)
 		mmdrop(drop_mms[i]);
 
 	/* Populate the victims array with tasks sorted by adj and then size */
-	find_victims(&nr_found);
+	find_victims(&nr_found, &target_pages);
 	if (unlikely(!nr_found))
 		return;
 
@@ -550,7 +561,7 @@ static void scan_and_kill(void)
 	 * then select the minimum number needed to meet the target.
 	 */
 	sort(victims, nr_found, sizeof(*victims), victim_cmp_size, victim_swap);
-	nr_to_kill = process_victims(nr_found);
+	nr_to_kill = process_victims(nr_found, target_pages);
 
 	/*
 	 * Store the final number of victims for simple_lmk_mm_freed() and the
