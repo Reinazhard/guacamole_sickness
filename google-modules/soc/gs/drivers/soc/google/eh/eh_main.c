@@ -1311,10 +1311,36 @@ EXPORT_SYMBOL(eh_create);
 
 void eh_destroy(struct eh_device *eh_dev)
 {
+	/*
+	 * Drain before tearing down. The caller (zcomp_eh_destroy) frees the
+	 * cookie pool and its workqueue right after this returns, and the
+	 * compression thread is still live: a request retired after that
+	 * would call the already-freed completion callback/priv. Hand back
+	 * anything the upper layer is still holding, then wait for the
+	 * in-flight count to reach zero.
+	 */
+	if (eh_dev->drain_cb)
+		(*eh_dev->drain_cb)(eh_dev->drain_priv);
+
+	if (!wait_event_timeout(eh_dev->idle_wq,
+				!atomic_read(&eh_dev->nr_inflight),
+				msecs_to_jiffies(EH_SUSPEND_DRAIN_MS)))
+		pr_warn("eh: %d request(s) still in flight at destroy\n",
+			atomic_read(&eh_dev->nr_inflight));
+
 	eh_dev->comp_callback = NULL;
 	/* Don't leave suspend a way into a device that's been handed back */
 	eh_dev->drain_cb = NULL;
 	eh_dev->drain_priv = NULL;
+
+	/*
+	 * If the platform device was already removed its buffers are gone;
+	 * re-publishing it would let a later eh_create() hand out a device
+	 * with a dangling fifo and NULL regs. Leave it out of the pool.
+	 */
+	if (READ_ONCE(eh_dev->removed))
+		return;
+
 	spin_lock(&eh_dev_list_lock);
 	list_add(&eh_dev->eh_dev_list, &eh_dev_list);
 	spin_unlock(&eh_dev_list_lock);
