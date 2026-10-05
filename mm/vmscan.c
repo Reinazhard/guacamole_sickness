@@ -7994,8 +7994,15 @@ static int kshrinkd(void *pgdat)
 			if (!atomic_long_read(&kshrinkd_waiters))
 				break;
 
-			/* Iterate down each possible priority and then wrap */
-			pri = (pri - 1) % (DEF_PRIORITY + 1);
+			/*
+			 * Iterate down each possible priority and then wrap.
+			 * Do not compute this as (pri - 1) % (DEF_PRIORITY + 1):
+			 * pri is unsigned, so at pri == 0 the subtraction wraps to
+			 * UINT_MAX and the modulo lands on 8, not DEF_PRIORITY.
+			 * The loop would then bounce between 8 and 0 forever and
+			 * never scan at priorities 9..DEF_PRIORITY again.
+			 */
+			pri = pri ? pri - 1 : DEF_PRIORITY;
 		}
 	}
 	current->flags &= ~PF_KSWAPD;
