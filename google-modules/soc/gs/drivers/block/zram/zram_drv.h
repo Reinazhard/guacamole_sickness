@@ -159,6 +159,13 @@ struct zram {
 	struct block_device *bdev;
 	unsigned long *bitmap;
 	unsigned long nr_pages;
+	/*
+	 * Per-CPU scratch for read_from_zspool_raw(), which needs a staging
+	 * buffer for objects spanning two zspages. A per-I/O GFP_ATOMIC
+	 * allocation there can fail under pressure and is pure overhead for
+	 * the common single-page object.
+	 */
+	void __percpu *raw_scratch;
 #endif
 #if IS_ENABLED(CONFIG_ZRAM_GS_ANDROID_IOCTL)
 	struct xarray prefetch_cache;
