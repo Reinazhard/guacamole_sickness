@@ -1530,6 +1530,11 @@ static int fts_probe(struct spi_device *client)
 	return OK;
 
 probe_error_exit_7:
+#ifndef FW_UPDATE_ON_PROBE
+	cancel_delayed_work_sync(&info->fwu_work);
+	if (info->fwu_workqueue)
+		destroy_workqueue(info->fwu_workqueue);
+#endif
 	unregister_panel_bridge(&info->panel_bridge);
 
 probe_error_exit_6:
@@ -1571,6 +1576,9 @@ static void fts_remove(struct spi_device *client)
 	fts_proc_remove();
 	fts_interrupt_uninstall(info);
 	unregister_panel_bridge(&info->panel_bridge);
+#ifndef FW_UPDATE_ON_PROBE
+	cancel_delayed_work_sync(&info->fwu_work);
+#endif
 	input_unregister_device(info->input_dev);
 	destroy_workqueue(info->event_wq);
 #ifndef FW_UPDATE_ON_PROBE
