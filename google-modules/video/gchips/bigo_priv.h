@@ -124,6 +124,12 @@ struct bigo_core {
 	struct bigo_debugfs debugfs;
 	spinlock_t status_lock;
 	struct task_struct *worker_thread;
+	/*
+	 * Set while worker_thread is being stopped: the pointer stays valid
+	 * until kthread_stop() returns, so bigo_open() must consult this flag
+	 * rather than the pointer alone.
+	 */
+	bool worker_stopping;
 	wait_queue_head_t worker;
 	struct bigo_prio_array prioq;
 	u32 qos_dirty;
