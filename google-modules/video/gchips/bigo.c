@@ -229,6 +229,7 @@ static int bigo_release(struct inode *inode, struct file *file)
 {
 	struct bigo_inst *inst = file->private_data;
 	struct bigo_core *core = inst->core;
+	struct task_struct *worker_to_stop = NULL;
 
 	if (!inst || !core)
 		return -EINVAL;
@@ -238,12 +239,15 @@ static int bigo_release(struct inode *inode, struct file *file)
 	if (list_empty(&core->instances))
 	{
 		if (core->worker_thread) {
-			kthread_stop(core->worker_thread);
+			worker_to_stop = core->worker_thread;
 			core->worker_thread = NULL;
 		}
 		on_last_inst_close(core);
 	}
 	mutex_unlock(&core->lock);
+
+	if (worker_to_stop)
+		kthread_stop(worker_to_stop);
 
 	kref_put(&inst->refcount, bigo_close);
 	return 0;
