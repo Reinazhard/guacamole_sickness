@@ -528,9 +528,6 @@ static int max77826_setup_regulators(struct max77826_dev *max77826,
 	return 0;
 
 error:
-	while (--i >= 0)
-		regulator_unregister(max77826->rdev[i]);
-
 err_nomem:
 	return err;
 }
@@ -625,10 +622,6 @@ static void max77826_i2c_remove(struct i2c_client *i2c)
 {
 	struct max77826_dev *max77826 = i2c_get_clientdata(i2c);
 	struct pinctrl_state *state;
-	int i;
-
-	for (i = 0; i < max77826->num_regulators; i++)
-		regulator_unregister(max77826->rdev[i]);
 
 	state = pinctrl_lookup_state(max77826->pinctrl, "suspend");
 	if (!IS_ERR(state))
