@@ -2817,6 +2817,8 @@ int dw3000_setup_irq(struct dw3000 *dw)
 		irq_flags = IRQF_TRIGGER_HIGH;
 	}
 
+	irq_flags |= IRQF_NO_AUTOEN;
+
 	/* Hook interruption */
 	rc = devm_request_irq(dw->dev, dw->spi->irq, dw3000_irq_handler,
 			      irq_flags, dev_name(dw->dev), dw);
@@ -2825,9 +2827,6 @@ int dw3000_setup_irq(struct dw3000 *dw)
 			dw->spi->irq, rc);
 		return rc;
 	}
-
-	/* Disable interrupt before enabling the device */
-	disable_irq_nosync(dw->spi->irq);
 
 	return 0;
 }
