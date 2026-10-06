@@ -7119,6 +7119,21 @@ static void fts_remove(struct spi_device *client)
 
 	/* input_free_device(info->input_dev ); */
 
+	/*
+	 * unregister_panel_bridge() only removes the bridge from the DRM
+	 * chain.  It does not synchronize against an atomic commit already in
+	 * flight, which can still invoke the bridge ->enable/->disable/->
+	 * mode_set hooks; fts_aggregate_bus_state() can also be reached from
+	 * the notifier chain.  All of those queue resume_work/suspend_work on
+	 * info->event_wq, and those work items touch the touch IC over SPI and
+	 * dereference @info.  Drain event_wq before it is destroyed and before
+	 * @info is freed, otherwise a work item can run against a torn-down
+	 * workqueue or a freed device.
+	 */
+	cancel_work_sync(&info->suspend_work);
+	cancel_work_sync(&info->resume_work);
+	flush_workqueue(info->event_wq);
+
 	/* Remove the work thread */
 	destroy_workqueue(info->event_wq);
 	wakeup_source_unregister(info->wakesrc);
