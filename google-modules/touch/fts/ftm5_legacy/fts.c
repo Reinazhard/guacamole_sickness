@@ -7119,6 +7119,15 @@ static void fts_remove(struct spi_device *client)
 
 	/* input_free_device(info->input_dev ); */
 
+	/*
+	 * A bridge commit already in flight, or fts_aggregate_bus_state()
+	 * from the notifier chain, can still queue resume_work/suspend_work
+	 * on event_wq; drain both before the queue is destroyed.
+	 */
+	cancel_work_sync(&info->suspend_work);
+	cancel_work_sync(&info->resume_work);
+	flush_workqueue(info->event_wq);
+
 	/* Remove the work thread */
 	destroy_workqueue(info->event_wq);
 	wakeup_source_unregister(info->wakesrc);
