@@ -14634,6 +14634,7 @@ static void google_battery_init_work(struct work_struct *work)
 	if (IS_ERR(batt_drv->batt_vs_hda_tz)) {
 		pr_err("batt_vs_hda_tz register failed. err: %ld\n",
 			PTR_ERR(batt_drv->batt_vs_hda_tz));
+		batt_drv->batt_vs_hda_tz = NULL;
 	} else {
 		thermal_zone_device_update(batt_drv->batt_vs_hda_tz, THERMAL_DEVICE_UP);
 	}
@@ -15028,6 +15029,13 @@ static int google_battery_remove(struct platform_device *pdev)
 	batt_drv->csi.type_votable = NULL;
 	batt_drv->charging_policy_votable = NULL;
 	batt_drv->point_full_ui_soc_votable = NULL;
+
+	if (batt_drv->batt_vs_tz)
+		thermal_zone_device_unregister(batt_drv->batt_vs_tz);
+	if (batt_drv->batt_vs_mp_tz)
+		thermal_zone_device_unregister(batt_drv->batt_vs_mp_tz);
+	if (batt_drv->batt_vs_hda_tz)
+		thermal_zone_device_unregister(batt_drv->batt_vs_hda_tz);
 
 	return 0;
 }
