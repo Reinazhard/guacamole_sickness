@@ -173,11 +173,8 @@ static int exynos_drm_gem_create(struct drm_device *dev, struct drm_file *filep,
 		exynos_gem_obj->flags |= flags;
 
 		ret = drm_gem_handle_create(filep, obj, gem_handle);
-		if (ret) {
+		if (ret)
 			pr_err("Failed to create a handle of GEM\n");
-			/* drop ref from import */
-			dma_buf_put(dmabuf);
-		}
 
 		/* drop ref from import - handle holds it now */
 		drm_gem_object_put(obj);
@@ -195,9 +192,17 @@ int exynos_drm_gem_dumb_create(struct drm_file *file_priv,
 {
 	unsigned int handle;
 	int ret;
+	u64 pitch, size;
 
-	args->pitch = args->width * DIV_ROUND_UP(args->bpp, 8);
-	args->size = PAGE_ALIGN(args->pitch * args->height);
+	pitch = (u64)args->width * DIV_ROUND_UP(args->bpp, 8);
+	if (pitch > UINT_MAX)
+		return -EINVAL;
+
+	if (check_mul_overflow(pitch, (u64)args->height, &size))
+		return -EINVAL;
+
+	args->pitch = pitch;
+	args->size = PAGE_ALIGN(size);
 
 	ret = exynos_drm_gem_create(dev, file_priv, args->size,
 				    EXYNOS_DRM_GEM_FLAG_DUMB_BUF, &handle);
@@ -232,6 +237,10 @@ struct drm_gem_object *exynos_drm_gem_fd_to_obj(struct drm_device *dev, int val)
 	}
 	obj = exynos_drm_gem_prime_import(dev, dma_buf);
 	dma_buf_put(dma_buf);
+	if (IS_ERR(obj)) {
+		pr_err("failed to import prime buffer: %ld\n", PTR_ERR(obj));
+		return NULL;
+	}
 
 	return obj;
 }
