@@ -451,6 +451,7 @@ static long touch_offload_ioctl(struct file *file, unsigned int ioctl_num,
 	{
 		struct TouchOffloadIocGetCaps getCaps;
 
+		memset(&getCaps, 0, sizeof(getCaps));
 		/* Copy previously-populated caps */
 		memcpy(&getCaps.caps, &context->caps,
 		       sizeof(context->caps));
