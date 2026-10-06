@@ -111,17 +111,17 @@ static inline int on_first_instance_open(struct bigo_core *core)
 	rc = bigo_pt_client_enable(core);
 	if (rc) {
 		pr_info("failed to enable SLC");
-		kthread_stop(core->worker_thread);
-		core->worker_thread = NULL;
+		/*
+		 * Leave core->worker_thread set; bigo_open() stops it after
+		 * dropping core->lock, since stopping it here would deadlock
+		 * against mark_instances_idle().
+		 */
 		goto exit;
 	}
 #if IS_ENABLED(CONFIG_PM)
 	rc = pm_runtime_get_sync(core->dev);
-	if (rc) {
+	if (rc)
 		pr_err("failed to resume: %d\n", rc);
-		kthread_stop(core->worker_thread);
-		core->worker_thread = NULL;
-	}
 #endif
 
 exit:
@@ -153,6 +153,7 @@ static int bigo_open(struct inode *inode, struct file *file)
 	int rc = 0;
 	struct bigo_core *core = container_of(inode->i_cdev, struct bigo_core, cdev);
 	struct bigo_inst *inst;
+	struct task_struct *worker_to_stop = NULL;
 
 	inst = kzalloc(sizeof(*inst), GFP_KERNEL);
 	if (!inst) {
@@ -188,10 +189,36 @@ static int bigo_open(struct inode *inode, struct file *file)
 		goto err_inst_open;
 	}
 	if (list_empty(&core->instances)) {
+		if (core->worker_stopping) {
+			/*
+			 * The previous worker is still exiting; do not start a
+			 * second thread driving the same hardware.
+			 */
+			rc = -EAGAIN;
+			pr_info("worker thread still stopping, retry open\n");
+			mutex_unlock(&core->lock);
+			goto err_inst_open;
+		}
 		rc = on_first_instance_open(core);
 		if (rc) {
+			/*
+			 * on_first_instance_open() cannot stop the worker under
+			 * core->lock.  worker_stopping covers the gap until the
+			 * stop returns, so a concurrent bigo_open() does not start
+			 * a second worker.
+			 */
+			worker_to_stop = core->worker_thread;
+			core->worker_thread = NULL;
+			if (worker_to_stop)
+				core->worker_stopping = true;
 			pr_err("failed to setup first instance");
 			mutex_unlock(&core->lock);
+			if (worker_to_stop) {
+				kthread_stop(worker_to_stop);
+				mutex_lock(&core->lock);
+				core->worker_stopping = false;
+				mutex_unlock(&core->lock);
+			}
 			goto err_inst_open;
 		}
 	}
@@ -229,6 +256,7 @@ static int bigo_release(struct inode *inode, struct file *file)
 {
 	struct bigo_inst *inst = file->private_data;
 	struct bigo_core *core = inst->core;
+	struct task_struct *worker_to_stop = NULL;
 
 	if (!inst || !core)
 		return -EINVAL;
@@ -238,12 +266,25 @@ static int bigo_release(struct inode *inode, struct file *file)
 	if (list_empty(&core->instances))
 	{
 		if (core->worker_thread) {
-			kthread_stop(core->worker_thread);
-			core->worker_thread = NULL;
+			/*
+			 * Mark worker_stopping and keep worker_thread valid until
+			 * the stop returns; the stop itself must run after the lock
+			 * is dropped, or it deadlocks against mark_instances_idle().
+			 */
+			worker_to_stop = core->worker_thread;
+			core->worker_stopping = true;
 		}
 		on_last_inst_close(core);
 	}
 	mutex_unlock(&core->lock);
+
+	if (worker_to_stop) {
+		kthread_stop(worker_to_stop);
+		mutex_lock(&core->lock);
+		core->worker_thread = NULL;
+		core->worker_stopping = false;
+		mutex_unlock(&core->lock);
+	}
 
 	kref_put(&inst->refcount, bigo_close);
 	return 0;
