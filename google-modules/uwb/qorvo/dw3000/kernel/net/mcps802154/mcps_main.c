@@ -100,6 +100,7 @@ void mcps802154_free_llhw(struct mcps802154_llhw *llhw)
 {
 	struct mcps802154_local *local = llhw_to_local(llhw);
 
+	cancel_work_sync(&local->tx_work);
 	mutex_lock(&local->fsm_lock);
 	mcps802154_fproc_uninit(local);
 	mcps802154_ca_uninit(local);
