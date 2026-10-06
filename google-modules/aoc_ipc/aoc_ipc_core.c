@@ -153,6 +153,9 @@ static u32 _aoc_ring_read_buffer(const u8 *ring,
 	wp = ioread32(&r->wp);
 	rp = ioread32(&r->rp);
 
+	if (sz == 0 || rp >= sz || wp >= sz)
+		return 0;
+
 	if (wp > rp) {
 		bytes_available = wp - rp;
 	} else if (wp < rp) {
