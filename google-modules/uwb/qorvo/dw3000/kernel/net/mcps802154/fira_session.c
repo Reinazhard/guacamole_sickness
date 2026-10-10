@@ -612,6 +612,7 @@ void fira_session_free(struct fira_local *local, struct fira_session *session)
 
 	list_for_each_entry_safe (controlee, tmp_controlee,
 				  &session->current_controlees, entry) {
+		fira_sts_controlee_deinit(controlee);
 		list_del(&controlee->entry);
 		kfree(controlee);
 	}
