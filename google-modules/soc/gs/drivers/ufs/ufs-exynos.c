@@ -1364,8 +1364,8 @@ static int exynos_ufs_ioremap(struct exynos_ufs *ufs, struct platform_device *pd
 			break;
 		}
 		*p = devm_ioremap_resource(dev, res);
-		if (!*p) {
-			ret = -ENOMEM;
+		if (IS_ERR(*p)) {
+			ret = PTR_ERR(*p);
 			break;
 		}
 		dev_info(dev, "%-10s %pK\n", ufs_region_names[i], *p);
