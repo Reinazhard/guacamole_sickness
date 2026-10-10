@@ -824,8 +824,13 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 			info->mess.msg_size, info->mess.counter,
 			info->mess.action);
 		size = MESSAGE_MIN_HEADER_SIZE + 2;	/* +2 error code */
-		if (count < info->mess.msg_size || p[count - 2] !=
-						   MESSAGE_END_BYTE) {
+		/*
+		 * A size below the header makes numberParam negative and
+		 * the memcpy() length wrap.
+		 */
+		if (info->mess.msg_size < MESSAGE_MIN_HEADER_SIZE ||
+		    count < info->mess.msg_size ||
+		    p[count - 2] != MESSAGE_END_BYTE) {
 			dev_err(info->dev, "number of byte received or end byte wrong! msg_size = %d != %zu, last_byte = %02X != %02X ... ERROR %08X\n",
 				info->mess.msg_size, count, p[count - 1],
 				MESSAGE_END_BYTE, ERROR_OP_NOT_ALLOW);
