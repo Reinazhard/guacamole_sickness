@@ -1090,6 +1090,23 @@ static int s6e3hc2_panel_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
+static void s6e3hc2_panel_remove(struct mipi_dsi_device *dsi)
+{
+	struct exynos_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	struct s6e3hc2_panel *spanel = to_spanel(ctx);
+
+	/*
+	 * The gamma worker's kthread_worker is embedded in the devm_kzalloc'd
+	 * @spanel, which the device core frees once this callback returns.
+	 * Stop it before the common teardown so it cannot keep looping on
+	 * freed worker state.
+	 */
+	if (!IS_ERR_OR_NULL(spanel->thread))
+		kthread_stop(spanel->thread);
+
+	exynos_panel_remove(dsi);
+}
+
 static const struct exynos_display_underrun_param wqhd_underrun_param = {
 	.te_idle_us = 1000,
 	.te_var = 1,
@@ -1346,7 +1363,7 @@ MODULE_DEVICE_TABLE(of, exynos_panel_of_match);
 
 static struct mipi_dsi_driver exynos_panel_driver = {
 	.probe = s6e3hc2_panel_probe,
-	.remove = exynos_panel_remove,
+	.remove = s6e3hc2_panel_remove,
 	.driver = {
 		.name = "panel-samsung-s6e3hc2",
 		.of_match_table = exynos_panel_of_match,
