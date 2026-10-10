@@ -328,10 +328,14 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 	 * Don't allow any other task to have access to the reserves unless
 	 * the task has MMF_OOM_SKIP because chances that it would release
 	 * any memory is quite low.
+	 *
+	 * Only a task the core OOM killer marked may block the selection. A
+	 * Simple LMK victim also carries TIF_MEMDIE, but aborting on it would
+	 * deny the core-OOM fallback below LMK_TIER_FLOOR_ADJ for as long as
+	 * that victim lives.
 	 */
-	if (!is_sysrq_oom(oc) && tsk_is_oom_victim(task)) {
-		if (task->signal->oom_mm &&
-		    test_bit(MMF_OOM_SKIP, &task->signal->oom_mm->flags))
+	if (!is_sysrq_oom(oc) && tsk_is_core_oom_victim(task)) {
+		if (test_bit(MMF_OOM_SKIP, &task->signal->oom_mm->flags))
 			goto next;
 		goto abort;
 	}
