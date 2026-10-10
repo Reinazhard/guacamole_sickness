@@ -1306,7 +1306,7 @@ static ssize_t uvlo2_lvl_show(struct device *dev, struct device_attribute *attr,
 		return -EBUSY;
 	uvlo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, UVLO2,
 		      &uvlo2_lvl, SIG_LEVEL);
-	bcl_dev->zone[UVLO1]->bcl_lvl = VD_BATTERY_VOLTAGE - VD_STEP * uvlo2_lvl +
+	bcl_dev->zone[UVLO2]->bcl_lvl = VD_BATTERY_VOLTAGE - VD_STEP * uvlo2_lvl +
 			VD_LOWER_LIMIT - THERMAL_HYST_LEVEL;
 	return sysfs_emit(buf, "%dmV\n", VD_STEP * uvlo2_lvl + VD_LOWER_LIMIT);
 }
