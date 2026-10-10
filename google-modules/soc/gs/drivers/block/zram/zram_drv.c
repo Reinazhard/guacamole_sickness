@@ -3355,6 +3355,12 @@ static void zram_bio_discard(struct zram *zram, struct bio *bio)
 	while (n >= PAGE_SIZE) {
 		zram_slot_lock(zram, index);
 		zram_free_page(zram, index);
+		/*
+		 * A prefetched slot keeps ZRAM_WB clear, so zram_free_page()
+		 * does not release its backing-device block; the cache entry
+		 * owns it. Drop it as zram_slot_free_notify() does.
+		 */
+		zram_prefetch_cache_drop(zram, index);
 		zram_slot_unlock(zram, index);
 		atomic64_inc(&zram->stats.notify_free);
 		index++;
