@@ -416,7 +416,17 @@ static int __noreturn sbalance_thread(void *data)
 
 static int __init sbalance_init(void)
 {
-	BUG_ON(IS_ERR(kthread_run(sbalance_thread, NULL, "sbalanced")));
+	struct task_struct *kthread;
+
+	/*
+	 * Nothing is synchronised by the balancer, so a failed kthread
+	 * creation leaves the system running without IRQ rebalancing
+	 * rather than panicking on a transient -ENOMEM.
+	 */
+	kthread = kthread_run(sbalance_thread, NULL, "sbalanced");
+	if (IS_ERR(kthread))
+		return PTR_ERR(kthread);
+
 	return 0;
 }
 late_initcall(sbalance_init);
