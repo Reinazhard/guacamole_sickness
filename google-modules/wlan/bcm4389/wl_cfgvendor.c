@@ -9677,8 +9677,8 @@ static int wl_cfgvendor_start_mkeep_alive(struct wiphy *wiphy, struct wireless_d
 	uint8 *ip_pkt = NULL;
 	uint16 ip_pkt_len = 0;
 	uint16 ether_type = ETHERTYPE_IP;
-	uint8 src_mac[ETHER_ADDR_LEN];
-	uint8 dst_mac[ETHER_ADDR_LEN];
+	uint8 src_mac[ETHER_ADDR_LEN] = {0};
+	uint8 dst_mac[ETHER_ADDR_LEN] = {0};
 	uint32 period_msec = 0;
 	const struct nlattr *iter;
 	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
