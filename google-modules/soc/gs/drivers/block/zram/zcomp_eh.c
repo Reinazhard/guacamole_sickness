@@ -414,11 +414,16 @@ static void zcomp_eh_destroy(struct zcomp *comp)
 	zcomp_flush(zcomp_eh);
 
 	/*
-	 * Drains, so every deferred completion has finished and returned its
-	 * item before the pool and the cookies behind it are freed.
+	 * Quiesce the device before destroying the workqueue it feeds.
+	 * eh_destroy() waits for nr_inflight to reach zero, so the queue is
+	 * empty when destroy_workqueue() runs. The order is load-bearing:
+	 * destroy_workqueue() waits only for work already queued, and the
+	 * compression thread outlives it, so it would keep queueing
+	 * completions that __queue_work() drops -- those bios would never
+	 * be ended and nr_inflight would never return to zero.
 	 */
-	destroy_workqueue(zcomp_eh->done_wq);
 	eh_destroy(zcomp_eh->eh_dev);
+	destroy_workqueue(zcomp_eh->done_wq);
 	destroy_zcomp_cookie_pool(zcomp_eh);
 	kfree(zcomp_eh->done_items);
 	kfree(zcomp_eh);
