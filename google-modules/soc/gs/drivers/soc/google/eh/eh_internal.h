@@ -130,6 +130,11 @@ struct eh_device {
 	 * decision, and decremented only after the completion callback has
 	 * released the BIO, so a non-zero value always means there is work
 	 * that must not be abandoned.
+	 *
+	 * Also covers every synchronous decompression, from the admission test
+	 * in eh_decompress_page() until its last status read. A decompression
+	 * has no deferred completion and no drain callback, so the count is
+	 * the only thing that keeps it out of eh_suspend()'s clock gate.
 	 */
 	atomic_t nr_inflight;
 	wait_queue_head_t idle_wq;

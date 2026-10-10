@@ -1261,7 +1261,12 @@ EXPORT_SYMBOL(eh_compress_page);
  *
  * Decompress a page synchronously. Uses polling for completion.
  *
- * Holds a spinlock for the entire operation, so that nothing can interrupt it.
+ * No lock is taken here. The caller holds the zram slot lock across the whole
+ * call, and get_cpu()/put_cpu() pin this task to the CPU whose decompression
+ * command register and bounce buffer the request uses. Neither excludes
+ * another CPU, and neither excludes a system-sleep transition, so exclusion
+ * against eh_suspend()/eh_of_remove() is provided by the admission test and
+ * the in-flight count below.
  */
 int eh_decompress_page(struct eh_device *eh_dev, void *src,
 		       unsigned int slen, struct page *page)
@@ -1276,6 +1281,39 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
 	 * interrupt context.
 	 */
 	WARN_ON(in_interrupt());
+
+	/*
+	 * Refuse admission while suspended or removed, as eh_compress_page()
+	 * does: a command programmed after the clock gate is never retired.
+	 * There is nothing to hand back and nothing to retry with -- this
+	 * runs on the swap-in fault path with the zram slot lock held.
+	 */
+	if (unlikely(READ_ONCE(eh_dev->suspended) ||
+		     READ_ONCE(eh_dev->removed)))
+		return -EBUSY;
+
+	/*
+	 * Counted before the command register is written and released only
+	 * after the last status read, so a non-zero count always means the
+	 * engine is being touched. No drain callback is needed the way a
+	 * compression needs one: this is synchronous in the faulting task.
+	 */
+	atomic_inc(&eh_dev->nr_inflight);
+
+	/*
+	 * atomic_inc() is unordered, so without this barrier both halves of
+	 * the Dekker pair with eh_suspend() can miss: this CPU reads
+	 * suspended as false while suspend reads the count as still zero.
+	 * Same pairing, and same reason, as eh_compress_page().
+	 */
+	smp_mb__after_atomic();
+
+	/* Re-check after publishing the count, to close the race with suspend */
+	if (unlikely(READ_ONCE(eh_dev->suspended) ||
+		     READ_ONCE(eh_dev->removed))) {
+		eh_request_done(eh_dev);
+		return -EBUSY;
+	}
 
 	index = get_cpu();
 	pr_devel("[%s]: submit: cpu %u slen %u\n", current->comm, index, slen);
@@ -1311,6 +1349,11 @@ int eh_decompress_page(struct eh_device *eh_dev, void *src,
 
 out:
 	put_cpu();
+	/*
+	 * Released last, and after put_cpu(), so the count spans the whole
+	 * register window.
+	 */
+	eh_request_done(eh_dev);
 	return ret;
 }
 EXPORT_SYMBOL(eh_decompress_page);

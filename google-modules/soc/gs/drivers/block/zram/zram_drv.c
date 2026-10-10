@@ -2864,8 +2864,15 @@ int zram_read_page(struct zram *zram, struct page *page, u32 index,
 		ret = read_from_bdev(zram, page, index, blk_idx, parent);
 	}
 
-	/* Should NEVER happen. Return bio error if it does. */
-	if (WARN_ON(ret < 0))
+	/*
+	 * -EBUSY is a refusal, not a failure: the engine was suspended or
+	 * removed, so the backend never touched the hardware, and the slot
+	 * and the swap entry are left intact. Anything else really should
+	 * never happen.
+	 */
+	if (ret == -EBUSY)
+		pr_info_ratelimited("Decompression refused, page=%u\n", index);
+	else if (WARN_ON(ret < 0))
 		pr_err("Decompression failed! err=%d, page=%u\n", ret, index);
 
 	return ret;
