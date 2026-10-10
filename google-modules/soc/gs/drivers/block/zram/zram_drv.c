@@ -49,7 +49,13 @@ static DEFINE_IDR(zram_index_idr);
 static DEFINE_MUTEX(zram_index_mutex);
 
 static int zram_major;
-static const char *default_compressor = "lz4";
+/*
+ * The built-in default must name a compressor this build registers:
+ * comp_algs[ZRAM_PRIMARY_COMP] is published in sysfs before any backend
+ * exists, and disksize_store() rejects the device if zcomp_create()
+ * cannot resolve the name.
+ */
+static const char *default_compressor = CONFIG_ZRAM_GS_DEF_COMP;
 
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
@@ -3498,6 +3504,13 @@ static void zram_destroy_comps(struct zram *zram)
 	}
 
 	zram_comp_params_reset(zram);
+	/*
+	 * Also the rollback of a failed disksize_store(), which leaves the
+	 * device published in sysfs: comp_algorithm_show() dereferences
+	 * comp_algs[ZRAM_PRIMARY_COMP] unconditionally, so a NULL entry
+	 * faults the world-readable attribute. Restore the default here.
+	 */
+	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 }
 
 static void zram_reset_device(struct zram *zram)
@@ -3531,7 +3544,6 @@ static void zram_reset_device(struct zram *zram)
 	atomic_set(&zram->pp_in_progress, 0);
 	reset_bdev(zram);
 
-	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 	up_write(&zram->init_lock);
 }
 
