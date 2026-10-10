@@ -7997,6 +7997,15 @@ static int kshrinkd(void *pgdat)
 		while (1) {
 			struct mem_cgroup *memcg = NULL;
 
+			/*
+			 * The freezer cannot preempt a running task and this loop's
+			 * only other exit is kshrinkd_waiters, owned by unrelated
+			 * allocation activity, so a freeze request would go
+			 * unobserved and suspend would fail with -EBUSY.
+			 */
+			if (try_to_freeze() || kthread_should_stop())
+				break;
+
 			do {
 				shrink_slab(GFP_KERNEL, p->node_id, memcg, pri);
 			} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
