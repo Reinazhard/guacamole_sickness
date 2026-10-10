@@ -831,8 +831,13 @@ err_videodev_alloc:
 
 static void smfc_deinit_v4l2(struct device *dev, struct smfc_dev *smfc)
 {
+	/* smfc_init_v4l2() registered this video_device, so it must be
+	 * unregistered rather than released: video_device_release() is only
+	 * valid for a device that was never registered, and kfree()s it
+	 * while its cdev and sysfs device are still live.
+	 */
+	video_unregister_device(smfc->videodev);
 	v4l2_m2m_release(smfc->m2mdev);
-	video_device_release(smfc->videodev);
 	v4l2_device_unregister(&smfc->v4l2_dev);
 }
 
@@ -1121,7 +1126,17 @@ static int exynos_smfc_remove(struct platform_device *pdev)
 {
 	struct smfc_dev *smfc = platform_get_drvdata(pdev);
 
+	/* Everything probe published must be unpublished here, before
+	 * devres frees the struct smfc_dev that owns it.  The probe error
+	 * path already does this via smfc_deinit_v4l2(); remove did not.
+	 */
+	del_timer_sync(&smfc->timer);
+
 	g2d_pm_qos_remove_request(smfc);
+
+	pm_runtime_disable(&pdev->dev);
+
+	smfc_deinit_v4l2(&pdev->dev, smfc);
 
 	smfc_deinit_clock(smfc);
 
