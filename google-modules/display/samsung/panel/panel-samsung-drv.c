@@ -5901,6 +5901,25 @@ void exynos_panel_remove(struct mipi_dsi_device *dsi)
 {
 	struct exynos_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
+	/*
+	 * @ctx is devm_kzalloc'd and @ctx->bl is freed by the unregister
+	 * below, so quiesce every asynchronous context that can still
+	 * dereference them before anything is torn down, while the DSI host
+	 * is still attached so a work item caught mid-flight can finish.
+	 */
+	cancel_delayed_work_sync(&ctx->hbm.local_hbm.timeout_work);
+	cancel_delayed_work_sync(&ctx->idle_work);
+	cancel_delayed_work_sync(&ctx->normal_mode_work);
+	cancel_work_sync(&ctx->notify_panel_mode_changed.work);
+	cancel_work_sync(&ctx->notify_brightness_changed_work);
+
+	if (!IS_ERR_OR_NULL(ctx->hbm.local_hbm.thread))
+		kthread_stop(ctx->hbm.local_hbm.thread);
+
+	/* only created by hbm_data_init(), which may have failed */
+	if (ctx->hbm.wq)
+		destroy_workqueue(ctx->hbm.wq);
+
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	drm_bridge_remove(&ctx->bridge);
@@ -5909,6 +5928,7 @@ void exynos_panel_remove(struct mipi_dsi_device *dsi)
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_cabc_mode.attr);
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_acl_mode.attr);
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_ssc_en.attr);
+	wakeup_source_unregister(ctx->notify_panel_mode_changed.ws);
 	devm_backlight_device_unregister(ctx->dev, ctx->bl);
 }
 EXPORT_SYMBOL_GPL(exynos_panel_remove);
