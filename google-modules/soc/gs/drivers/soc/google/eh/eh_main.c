@@ -1495,15 +1495,19 @@ static int eh_of_remove(struct platform_device *pdev)
 	list_del_init(&eh_dev->eh_dev_list);
 	spin_unlock(&eh_dev_list_lock);
 
-	/* The device is going away; never hand it out again. */
-	WRITE_ONCE(eh_dev->removed, true);
-
 	/*
 	 * Drain before stopping the thread, as eh_suspend() does and for
 	 * the same reason: only the thread retires requests, so stopping
 	 * it first abandons whatever is still in the hardware ring or the
 	 * software FIFO, and the submitter waits on a BIO nothing will
 	 * ever complete.
+	 *
+	 * It must also run before removed is set below: the drain submits
+	 * through eh_compress_page(), which refuses admission once removed
+	 * is set, so setting the flag first would make every drained
+	 * request a refused one -- off the upper layer's list by then, so
+	 * nothing would retry it and its BIO reference would never be
+	 * released.
 	 *
 	 * remove() cannot refuse the teardown the way eh_suspend()
 	 * refuses the suspend, so a timeout is reported and the teardown
@@ -1512,6 +1516,13 @@ static int eh_of_remove(struct platform_device *pdev)
 	 */
 	if (eh_dev->drain_cb)
 		(*eh_dev->drain_cb)(eh_dev->drain_priv);
+
+	/*
+	 * The device is going away; never hand it out again. The node is
+	 * already off eh_dev_list, so eh_create() cannot hand it out in
+	 * the window above.
+	 */
+	WRITE_ONCE(eh_dev->removed, true);
 
 	if (!wait_event_timeout(eh_dev->idle_wq,
 				!atomic_read(&eh_dev->nr_inflight),
@@ -1575,23 +1586,30 @@ static int eh_suspend(struct device *dev)
 	struct eh_device *eh_dev = dev_get_drvdata(dev);
 
 	/*
-	 * Stop admitting new requests before draining, so the in-flight
-	 * count can only fall from here. Without this a request admitted in
-	 * the window between the check below and the clock gate would be
-	 * discarded by eh_compr_fifo_init() on resume.
-	 */
-	WRITE_ONCE(eh_dev->suspended, true);
-
-	/*
 	 * Take back anything the upper layer is still holding. Requests
 	 * batched on a block plug are released only when the owning task
 	 * unplugs, and a task the freezer has already stopped will never
 	 * unplug -- so unless they are handed over here they sit there while
 	 * the clock is gated underneath them, and whoever submitted them
 	 * blocks forever on a BIO reference nothing will ever complete.
+	 *
+	 * This has to happen before admission is closed below: the drain
+	 * hands the batch back through eh_compress_page(), which refuses
+	 * once suspended is set, so closing first would make every drained
+	 * request a refused one, off the upper layer's list by then, with
+	 * its BIO reference never released.
 	 */
 	if (eh_dev->drain_cb)
 		(*eh_dev->drain_cb)(eh_dev->drain_priv);
+
+	/*
+	 * Close admission only now that the batch has been handed over, so
+	 * the in-flight count can only fall from here. A request admitted in
+	 * the window between this and the clock gate is still counted by
+	 * nr_inflight, which the wait below covers; one admitted after it is
+	 * refused rather than discarded by eh_compr_fifo_init() on resume.
+	 */
+	WRITE_ONCE(eh_dev->suspended, true);
 
 	/*
 	 * Wait for every admitted request to retire, not merely for the
