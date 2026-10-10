@@ -82,6 +82,16 @@ static inline bool tsk_is_oom_victim(struct task_struct * tsk)
 }
 
 /*
+ * Is this task a victim of the core OOM killer? Simple LMK sets TIF_MEMDIE
+ * without writing signal->oom_mm, so under CONFIG_ANDROID_SIMPLE_LMK
+ * tsk_is_oom_victim() -- a reserve test -- cannot answer this.
+ */
+static inline bool tsk_is_core_oom_victim(struct task_struct *tsk)
+{
+	return tsk->signal->oom_mm;
+}
+
+/*
  * Checks whether a page fault on the given mm is still reliable.
  * This is no longer true if the oom reaper started to reap the
  * address space which is reflected by MMF_UNSTABLE flag set in
