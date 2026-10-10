@@ -4281,7 +4281,11 @@ static int exynos_panel_bridge_atomic_check(struct drm_bridge *bridge,
 		int target_bts_fps = exynos_drm_mode_bts_fps(target_mode,
 			exynos_conn_state->exynos_mode.min_bts_fps);
 
-		int clock;
+		/* The op_hz block below reads clock on every path, but the
+		 * assignments above only run on the RRS paths; start at 0 so
+		 * the comparisons there are no-ops when no RRS clock exists.
+		 */
+		int clock = 0;
 
 		if (current_mode->hdisplay != target_mode->hdisplay &&
 		    current_mode->vdisplay != target_mode->vdisplay) {
