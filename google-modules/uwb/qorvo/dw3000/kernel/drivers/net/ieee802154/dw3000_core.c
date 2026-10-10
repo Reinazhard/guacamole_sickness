@@ -7035,7 +7035,7 @@ int dw3000_transfers_init(struct dw3000 *dw)
 		goto alloc_err;
 	dw->msg_read_all_sys_status = dw3000_alloc_prepare_xfer(
 		dw, DW3000_SYS_STATUS_ID, 0, 8, DW3000_SPI_RD_BIT);
-	if (!dw->msg_read_sys_status)
+	if (!dw->msg_read_all_sys_status)
 		goto alloc_err;
 	dw->msg_read_sys_time = dw3000_alloc_prepare_xfer(
 		dw, DW3000_SYS_TIME_ID, 0, 4, DW3000_SPI_RD_BIT);
