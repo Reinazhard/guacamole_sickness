@@ -2290,6 +2290,14 @@ wl_cfgvendor_rtt_set_config(struct wiphy *wiphy, struct wireless_dev *wdev,
 						rtt_target->peer = nla_get_u8(iter2);
 						break;
 					case RTT_ATTRIBUTE_TARGET_CHAN:
+						/* No .len in the policy, so a zero-length
+						 * attribute would pass validation. */
+						if (nla_len(iter2) <
+							sizeof(rtt_target->channel)) {
+							WL_ERR(("chan length not match\n"));
+							err = -EINVAL;
+							goto exit;
+						}
 						memcpy(&rtt_target->channel, nla_data(iter2),
 							sizeof(rtt_target->channel));
 						break;
@@ -9704,6 +9712,13 @@ static int wl_cfgvendor_start_mkeep_alive(struct wiphy *wiphy, struct wireless_d
 				if (!ip_pkt_len) {
 					ret = BCME_BADARG;
 					WL_ERR(("ip packet length is 0\n"));
+					goto exit;
+				}
+				/* ip_pkt_len is a separate attribute: the NLA_BINARY
+				 * .len is a maximum only, so it bounds nothing here. */
+				if (nla_len(iter) < ip_pkt_len) {
+					ret = BCME_BADARG;
+					WL_ERR(("ip packet length exceeds attribute\n"));
 					goto exit;
 				}
 				ip_pkt = (u8 *)MALLOCZ(cfg->osh, ip_pkt_len);
