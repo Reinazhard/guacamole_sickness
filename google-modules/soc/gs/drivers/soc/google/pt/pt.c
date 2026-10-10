@@ -716,13 +716,28 @@ ptid_t pt_client_mutate_size(struct pt_handle *handle, int old_id, int new_id, s
 		return PT_PTID_INVALID;
 	}
 	ptid = pt_driver_mutate(handle, old_id, new_id);
-	pt_trace(handle, old_id, false);
-	pt_trace(handle, new_id, true);
+	if (ptid != PT_PTID_INVALID) {
+		/* pt_driver_mutate() clears pts[old_id].enabled without
+		 * going through pt_resize_list_disable(), so an entry
+		 * queued for it stays in resize_list and a later
+		 * pt_client_disable_no_free() skips the drain.
+		 */
+		pt_resize_list_disable(&handle->pts[old_id]);
+		pt_trace(handle, old_id, false);
+		pt_trace(handle, new_id, true);
+	}
 	/* Update by driver callback */
 	*size = handle->pts[new_id].size;
 	spin_unlock_irqrestore(&handle->lock, flags);
-	return ptid;
 
+	/* The flush above misses an entry the resize thread already
+	 * dequeued; wait for it with handle->lock released, since the
+	 * callback may take that lock.
+	 */
+	if (ptid != PT_PTID_INVALID)
+		pt_resize_list_wait_completion(&handle->pts[old_id]);
+
+	return ptid;
 }
 
 void pt_client_disable_no_free(struct pt_handle *handle, int id)
@@ -834,6 +849,19 @@ void pt_client_unregister(struct pt_handle *handle)
 	}
 
 	spin_unlock_irqrestore(&handle->lock, flags);
+
+	/* The ptid checks above say nothing about the resize thread: a pts
+	 * can still be queued, or already dequeued and running, when its
+	 * ptid has been freed, and the callback dereferences handle->data
+	 * and handle->pts without a lock.
+	 */
+	spin_lock_irqsave(&handle->lock, flags);
+	for (id = 0; id < handle->id_cnt; id++)
+		pt_resize_list_disable(&handle->pts[id]);
+	spin_unlock_irqrestore(&handle->lock, flags);
+
+	for (id = 0; id < handle->id_cnt; id++)
+		pt_resize_list_wait_completion(&handle->pts[id]);
 
 	kfree(handle);
 }
