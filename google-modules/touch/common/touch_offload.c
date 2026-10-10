@@ -430,7 +430,21 @@ static int touch_offload_free_buffers(struct touch_offload_context *context)
 	context->reserved_frame = NULL;
 	INIT_LIST_HEAD(&context->free_pool);
 	INIT_LIST_HEAD(&context->frame_queue);
+
+	/* Invalidate the pair: touch_offload_read() handles only
+	 * *offset == packed_frame_size or packed_frame == NULL, and a stale
+	 * packed_frame makes it compute a negative copy_size.
+	 */
+	context->packed_frame = NULL;
 	context->packed_frame_size = 0;
+
+	/* touch_offload_allocate_buffers() reallocates this on every
+	 * TOUCH_OFFLOAD_IOC_WR_CONFIGURE; leaving it to devres leaks one
+	 * buffer per reconfiguration until the device is detached.
+	 */
+	devm_kfree(context->device, context->prealloc_packed_frame);
+	context->prealloc_packed_frame = NULL;
+	context->prealloc_packed_frame_size = 0;
 
 	mutex_unlock(&context->buffer_lock);
 
