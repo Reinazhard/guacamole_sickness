@@ -1224,6 +1224,13 @@ int eh_compress_page(struct eh_device *eh_dev, struct page *page, void *priv)
 	 */
 	atomic_inc(&eh_dev->nr_inflight);
 
+	/*
+	 * atomic_inc() is unordered, so the re-check below could be hoisted
+	 * above it and both halves of the Dekker pair with eh_suspend()
+	 * would miss. request_to_hw_fifo() needs the same barrier.
+	 */
+	smp_mb__after_atomic();
+
 	/* Re-check after publishing the count, to close the race with suspend */
 	if (unlikely(READ_ONCE(eh_dev->suspended) || READ_ONCE(eh_dev->removed))) {
 		eh_request_done(eh_dev);
