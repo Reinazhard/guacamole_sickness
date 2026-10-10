@@ -24,7 +24,35 @@ static int zcomp_flush(struct zcomp_eh *zcomp_eh)
 
 		cookie = list_last_entry(&req_list, struct zcomp_cookie, list);
 		list_del(&cookie->list);
-		eh_compress_page(zcomp_eh->eh_dev, cookie->page, cookie);
+
+		err = eh_compress_page(zcomp_eh->eh_dev, cookie->page, cookie);
+		if (!err)
+			continue;
+
+		/*
+		 * Refused: admission is closed, so every further submission
+		 * would be refused too. Put this cookie back at the tail --
+		 * where it came from, so it stays the oldest -- and keep the
+		 * rest of the batch behind it, live for a later flush.
+		 * Dropping them, as this used to, took each cookie's BIO
+		 * reference with it: the submitter waits on a BIO nothing will
+		 * complete, holding its page, and the write is lost.
+		 */
+		list_add_tail(&cookie->list, &req_list);
+		break;
+	}
+
+	if (err) {
+		struct zcomp_cookie *cookie;
+		unsigned int requeued = 0;
+
+		list_for_each_entry(cookie, &req_list, list)
+			requeued++;
+
+		spin_lock(&zcomp_eh->request_lock);
+		list_splice_tail(&req_list, &zcomp_eh->request_list);
+		zcomp_eh->pend_request += requeued;
+		spin_unlock(&zcomp_eh->request_lock);
 	}
 
 	return err;
@@ -327,6 +355,7 @@ static int zcomp_eh_compress(struct zcomp *comp, u32 index, struct page *page,
 {
 	struct zcomp_eh *zcomp_eh = comp->private;
 	struct zcomp_cookie *cookie;
+	int err;
 
 	cookie = alloc_zcomp_cookie(zcomp_eh);
 	if (!cookie)
@@ -345,7 +374,22 @@ static int zcomp_eh_compress(struct zcomp *comp, u32 index, struct page *page,
 		return 0;
 
 	zcomp_flush(zcomp_eh);
-	return eh_compress_page(zcomp_eh->eh_dev, page, cookie);
+
+	err = eh_compress_page(zcomp_eh->eh_dev, page, cookie);
+	if (err) {
+		/*
+		 * No descriptor was allocated, so zcomp_eh_compress_done()
+		 * -- the only other place the BIO and the cookie are
+		 * released -- can never run for it. bio_io_error() drops the
+		 * extra reference taken above and marks the write failed, so
+		 * the caller's bio_endio still balances; without it the
+		 * submitter waits on the BIO forever, holding the swap page.
+		 */
+		bio_io_error(bio);
+		free_zcomp_cookie(zcomp_eh, cookie);
+	}
+
+	return err;
 }
 
 static int zcomp_eh_decompress(struct zcomp *comp, void *src,
