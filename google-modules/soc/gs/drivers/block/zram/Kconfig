@@ -70,6 +70,7 @@ config ZRAM_GS_BACKEND_842
 choice
 	prompt "Default zram compressor"
 	default ZRAM_GS_DEF_COMP_LZORLE
+	default ZRAM_GS_DEF_COMP_LZ77EH if ZCOMP_EH
 	depends on ZRAM_GS
 
 config ZRAM_GS_DEF_COMP_LZORLE
@@ -100,6 +101,10 @@ config ZRAM_GS_DEF_COMP_842
 	bool "842"
 	depends on ZRAM_GS_BACKEND_842
 
+config ZRAM_GS_DEF_COMP_LZ77EH
+	bool "lz77eh"
+	depends on ZCOMP_EH
+
 endchoice
 
 config ZRAM_GS_DEF_COMP
@@ -112,6 +117,7 @@ config ZRAM_GS_DEF_COMP
 	default "zstd" if ZRAM_GS_DEF_COMP_ZSTD
 	default "deflate" if ZRAM_GS_DEF_COMP_DEFLATE
 	default "842" if ZRAM_GS_DEF_COMP_842
+	default "lz77eh" if ZRAM_GS_DEF_COMP_LZ77EH
 	default "unset-value"
 
 config ZRAM_GS_WRITEBACK
