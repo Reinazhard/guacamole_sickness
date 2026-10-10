@@ -553,7 +553,19 @@ static void scan_and_kill(void)
 	for (i = 0; i < nr_to_kill; i++) {
 		struct victim_info *victim = &victims[i];
 		struct task_struct *t, *vtsk = victim->tsk;
-		struct mm_struct *mm = victim->mm;
+		struct mm_struct *mm;
+
+		/*
+		 * Pin the mm across the loop body: the slot holds the only
+		 * other reference and simple_lmk_mm_freed() drops it once the
+		 * bit below lands. The slot is cleared before that drop, so a
+		 * non-NULL read under victims_lock is still pinned.
+		 */
+		spin_lock_irqsave(&victims_lock, flags);
+		mm = victim->mm;
+		if (mm)
+			mmgrab(mm);
+		spin_unlock_irqrestore(&victims_lock, flags);
 
 		/* Released above: its memory was already gone, so nothing to kill */
 		if (!mm) {
@@ -601,6 +613,8 @@ static void scan_and_kill(void)
 		victim->score = get_reclaimable_pages(mm);
 		victim->size = victim->score;
 		victim->pending = victim->score;
+
+		mmdrop(mm);
 
 		put_task_struct(vtsk);
 		victim->tsk = NULL;
