@@ -280,6 +280,7 @@ static int smfc_vb2_buf_init(struct vb2_buffer *vb)
 	struct smfc_dev *smfc = ctx->smfc;
 	struct dma_buf *dbuf;
 	unsigned int plane;
+	int ret;
 
 	if (!V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type) || !ctx->enable_hwfc)
 		return 0;
@@ -292,11 +293,35 @@ static int smfc_vb2_buf_init(struct vb2_buffer *vb)
 
 	for (plane = 0; plane < vb->num_planes; ++plane) {
 		dbuf = dma_buf_get(vb->planes[plane].m.fd);
+		if (IS_ERR(dbuf))
+			return PTR_ERR(dbuf);
 		sbuf->info[plane].dbuf = dbuf;
+
 		sbuf->info[plane].dba = dma_buf_attach(dbuf, smfc->dev);
+		if (IS_ERR(sbuf->info[plane].dba)) {
+			ret = PTR_ERR(sbuf->info[plane].dba);
+			/*
+			 * Never keep an ERR_PTR in info[].dba:
+			 * smfc_vb2_buf_cleanup() passes it to dma_buf_detach().
+			 */
+			sbuf->info[plane].dba = NULL;
+			return ret;
+		}
 		sbuf->info[plane].dba->dma_map_attrs = DMA_ATTR_PRIVILEGED;
+
 		sbuf->info[plane].sgt = dma_buf_map_attachment(sbuf->info[plane].dba,
 							       vb->vb2_queue->dma_dir);
+		if (IS_ERR(sbuf->info[plane].sgt)) {
+			ret = PTR_ERR(sbuf->info[plane].sgt);
+			sbuf->info[plane].sgt = NULL;
+			/*
+			 * The cleanup path detaches only while an sgt is
+			 * present, so drop the attachment here.
+			 */
+			dma_buf_detach(dbuf, sbuf->info[plane].dba);
+			sbuf->info[plane].dba = NULL;
+			return ret;
+		}
 	}
 	return 0;
 }
