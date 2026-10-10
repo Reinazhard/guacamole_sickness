@@ -8125,6 +8125,17 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	if (READ_ONCE(pgdat->kswapd_order) < order)
 		WRITE_ONCE(pgdat->kswapd_order, order);
 
+	/*
+	 * The allocator has already raised kshrinkd_waiters for this
+	 * allocation.  Wake kshrinkd before the kswapd-specific decisions
+	 * below: waitqueue_active(), the hopeless-node check and
+	 * pgdat_balanced() describe kswapd's own state, so gating the slab
+	 * reclaimer on them drops the wakeup whenever kswapd is running.
+	 * A redundant wake is a no-op -- kshrinkd re-reads the counter.
+	 */
+	if (waitqueue_active(&pgdat->kshrinkd_wait))
+		wake_up_interruptible(&pgdat->kshrinkd_wait);
+
 	if (!waitqueue_active(&pgdat->kswapd_wait))
 		return;
 
@@ -8147,7 +8158,6 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	trace_mm_vmscan_wakeup_kswapd(pgdat->node_id, highest_zoneidx, order,
 				      gfp_flags);
 	wake_up_interruptible(&pgdat->kswapd_wait);
-	wake_up_interruptible(&pgdat->kshrinkd_wait);
 }
 
 #ifdef CONFIG_HIBERNATION
