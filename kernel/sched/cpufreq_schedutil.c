@@ -37,6 +37,7 @@ struct sugov_policy {
 
 	bool			limits_changed;
 	bool			need_freq_update;
+	bool			cached_raw_freq_valid;
 };
 
 struct sugov_cpu {
@@ -142,11 +143,18 @@ static bool sugov_update_next_freq(struct sugov_policy *sg_policy, u64 time,
 	 * systems. A check for arch_scale_freq_invariant() is omitted here
 	 * because unconditionally rechecking the rate limit is cheaper.
 	 */
-	if (next_freq == sg_policy->next_freq ||
-	    (next_freq < sg_policy->next_freq &&
-	     sugov_should_rate_limit(sg_policy, time))) {
-		/* Reset cached raw frequency so next update is not falsely skipped */
-		sg_policy->cached_raw_freq = 0;
+	if (next_freq == sg_policy->next_freq)
+		return false;
+
+	if (next_freq < sg_policy->next_freq &&
+	    sugov_should_rate_limit(sg_policy, time)) {
+		/*
+		 * The cache no longer describes sg_policy->next_freq, so
+		 * invalidate it; otherwise the shortcut in get_next_freq()
+		 * keeps returning this stale frequency. Zero cannot mark it,
+		 * because map_util_freq() returns zero for util == 0.
+		 */
+		sg_policy->cached_raw_freq_valid = false;
 		return false;
 	}
 
@@ -211,10 +219,12 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	else
 		freq = map_util_freq(util, freq, max);
 
-	if (freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
+	if (sg_policy->cached_raw_freq_valid &&
+	    freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
 		return sg_policy->next_freq;
 
 	sg_policy->cached_raw_freq = freq;
+	sg_policy->cached_raw_freq_valid = true;
 	l_freq = cpufreq_driver_resolve_freq(policy, freq);
 	if (!policy->freq_table)
 		return l_freq;
@@ -838,6 +848,7 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->work_in_progress		= false;
 	sg_policy->limits_changed		= false;
 	sg_policy->cached_raw_freq		= 0;
+	sg_policy->cached_raw_freq_valid	= false;
 
 	sg_policy->need_freq_update = cpufreq_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS);
 
