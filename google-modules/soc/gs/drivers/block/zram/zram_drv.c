@@ -1253,16 +1253,16 @@ static int zram_populate_table(struct zram *zram, struct page *page, u32 index)
 	kunmap_local(src);
 
 	/*
-	 * Retain blk_idx here and defer its release until
-	 * swap_slot_free_notify is triggered. The store returns 1 on success
-	 * and a negative errno on failure (it never returns 0), so the block
-	 * has to be released on the error path -- nothing else will.
+	 * Retain blk_idx here and defer its release until the slot is freed:
+	 * the failure path leaves ZRAM_WB set with the handle still holding
+	 * blk_idx, so zram_free_page() remains the block's only release
+	 * point, and releasing it here would let zram_reserve_bdev_block()
+	 * alias the block to another slot.
 	 */
 	err = zram_prefetch_cache_store(zram, index, blk_idx);
 	if (err < 0) {
 		zram_slot_unlock(zram, index);
 		zs_free(zram->mem_pool, handle);
-		zram_release_bdev_block(zram, blk_idx);
 		return err;
 	}
 
