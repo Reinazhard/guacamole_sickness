@@ -556,19 +556,27 @@ static ssize_t raw_check_show(struct device *dev,
 {
 	struct sec_cmd_data *sec = dev_get_drvdata(dev);
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	size_t buf_size;
 	int ii, ret = 0;
 	char *buffer = NULL;
 	char temp[CMD_RESULT_WORD_LEN] = { 0 };
 
+	/* A token is rendered into a CMD_RESULT_WORD_LEN byte word, so it
+	 * can be 9 characters plus a NUL; a negative node already renders
+	 * as "-32768 " (7 bytes) and overran the old 6-bytes-per-node
+	 * budget.
+	 */
+	buf_size = (size_t)ts->rx_count * ts->tx_count * CMD_RESULT_WORD_LEN + 1;
+
 	sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, true);
 
-	buffer = vzalloc(ts->rx_count * ts->tx_count * 6);
+	buffer = vzalloc(buf_size);
 	if (!buffer) {
 		sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, false);
 		return -ENOMEM;
 	}
 
-	memset(buffer, 0x00, ts->rx_count * ts->tx_count * 6);
+	memset(buffer, 0x00, buf_size);
 
 	for (ii = 0; ii < (ts->rx_count * ts->tx_count - 1); ii++) {
 		snprintf(temp, CMD_RESULT_WORD_LEN, "%d ", ts->pFrame[ii]);
@@ -580,7 +588,7 @@ static ssize_t raw_check_show(struct device *dev,
 	snprintf(temp, CMD_RESULT_WORD_LEN, "%d", ts->pFrame[ii]);
 	strncat(buffer, temp, CMD_RESULT_WORD_LEN);
 
-	ret = snprintf(buf, ts->rx_count * ts->tx_count * 6, buffer);
+	ret = scnprintf(buf, PAGE_SIZE, "%s", buffer);
 	vfree(buffer);
 
 	sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, false);
