@@ -534,21 +534,13 @@ static int process_transaction(struct lwis_client *client, struct lwis_transacti
 	save_transaction_to_history(client, info, process_timestamp, process_duration_ns);
 
 	/*
-	 * This check needs to be handled only for cases where we are processing
-	 * the transaction based on the limit specified in the dts.
-	 * When the transactions are cancelled or executed in event context
-	 * the limit doesn't dictate the number of entries that will be processed.
+	 * The transaction is freed below, so it must leave the queue first:
+	 * a node freed while still linked is walked by
+	 * cancel_all_transactions_in_queue_locked(). list_del_init() rather
+	 * than list_del(), because the event context and EVERY_TIME paths
+	 * arrive with the node never queued.
 	 */
-	if (check_transaction_limit) {
-		/*
-		 *  1. If all of the entries are processed for a given transaction then
-		 *     delete the transaction from the queue and enable emit signals for
-		 *     pending events and fences.
-		 *  2. Delete transaction from the process queue after the limit is fulfilled
-		 *     or there is an error while processing.
-		 */
-		list_del(&transaction->process_queue_node);
-	}
+	list_del_init(&transaction->process_queue_node);
 
 	if (info->trigger_event_counter == LWIS_EVENT_COUNTER_EVERY_TIME) {
 		/*
@@ -713,17 +705,12 @@ void lwis_process_transactions_in_queue(struct lwis_client *client,
 					    /*run_in_irq_context=*/false);
 
 			/*
-			 * Delete the high priority transaction from the queue
-			 * once transaction is complete.
+			 * process_transaction() already unlinked and freed it;
+			 * the pointer is NULL here.
 			 */
-			if (!check_transaction_limit) {
-				spin_lock_irqsave(&client->transaction_lock, flags);
-				list_del(&transaction->process_queue_node);
-				spin_unlock_irqrestore(&client->transaction_lock, flags);
-				if (lwis_transaction_debug) {
-					dev_info(client->lwis_dev->dev,
-						 "Finished processing high priority transaction.");
-				}
+			if (!check_transaction_limit && lwis_transaction_debug) {
+				dev_info(client->lwis_dev->dev,
+					 "Finished processing high priority transaction.");
 			}
 
 			lwis_pending_events_emit(client->lwis_dev, &pending_events);
