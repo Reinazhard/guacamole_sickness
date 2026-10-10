@@ -929,6 +929,8 @@ struct zram_wb_ctl *init_wb_ctl(struct zram *zram)
 	init_waitqueue_head(&wb_ctl->done_wait);
 	spin_lock_init(&wb_ctl->done_lock);
 	wb_ctl->processed_bytes = 0;
+	/* Set by the per-process writeback ioctl only. */
+	wb_ctl->proc_wb_enabled = false;
 
 	for (i = 0; i < zram->wb_batch_size; i++) {
 		struct zram_wb_req *req;
