@@ -55,6 +55,11 @@ struct bal_irq {
 	unsigned int delta_nr;
 	unsigned int old_nr;
 	int prev_cpu;
+	/*
+	 * First CPU of the affinity observed at the same time as prev_cpu.
+	 * The two can differ; see commit 9be2a8097740.
+	 */
+	int aff_cpu;
 };
 
 struct bal_domain {
@@ -148,14 +153,18 @@ static int move_irq_to_cpu(struct bal_irq *bi, int cpu)
 	struct irq_desc *desc = bi->desc;
 	int prev_cpu, ret;
 
-	/* Set the affinity if it wasn't changed since we looked at it */
+	/*
+	 * Set the affinity if it wasn't changed since we looked at it. Compare
+	 * against the affinity we observed, not against the CPU the IRQ last
+	 * fired upon: those two are allowed to differ.
+	 */
 	raw_spin_lock_irq(&desc->lock);
 	prev_cpu = cpumask_first(desc->irq_common_data.affinity);
-	if (prev_cpu == bi->prev_cpu) {
+	if (prev_cpu == bi->aff_cpu) {
 		ret = irq_set_affinity_locked(&desc->irq_data, cpumask_of(cpu),
 					      false);
 	} else {
-		bi->prev_cpu = prev_cpu;
+		bi->aff_cpu = prev_cpu;
 		ret = -EINVAL;
 	}
 	raw_spin_unlock_irq(&desc->lock);
@@ -255,6 +264,8 @@ static void balance_irqs(void)
 		/* Ignore for this run if the IRQ isn't on the expected CPU */
 		if (cpu != bi->prev_cpu) {
 			bi->prev_cpu = cpu;
+			bi->aff_cpu = cpumask_first(
+				bi->desc->irq_common_data.affinity);
 			continue;
 		}
 
