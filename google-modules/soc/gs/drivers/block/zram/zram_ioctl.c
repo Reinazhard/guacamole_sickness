@@ -335,7 +335,7 @@ int zram_ioctl(struct block_device *bdev, fmode_t mode,
 	} else if (cmd == ZRAM_ANDROID_IOC_PROCESS_WRITEBACK) {
 		/* Legacy: map to unlimited process_range_writeback */
 		struct zram_android_ioc_data ioc_data;
-		struct zram_android_ioc_process_range_writeback prwb;
+		struct zram_android_ioc_process_range_writeback prwb = { };
 
 		if (copy_from_user(&ioc_data, argp, sizeof(ioc_data)))
 			return -EFAULT;
