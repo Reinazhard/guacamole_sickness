@@ -1290,8 +1290,15 @@ static int s3c2410wdt_panic_handler(struct notifier_block *nb,
 		return -ENODEV;
 
 	timeout = wdt->wdt_device.timeout;
+
+	/*
+	 * The little cluster registers this notifier before either slot is
+	 * published, so a failed sibling probe leaves s3c_wdt[BIG_CLUSTER]
+	 * NULL and dereferencing it would lose the forced reset.
+	 */
 	for (i = 0; i < MAX_WATCHDOG_CLUSTER_CNT; i++)
-		s3c_wdt[i]->in_panic = 1;
+		if (s3c_wdt[i])
+			s3c_wdt[i]->in_panic = 1;
 
 	/* We assumed that num_online_cpus() > 1 status is abnormal */
 	if (num_online_cpus() > 1)
