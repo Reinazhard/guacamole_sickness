@@ -5681,6 +5681,40 @@ static int parse_panel_index(const struct mipi_dsi_device *dsi)
 		return -EINVAL;
 }
 
+/**
+ * exynos_panel_quiesce() - stop every asynchronous user of @ctx
+ * @ctx: panel context
+ *
+ * @ctx is devm_kzalloc'd, so the device core frees it as soon as the driver
+ * callback that owns it returns, while the work items armed against it run
+ * on system_wq and @ctx->hbm.wq with no lifetime of their own.  Both
+ * teardown paths must run this while @ctx, @ctx->bl and the DSI host are
+ * still valid: .remove, and the probe-failure returns, for which the driver
+ * core never invokes .remove.
+ */
+static void exynos_panel_quiesce(struct exynos_panel *ctx)
+{
+	cancel_delayed_work_sync(&ctx->idle_work);
+	cancel_delayed_work_sync(&ctx->normal_mode_work);
+	cancel_work_sync(&ctx->notify_panel_mode_changed.work);
+	cancel_work_sync(&ctx->notify_brightness_changed_work);
+
+	/*
+	 * hbm_data_init() initialises the timeout work only when it created
+	 * @ctx->hbm.wq, so the cancel is gated on the same condition as the
+	 * destroy.
+	 */
+	if (ctx->hbm.wq) {
+		cancel_delayed_work_sync(&ctx->hbm.local_hbm.timeout_work);
+		destroy_workqueue(ctx->hbm.wq);
+	}
+
+	if (!IS_ERR_OR_NULL(ctx->hbm.local_hbm.thread))
+		kthread_stop(ctx->hbm.local_hbm.thread);
+
+	wakeup_source_unregister(ctx->notify_panel_mode_changed.ws);
+}
+
 int exynos_panel_common_init(struct mipi_dsi_device *dsi,
 				struct exynos_panel *ctx)
 {
@@ -5803,11 +5837,15 @@ int exynos_panel_common_init(struct mipi_dsi_device *dsi,
 	INIT_WORK(&ctx->notify_panel_mode_changed.work, notify_panel_mode_changed_worker);
 	INIT_WORK(&ctx->notify_brightness_changed_work, notify_brightness_changed_worker);
 
+	/*
+	 * Initialise the work item even for a panel that never arms it: the
+	 * teardown cancels it unconditionally, and a cancel on a work_struct
+	 * whose func is NULL trips WARN_ON(!work->func) in __flush_work().
+	 */
+	INIT_DELAYED_WORK(&ctx->normal_mode_work, exynos_panel_normal_mode_work);
 	if (exynos_panel_func && exynos_panel_func->run_normal_mode_work &&
-	    ctx->desc->normal_mode_work_delay_ms) {
+	    ctx->desc->normal_mode_work_delay_ms)
 		ctx->normal_mode_work_delay_ms = ctx->desc->normal_mode_work_delay_ms;
-		INIT_DELAYED_WORK(&ctx->normal_mode_work, exynos_panel_normal_mode_work);
-	}
 
 	BLOCKING_INIT_NOTIFIER_HEAD(&ctx->notifier_head);
 
@@ -5824,6 +5862,7 @@ int exynos_panel_common_init(struct mipi_dsi_device *dsi,
 	ret = exynos_panel_of_backlight(ctx);
 	if (ret) {
 		dev_err(ctx->dev, "failed to register devtree backlight (%d)\n", ret);
+		exynos_panel_quiesce(ctx);
 		return ret;
 	}
 
@@ -5877,6 +5916,7 @@ int exynos_panel_common_init(struct mipi_dsi_device *dsi,
 	return 0;
 
 err_panel:
+	exynos_panel_quiesce(ctx);
 	drm_bridge_remove(&ctx->bridge);
 	drm_panel_remove(&ctx->panel);
 	dev_err(ctx->dev, "failed to probe samsung panel driver(%d)\n", ret);
@@ -5902,23 +5942,12 @@ void exynos_panel_remove(struct mipi_dsi_device *dsi)
 	struct exynos_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
 	/*
-	 * @ctx is devm_kzalloc'd and @ctx->bl is freed by the unregister
-	 * below, so quiesce every asynchronous context that can still
-	 * dereference them before anything is torn down, while the DSI host
-	 * is still attached so a work item caught mid-flight can finish.
+	 * @ctx is devm_kzalloc'd and @ctx->bl is freed by the unregister below,
+	 * so quiesce every asynchronous context that can dereference them before
+	 * anything is torn down, and while the DSI host is still attached so
+	 * that a work item caught mid-flight can finish its transfers.
 	 */
-	cancel_delayed_work_sync(&ctx->hbm.local_hbm.timeout_work);
-	cancel_delayed_work_sync(&ctx->idle_work);
-	cancel_delayed_work_sync(&ctx->normal_mode_work);
-	cancel_work_sync(&ctx->notify_panel_mode_changed.work);
-	cancel_work_sync(&ctx->notify_brightness_changed_work);
-
-	if (!IS_ERR_OR_NULL(ctx->hbm.local_hbm.thread))
-		kthread_stop(ctx->hbm.local_hbm.thread);
-
-	/* only created by hbm_data_init(), which may have failed */
-	if (ctx->hbm.wq)
-		destroy_workqueue(ctx->hbm.wq);
+	exynos_panel_quiesce(ctx);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
@@ -5928,7 +5957,6 @@ void exynos_panel_remove(struct mipi_dsi_device *dsi)
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_cabc_mode.attr);
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_acl_mode.attr);
 	sysfs_remove_file(&ctx->bl->dev.kobj, &dev_attr_ssc_en.attr);
-	wakeup_source_unregister(ctx->notify_panel_mode_changed.ws);
 	devm_backlight_device_unregister(ctx->dev, ctx->bl);
 }
 EXPORT_SYMBOL_GPL(exynos_panel_remove);
