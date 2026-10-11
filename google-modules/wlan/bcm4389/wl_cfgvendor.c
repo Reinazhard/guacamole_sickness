@@ -9697,6 +9697,18 @@ static int wl_cfgvendor_start_mkeep_alive(struct wiphy *wiphy, struct wireless_d
 				mkeep_alive_id = nla_get_u8(iter);
 				break;
 			case MKEEP_ALIVE_ATTRIBUTE_IP_PKT_LEN:
+				/*
+				 * IP_PKT is validated against the ip_pkt_len in
+				 * force when it is parsed, and that same value
+				 * sizes the allocation and the copy, so a second
+				 * IP_PKT_LEN would make the copied length differ
+				 * from the validated one.
+				 */
+				if (ip_pkt_len) {
+					ret = BCME_BADARG;
+					WL_ERR(("ip packet length already set\n"));
+					goto exit;
+				}
 				ip_pkt_len = nla_get_u16(iter);
 				if (ip_pkt_len > MKEEP_ALIVE_IP_PKT_MAX) {
 					ret = BCME_BADARG;
@@ -9730,9 +9742,19 @@ static int wl_cfgvendor_start_mkeep_alive(struct wiphy *wiphy, struct wireless_d
 				memcpy(ip_pkt, (u8*)nla_data(iter), ip_pkt_len);
 				break;
 			case MKEEP_ALIVE_ATTRIBUTE_SRC_MAC_ADDR:
+				if (nla_len(iter) != ETHER_ADDR_LEN) {
+					WL_ERR(("src mac addr length not match\n"));
+					ret = BCME_BADARG;
+					goto exit;
+				}
 				memcpy(src_mac, nla_data(iter), ETHER_ADDR_LEN);
 				break;
 			case MKEEP_ALIVE_ATTRIBUTE_DST_MAC_ADDR:
+				if (nla_len(iter) != ETHER_ADDR_LEN) {
+					WL_ERR(("dst mac addr length not match\n"));
+					ret = BCME_BADARG;
+					goto exit;
+				}
 				memcpy(dst_mac, nla_data(iter), ETHER_ADDR_LEN);
 				break;
 			case MKEEP_ALIVE_ATTRIBUTE_PERIOD_MSEC:
