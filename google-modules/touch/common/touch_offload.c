@@ -762,6 +762,18 @@ int touch_offload_cleanup(struct touch_offload_context *context)
 	context->report_cb = NULL;
 	mutex_unlock(&context->file_lock);
 
+	/*
+	 * Tear the pool down while context->device is still alive:
+	 * touch_offload_free_buffers() releases prealloc_packed_frame with
+	 * devm_kfree(), and device_destroy() below drops the last reference
+	 * and frees the struct device.  complete_all() stays in front of the
+	 * teardown so a driver that reserved a frame and never queued it
+	 * cannot make the teardown wait forever.
+	 */
+	complete_all(&context->reserve_returned);
+
+	touch_offload_free_buffers(context);
+
 	device_destroy(context->cls, context->dev_num);
 
 	class_destroy(context->cls);
@@ -769,10 +781,6 @@ int touch_offload_cleanup(struct touch_offload_context *context)
 	cdev_del(&context->dev);
 
 	unregister_chrdev_region(context->dev_num, 1);
-
-	complete_all(&context->reserve_returned);
-
-	touch_offload_free_buffers(context);
 
 	return 0;
 }
