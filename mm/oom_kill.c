@@ -341,6 +341,19 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 	}
 
 	/*
+	 * A task carrying TIF_MEMDIE with no oom_mm was killed by Simple LMK,
+	 * which sets the flag without calling mark_oom_victim(). It must not
+	 * become oc->chosen: mark_oom_victim() would return early on
+	 * TIF_MEMDIE and leave signal->oom_mm NULL, which
+	 * queue_oom_reaper() dereferences. Skip it instead of aborting on it,
+	 * so the core-OOM fallback below LMK_TIER_FLOOR_ADJ stays live while
+	 * the victim is alive. The two tests coincide when
+	 * CONFIG_ANDROID_SIMPLE_LMK is off, so this never fires then.
+	 */
+	if (!is_sysrq_oom(oc) && tsk_is_oom_victim(task))
+		goto next;
+
+	/*
 	 * If task is allocating a lot of memory and has been marked to be
 	 * killed first if it triggers an oom, then select it.
 	 */
@@ -715,6 +728,15 @@ static void wake_oom_reaper(struct timer_list *timer)
 #define OOM_REAPER_DELAY (2*HZ)
 static void queue_oom_reaper(struct task_struct *tsk)
 {
+	/*
+	 * A Simple LMK victim carries TIF_MEMDIE with no oom_mm: Simple LMK
+	 * reaps its own victims, and oom_mm is dereferenced below. Sysrq and
+	 * the task_will_free_mem() paths reach here for such a victim
+	 * without passing the selection guard.
+	 */
+	if (!tsk->signal->oom_mm)
+		return;
+
 	/* mm is already queued? */
 	if (test_and_set_bit(MMF_OOM_REAP_QUEUED, &tsk->signal->oom_mm->flags))
 		return;
@@ -803,6 +825,12 @@ static void mark_oom_victim(struct task_struct *tsk)
 
 	/* oom_mm is bound to the signal struct life time. */
 	__mark_oom_victim(tsk);
+
+	/*
+	 * Record the reference this thread now holds, so exit_mm() releases
+	 * it exactly once.
+	 */
+	set_oom_victim_ref(tsk);
 
 	/*
 	 * Make sure that the task is woken up from uninterruptible sleep
