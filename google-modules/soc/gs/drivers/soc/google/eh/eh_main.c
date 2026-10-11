@@ -1571,8 +1571,12 @@ static int eh_of_remove(struct platform_device *pdev)
 	 * The device is going away; never hand it out again. The node is
 	 * already off eh_dev_list, so eh_create() cannot hand it out in
 	 * the window above.
+	 *
+	 * Ordered before the count read below: the producers publish their
+	 * increment before re-reading this flag, so both sides need a full
+	 * barrier or a request is admitted uncounted while the drain sees zero.
 	 */
-	WRITE_ONCE(eh_dev->removed, true);
+	smp_store_mb(eh_dev->removed, true);
 
 	if (!wait_event_timeout(eh_dev->idle_wq,
 				!atomic_read(&eh_dev->nr_inflight),
@@ -1658,8 +1662,17 @@ static int eh_suspend(struct device *dev)
 	 * the window between this and the clock gate is still counted by
 	 * nr_inflight, which the wait below covers; one admitted after it is
 	 * refused rather than discarded by eh_compr_fifo_init() on resume.
+	 *
+	 * smp_store_mb() and not a bare WRITE_ONCE(): this store and the
+	 * count read below are one half of a store-buffering pair whose
+	 * other half is the submitter, which orders its increment with
+	 * smp_mb__after_atomic() before re-reading the flag. Ordering only
+	 * the producer leaves an execution in which both sides miss and the
+	 * clock is gated with a request admitted but unaccounted for.
+	 * wait_event_timeout() supplies no barrier of its own here: its
+	 * fast-path condition runs before the waitqueue lock is taken.
 	 */
-	WRITE_ONCE(eh_dev->suspended, true);
+	smp_store_mb(eh_dev->suspended, true);
 
 	/*
 	 * Wait for every admitted request to retire, not merely for the
