@@ -785,6 +785,7 @@ void fira_session_update_controlees(struct fira_local *local,
 			   FIRA_CONTROLEE_STATE_PENDING_DEL) {
 			controlee->state = FIRA_CONTROLEE_STATE_DELETING;
 		} else if (controlee->state == FIRA_CONTROLEE_STATE_DELETING) {
+			fira_sts_controlee_deinit(controlee);
 			list_del(&controlee->entry);
 			kfree(controlee);
 			session->n_current_controlees--;

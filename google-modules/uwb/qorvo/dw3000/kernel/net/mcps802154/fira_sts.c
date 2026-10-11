@@ -161,6 +161,7 @@ static int fira_sts_crypto_init(struct fira_session *session,
 	return 0;
 error_out:
 	fira_crypto_context_deinit(*crypto);
+	*crypto = NULL;
 	return r;
 }
 /**
