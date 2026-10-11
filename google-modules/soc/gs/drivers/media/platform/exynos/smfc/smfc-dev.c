@@ -36,6 +36,7 @@ static wait_queue_head_t smfc_suspend_wq;
 
 static void g2d_pm_qos_update_request(struct smfc_dev *smfc);
 static void g2d_pm_qos_reset_request(struct smfc_dev *smfc);
+static void smfc_dev_release(struct v4l2_device *v4l2_dev);
 
 enum {
 	SMFC_HWFC_STANDBY = 0,
@@ -768,6 +769,14 @@ static int smfc_init_v4l2(struct device *dev, struct smfc_dev *smfc)
 		sizeof(smfc->v4l2_dev.name) - 1);
 	smfc->v4l2_dev.name[sizeof(smfc->v4l2_dev.name) - 1] = '\0';
 
+	/*
+	 * v4l2_device_register() takes one reference and video_register_device()
+	 * a second, which the last close drops; without a release callback the
+	 * count never reaches zero and smfc would have to be freed by the
+	 * platform device, the lifetime the interrupt and the fops must not use.
+	 */
+	smfc->v4l2_dev.release = smfc_dev_release;
+
 	ret = v4l2_device_register(dev, &smfc->v4l2_dev);
 	if (ret) {
 		dev_err(dev, "Failed to register v4l2 device\n");
@@ -833,12 +842,21 @@ static void smfc_deinit_v4l2(struct device *dev, struct smfc_dev *smfc)
 {
 	/* smfc_init_v4l2() registered this video_device, so it must be
 	 * unregistered rather than released: video_device_release() is only
-	 * valid for a device that was never registered, and kfree()s it
-	 * while its cdev and sysfs device are still live.
+	 * valid for a device that was never registered, because it kfree()s
+	 * the video_device while its cdev and sysfs device are still live.
+	 * video_unregister_device() drops the last reference and lets
+	 * v4l2_device_release() free the video_device once the last user of
+	 * the character device has gone away.
+	 *
+	 * video_unregister_device() does not wait for open file descriptors,
+	 * so this must not free anything they still reach.  Dropping our own
+	 * v4l2_device reference leaves the count at one while a descriptor is
+	 * open; smfc_dev_release() then frees the driver state and the m2m
+	 * device from the last close, after its file operations have returned.
 	 */
 	video_unregister_device(smfc->videodev);
-	v4l2_m2m_release(smfc->m2mdev);
 	v4l2_device_unregister(&smfc->v4l2_dev);
+	v4l2_device_put(&smfc->v4l2_dev);
 }
 
 static int smfc_init_clock(struct device *dev, struct smfc_dev *smfc)
@@ -1031,7 +1049,12 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	init_waitqueue_head(&smfc_hwfc_sync_wq);
 	init_waitqueue_head(&smfc_suspend_wq);
 
-	smfc = devm_kzalloc(&pdev->dev, sizeof(*smfc), GFP_KERNEL);
+	/*
+	 * The interrupt handler, the m2m job worker and the file operations all
+	 * reach this object, so its lifetime follows the last user of the video
+	 * device, not the platform device: smfc_dev_release() frees it.
+	 */
+	smfc = kzalloc(sizeof(*smfc), GFP_KERNEL);
 	if (!smfc)
 		return -ENOMEM;
 
@@ -1041,8 +1064,10 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	smfc->reg = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(smfc->reg))
-		return PTR_ERR(smfc->reg);
+	if (IS_ERR(smfc->reg)) {
+		ret = PTR_ERR(smfc->reg);
+		goto err_free;
+	}
 
 	of_id = of_match_node(exynos_smfc_match, pdev->dev.of_node);
 	smfc->devdata = of_id->data;
@@ -1050,19 +1075,20 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		dev_err(&pdev->dev, "Failed to get IRQ");
-		return irq;
+		ret = irq;
+		goto err_free;
 	}
 
 	ret = devm_request_irq(&pdev->dev, irq, exynos_smfc_irq_handler,
 			       0, pdev->name, smfc);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to install IRQ handler");
-		return ret;
+		goto err_free;
 	}
 
 	ret = smfc_init_clock(&pdev->dev, smfc);
 	if (ret)
-		return ret;
+		goto err_free_irq;
 
 	smfc->device_id = of_alias_get_id(pdev->dev.of_node, "jpeg");
 	if (smfc->device_id < 0) {
@@ -1089,7 +1115,7 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 
 	ret = smfc_init_v4l2(&pdev->dev, smfc);
 	if (ret < 0)
-		goto err_v4l2;
+		goto err_free_irq;
 
 	iommu_register_device_fault_handler(&pdev->dev, smfc_iommu_fault_handler, smfc);
 
@@ -1109,8 +1135,19 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	return 0;
 
 err_hwver:
+	/*
+	 * The handler still reaches smfc, so free the interrupt first.  The
+	 * video device was published, so smfc_deinit_v4l2() holds the last
+	 * reference and frees smfc from the final close.
+	 */
+	devm_free_irq(&pdev->dev, irq, smfc);
 	smfc_deinit_v4l2(&pdev->dev, smfc);
-err_v4l2:
+	return ret;
+
+err_free_irq:
+	devm_free_irq(&pdev->dev, irq, smfc);
+err_free:
+	kfree(smfc);
 	return ret;
 }
 
@@ -1122,23 +1159,48 @@ static void smfc_deinit_clock(struct smfc_dev *smfc)
 		clk_put(smfc->clk_gate);
 }
 
+static void smfc_dev_release(struct v4l2_device *v4l2_dev)
+{
+	struct smfc_dev *smfc = container_of(v4l2_dev, typeof(*smfc), v4l2_dev);
+
+	/*
+	 * The last user is gone, so neither the handler nor a file operation
+	 * can reach the driver state any more.  exynos_smfc_remove() has
+	 * already freed the interrupt and paused the job queue.
+	 */
+	v4l2_m2m_release(smfc->m2mdev);
+	kfree(smfc);
+}
+
 static int exynos_smfc_remove(struct platform_device *pdev)
 {
 	struct smfc_dev *smfc = platform_get_drvdata(pdev);
+	int irq = platform_get_irq(pdev, 0);
 
-	/* Everything probe published must be unpublished here, before
-	 * devres frees the struct smfc_dev that owns it.  The probe error
-	 * path already does this via smfc_deinit_v4l2(); remove did not.
+	/*
+	 * devres releases the interrupt only after this function returns.
+	 * Pause the job queue and wait for a running job while the interrupt is
+	 * still there to report it, then free it: afterwards neither the
+	 * handler nor a job can touch smfc.
 	 */
+	v4l2_m2m_suspend(smfc->m2mdev);
+
 	del_timer_sync(&smfc->timer);
+
+	if (irq >= 0)
+		devm_free_irq(&pdev->dev, irq, smfc);
 
 	g2d_pm_qos_remove_request(smfc);
 
 	pm_runtime_disable(&pdev->dev);
 
-	smfc_deinit_v4l2(&pdev->dev, smfc);
-
 	smfc_deinit_clock(smfc);
+
+	/*
+	 * smfc_deinit_v4l2() drops our reference; an open descriptor keeps
+	 * smfc alive past it, so nothing below may touch it.
+	 */
+	smfc_deinit_v4l2(&pdev->dev, smfc);
 
 	iommu_unregister_device_fault_handler(&pdev->dev);
 
