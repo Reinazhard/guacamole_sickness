@@ -195,7 +195,12 @@ static bool swap_sched_async_compress(struct page *page)
 	if (data_race(sis->flags & SWP_SYNCHRONOUS_IO)) {
 		if (kfifo_avail(&pgdat->kcompress_fifo) >= sizeof(struct page *) &&
 			kfifo_in(&pgdat->kcompress_fifo, &page, sizeof(struct page *))) {
-			wake_up_interruptible(&pgdat->kcompressd_wait);
+			/*
+			 * kcompressd() is a kthread and can never consume a
+			 * signal, so it waits in TASK_UNINTERRUPTIBLE; the
+			 * wake must therefore use the TASK_NORMAL mask.
+			 */
+			wake_up(&pgdat->kcompressd_wait);
 			return true;
 		}
 	}
