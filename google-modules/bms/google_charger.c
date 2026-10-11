@@ -6520,8 +6520,21 @@ static int google_charger_remove(struct platform_device *pdev)
 		cancel_work_sync(&chg_drv->chg_psy_work);
 		cancel_delayed_work_sync(&chg_drv->chg_work);
 		cancel_delayed_work_sync(&chg_drv->bd_work);
+		/*
+		 * chg_work() re-arms this alarm synchronously via its
+		 * msc_interval_votable vote, so cancel again once no chg_work()
+		 * can run, and reap a chg_work() the alarm callback queued.
+		 */
+		alarm_cancel(&chg_drv->chg_wakeup_alarm);
+		cancel_delayed_work_sync(&chg_drv->chg_work);
 
 		if (chg_drv->chg_term.enable) {
+			alarm_cancel(&chg_drv->chg_term.alarm);
+			cancel_work_sync(&chg_drv->chg_term.work);
+			/*
+			 * chg_termination_work() re-arms this alarm; cancel it
+			 * again once the work cannot run.
+			 */
 			alarm_cancel(&chg_drv->chg_term.alarm);
 			cancel_work_sync(&chg_drv->chg_term.work);
 		}
