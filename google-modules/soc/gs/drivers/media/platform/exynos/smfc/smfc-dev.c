@@ -37,6 +37,7 @@ static wait_queue_head_t smfc_suspend_wq;
 static void g2d_pm_qos_update_request(struct smfc_dev *smfc);
 static void g2d_pm_qos_reset_request(struct smfc_dev *smfc);
 static void smfc_dev_release(struct v4l2_device *v4l2_dev);
+static void smfc_vb2_buf_cleanup(struct vb2_buffer *vb);
 
 enum {
 	SMFC_HWFC_STANDBY = 0,
@@ -294,19 +295,22 @@ static int smfc_vb2_buf_init(struct vb2_buffer *vb)
 
 	for (plane = 0; plane < vb->num_planes; ++plane) {
 		dbuf = dma_buf_get(vb->planes[plane].m.fd);
-		if (IS_ERR(dbuf))
-			return PTR_ERR(dbuf);
+		if (IS_ERR(dbuf)) {
+			ret = PTR_ERR(dbuf);
+			goto err_release;
+		}
 		sbuf->info[plane].dbuf = dbuf;
 
 		sbuf->info[plane].dba = dma_buf_attach(dbuf, smfc->dev);
 		if (IS_ERR(sbuf->info[plane].dba)) {
 			ret = PTR_ERR(sbuf->info[plane].dba);
 			/*
-			 * Never keep an ERR_PTR in info[].dba:
-			 * smfc_vb2_buf_cleanup() passes it to dma_buf_detach().
+			 * smfc_vb2_buf_cleanup() hands info[].dba to
+			 * dma_buf_detach(), so an ERR_PTR must never be kept
+			 * here.
 			 */
 			sbuf->info[plane].dba = NULL;
-			return ret;
+			goto err_release;
 		}
 		sbuf->info[plane].dba->dma_map_attrs = DMA_ATTR_PRIVILEGED;
 
@@ -321,10 +325,20 @@ static int smfc_vb2_buf_init(struct vb2_buffer *vb)
 			 */
 			dma_buf_detach(dbuf, sbuf->info[plane].dba);
 			sbuf->info[plane].dba = NULL;
-			return ret;
+			goto err_release;
 		}
 	}
 	return 0;
+
+err_release:
+	/*
+	 * videobuf2 does not call buf_cleanup() when buf_init() fails: it
+	 * clears vb->planes[].mem_priv, the flag __vb2_queue_free() tests, so
+	 * this call must release what it imported itself.  Otherwise the
+	 * dma_buf reference, the attachment and the pinned sg mapping leak.
+	 */
+	smfc_vb2_buf_cleanup(vb);
+	return ret;
 }
 
 static int smfc_vb2_buf_prepare(struct vb2_buffer *vb)
