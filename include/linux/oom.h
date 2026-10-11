@@ -92,6 +92,32 @@ static inline bool tsk_is_core_oom_victim(struct task_struct *tsk)
 }
 
 /*
+ * Per-thread record that this task took one oom_victims reference. Set by
+ * mark_oom_victim(), which is also the only taker of a reference, so the flag
+ * and the reference have exactly the same population and exit_mm() can
+ * release exactly one reference per thread that took one. TIF_MEMDIE cannot
+ * stand in for it: Simple LMK sets that flag on every thread of a victim
+ * without taking a reference. signal->oom_mm cannot either: it belongs to the
+ * whole thread group, so a group touched by both killers would release one
+ * reference once per thread and drive oom_victims negative.
+ *
+ * The flag lives in task_struct::atomic_flags because generic code cannot
+ * name a new TIF_ bit: TIF_ numbers are architecture-specific and
+ * mm/oom_kill.c is built for every architecture.
+ */
+#define OOM_VICTIM_REF_FLAG	9
+
+static inline void set_oom_victim_ref(struct task_struct *tsk)
+{
+	set_bit(OOM_VICTIM_REF_FLAG, &tsk->atomic_flags);
+}
+
+static inline bool has_oom_victim_ref(struct task_struct *tsk)
+{
+	return test_bit(OOM_VICTIM_REF_FLAG, &tsk->atomic_flags);
+}
+
+/*
  * Checks whether a page fault on the given mm is still reliable.
  * This is no longer true if the oom reaper started to reap the
  * address space which is reflected by MMF_UNSTABLE flag set in

@@ -578,14 +578,14 @@ static void exit_mm(void)
 		/*
 		 * Simple LMK sets TIF_MEMDIE on every thread of a victim
 		 * without taking an oom_victims reference, so only the thread
-		 * the core OOM killer marked (the one whose signal carries
-		 * oom_mm) may release one. The core killer sets oom_mm after
-		 * SIGKILL, so a group carrying oom_mm always has
-		 * SIGNAL_GROUP_EXIT set and Simple LMK never picks it.
-		 * Dropping the release entirely makes oom_victims monotonic
-		 * and every later oom_killer_disable() times out.
+		 * that took one may release one. signal->oom_mm cannot answer
+		 * that: it belongs to the whole thread group, so every thread
+		 * of a group both killers touched would release the same
+		 * reference and drive oom_victims negative. Dropping the
+		 * release entirely makes oom_victims monotonic and every later
+		 * oom_killer_disable() times out.
 		 */
-		if (current->signal->oom_mm)
+		if (has_oom_victim_ref(current))
 			exit_oom_victim();
 		else
 			clear_thread_flag(TIF_MEMDIE);
