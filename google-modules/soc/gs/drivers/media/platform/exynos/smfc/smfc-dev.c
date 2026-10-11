@@ -38,6 +38,7 @@ static void g2d_pm_qos_update_request(struct smfc_dev *smfc);
 static void g2d_pm_qos_reset_request(struct smfc_dev *smfc);
 static void smfc_dev_release(struct v4l2_device *v4l2_dev);
 static void smfc_vb2_buf_cleanup(struct vb2_buffer *vb);
+static void smfc_deinit_clock(struct smfc_dev *smfc);
 
 enum {
 	SMFC_HWFC_STANDBY = 0,
@@ -875,7 +876,12 @@ static void smfc_deinit_v4l2(struct device *dev, struct smfc_dev *smfc)
 
 static int smfc_init_clock(struct device *dev, struct smfc_dev *smfc)
 {
-	smfc->clk_gate = devm_clk_get(dev, "gate");
+	/*
+	 * Not devres-managed: exynos_smfc_release() unprepares both clocks
+	 * from a descriptor that outlives exynos_smfc_remove(), so the handles
+	 * follow the v4l2_device reference count, not the platform device.
+	 */
+	smfc->clk_gate = clk_get(dev, "gate");
 	if (IS_ERR(smfc->clk_gate)) {
 		if (PTR_ERR(smfc->clk_gate) != -ENOENT) {
 			dev_err(dev, "Failed(%ld) to get 'gate' clock",
@@ -888,11 +894,13 @@ static int smfc_init_clock(struct device *dev, struct smfc_dev *smfc)
 		return 0;
 	}
 
-	smfc->clk_gate2 = devm_clk_get(dev, "gate2");
+	smfc->clk_gate2 = clk_get(dev, "gate2");
 	if (IS_ERR(smfc->clk_gate2) && (PTR_ERR(smfc->clk_gate2) != -ENOENT)) {
 		dev_err(dev, "Failed(%ld) to get 'gate2' clock\n",
 			PTR_ERR(smfc->clk_gate2));
 		clk_put(smfc->clk_gate);
+		/* clk_gate is put, so smfc_deinit_clock() must skip it */
+		smfc->clk_gate = ERR_PTR(-ENODEV);
 		return PTR_ERR(smfc->clk_gate2);
 	}
 
@@ -1159,6 +1167,8 @@ err_hwver:
 	return ret;
 
 err_free_irq:
+	/* Not devres-managed, so a failed probe must release them here */
+	smfc_deinit_clock(smfc);
 	devm_free_irq(&pdev->dev, irq, smfc);
 err_free:
 	kfree(smfc);
@@ -1178,10 +1188,11 @@ static void smfc_dev_release(struct v4l2_device *v4l2_dev)
 	struct smfc_dev *smfc = container_of(v4l2_dev, typeof(*smfc), v4l2_dev);
 
 	/*
-	 * The last user is gone, so neither the handler nor a file operation
-	 * can reach the driver state any more.  exynos_smfc_remove() has
-	 * already freed the interrupt and paused the job queue.
+	 * The last user has gone, so neither the interrupt handler nor a file
+	 * operation can reach the driver state, the m2m device or the clocks
+	 * any more: remove() freed the interrupt and paused the jobs.
 	 */
+	smfc_deinit_clock(smfc);
 	v4l2_m2m_release(smfc->m2mdev);
 	kfree(smfc);
 }
@@ -1201,6 +1212,12 @@ static int exynos_smfc_remove(struct platform_device *pdev)
 
 	del_timer_sync(&smfc->timer);
 
+	/*
+	 * Cancel before g2d_pm_qos_remove_request() removes the requests this
+	 * work writes to, and before smfc_dev_release() frees smfc.
+	 */
+	cancel_delayed_work_sync(&smfc->qos_work);
+
 	if (irq >= 0)
 		devm_free_irq(&pdev->dev, irq, smfc);
 
@@ -1208,7 +1225,10 @@ static int exynos_smfc_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 
-	smfc_deinit_clock(smfc);
+	/*
+	 * The clocks are not released here: an open descriptor outlives this
+	 * function, so smfc_dev_release() releases them with the rest.
+	 */
 
 	/*
 	 * smfc_deinit_v4l2() drops our reference; an open descriptor keeps
