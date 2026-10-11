@@ -779,9 +779,17 @@ void pt_client_free(struct pt_handle *handle, int id)
 		spin_unlock_irqrestore(&handle->lock, flags);
 		return;
 	}
+	/*
+	 * The resize thread may already be running this pts' callback with
+	 * no lock held, and it dereferences handle->data and handle->pts[id];
+	 * flush it before the ptid is freed.
+	 */
+	pt_resize_list_disable(&handle->pts[id]);
 	if (handle->pts[id].ptid != PT_PTID_INVALID)
 		pt_driver_free(handle, id);
 	spin_unlock_irqrestore(&handle->lock, flags);
+
+	pt_resize_list_wait_completion(&handle->pts[id]);
 }
 
 void pt_client_disable(struct pt_handle *handle, int id)
