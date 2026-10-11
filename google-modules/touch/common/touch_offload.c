@@ -121,6 +121,14 @@ static ssize_t touch_offload_read(struct file *file, char __user *user_buffer,
 		mutex_unlock(&context->buffer_lock);
 		return 0;
 	} else if (context->packed_frame == NULL) {
+		/*
+		 * touch_offload_free_buffers() drops the frame on
+		 * reconfiguration but cannot reach the struct file, so reset
+		 * *offset here to keep the pair (packed_frame == NULL,
+		 * *offset == 0) that the size computation relies on.
+		 */
+		*offset = 0;
+
 		/* Process the next queued buffer */
 
 		while (list_empty(&context->frame_queue)) {
