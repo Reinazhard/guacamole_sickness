@@ -172,7 +172,11 @@ static unsigned long measure_stall_pct(unsigned long interval_jiffies)
 	if (delta_ns >= window_ns)
 		return 100;
 
-	return div_u64(delta_ns * 100, window_ns);
+	/*
+	 * div_u64() takes a u32 divisor, so window_ns is truncated modulo 2^32
+	 * past 1073 jiffies (4.3 s at HZ=250) and the duty is inflated.
+	 */
+	return div64_u64(delta_ns * 100, window_ns);
 }
 
 static short tier_of_ceil(short ceil_adj)
