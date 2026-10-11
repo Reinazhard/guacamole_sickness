@@ -1408,10 +1408,12 @@ static void wm_adsp_ctl_work(struct work_struct *work)
 	wmfw_add_ctl(ctl->dsp, ctl);
 }
 
+/*
+ * The caller must have cancelled ctl->work first: a worker still running can
+ * register a kcontrol whose private_value points into this block.
+ */
 static void wm_adsp_free_ctl_blk(struct wm_coeff_ctl *ctl)
 {
-	cancel_work_sync(&ctl->work);
-
 	kfree(ctl->cache);
 	kfree(ctl->name);
 	kfree(ctl->subname);
@@ -1513,7 +1515,7 @@ static int wm_adsp_create_control(struct wm_adsp *dsp,
 	/*
 	 * The work item is initialised before the control is published: a
 	 * WMFW_CTL_FLAG_SYS control returns below without ever queueing it,
-	 * and wm_adsp_free_ctl_blk() cancels the work unconditionally.
+	 * and the drain in wm_adsp2_remove() cancels the work unconditionally.
 	 */
 	INIT_WORK(&ctl->work, wm_adsp_ctl_work);
 
@@ -3516,6 +3518,14 @@ void wm_adsp2_remove(struct wm_adsp *dsp)
 		ctl = list_first_entry(&dsp->ctl_list, struct wm_coeff_ctl,
 					list);
 		list_del(&ctl->list);
+
+		/*
+		 * Cancel before the removal: cancel_work_sync() waits for a worker
+		 * already in wmfw_add_ctl() rather than un-running it, and removing
+		 * first would miss the kcontrol that worker registers.
+		 */
+		cancel_work_sync(&ctl->work);
+
 		if (dsp->component && dsp->component->card)
 			wm_adsp_remove_ctl(dsp, ctl);
 		wm_adsp_free_ctl_blk(ctl);
