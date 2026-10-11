@@ -222,9 +222,18 @@ static bool pt_resize_completed(struct pt_pts *pts)
 /*
  * Wait for a resize callback that was already dequeued for @pts to finish.
  * Must be called with handle->lock released, since the callback may sleep.
+ *
+ * A client callback runs on the resize thread and may call pt_client_*(),
+ * so that thread can reach here while it is the one executing the callback.
+ * resize_running is cleared only after the callback returns, so waiting
+ * would wait for ourselves; the thread is single, so the callback the
+ * caller is inside is the only one in flight.
  */
 static void pt_resize_list_wait_completion(struct pt_pts *pts)
 {
+	if (current == pt_internal_data.resize_thread)
+		return;
+
 	wait_event(pt_internal_data.resize_done_wq, pt_resize_completed(pts));
 }
 
