@@ -194,9 +194,11 @@ static short tier_of_ceil(short ceil_adj)
 /*
  * Lowest adj a tier may reach given the measured stall. The tier's own
  * threshold is the reference: at it the tier is at exactly the pressure it was
- * defined for and stays near its ceiling, and each further multiple of it lets
- * the tier descend toward LMK_TIER_FLOOR_ADJ. Both the reference and the span
- * come from values already fixed above, so there is nothing to tune.
+ * defined for and stays at its ceiling, and each further multiple of it lets
+ * the tier descend toward LMK_TIER_FLOOR_ADJ. A tier is selected only once its
+ * trigger has fired, so the floor must not be reachable at the threshold: if
+ * it is, every tier reaches the same depth and the ladder stops distinguishing
+ * pressure levels.
  */
 static short tier_reach_adj(short tier_index, unsigned long stall_pct)
 {
@@ -214,12 +216,16 @@ static short tier_reach_adj(short tier_index, unsigned long stall_pct)
 	if (!target_duty)
 		target_duty = 1;
 
-	if (stall_pct >= target_duty)
+	if (stall_pct <= target_duty)
+		return tier_min_adj[tier_index];
+
+	/* One further multiple of it is where the tier bottoms out */
+	if (stall_pct >= 2 * target_duty)
 		return LMK_TIER_FLOOR_ADJ;
 
 	span = tier_min_adj[tier_index] - LMK_TIER_FLOOR_ADJ;
 	return tier_min_adj[tier_index] -
-	       (short)(span * stall_pct / target_duty);
+	       (short)(span * (stall_pct - target_duty) / target_duty);
 }
 
 /*
