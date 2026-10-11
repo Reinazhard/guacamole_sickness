@@ -1584,6 +1584,15 @@ static int s3c2410wdt_pm_notifier(struct notifier_block *notifier,
 {
 	struct s3c2410_wdt *wdt = s3c_wdt[LITTLE_CLUSTER];
 
+	/*
+	 * s3c2410wdt_probe() registers this notifier before it publishes the
+	 * slot, so a suspend in flight while the module is reloaded reaches
+	 * this callback with wdt == NULL; the other consumers of s3c_wdt[]
+	 * carry the same guard.
+	 */
+	if (!wdt)
+		return NOTIFY_DONE;
+
 	switch (pm_event) {
 	case PM_SUSPEND_PREPARE:
 		s3c2410wdt_keepalive(&wdt->wdt_device);
