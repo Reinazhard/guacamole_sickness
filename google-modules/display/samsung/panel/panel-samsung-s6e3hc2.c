@@ -788,7 +788,14 @@ static int s6e3hc2_panel_disable(struct drm_panel *panel)
 		container_of(panel, struct exynos_panel, panel);
 	struct s6e3hc2_panel *spanel = to_spanel(ctx);
 
-	kthread_flush_work(&spanel->gamma_work);
+	/*
+	 * Flush only while the worker thread is alive.  kthread_stop() returns
+	 * without draining worker->work_list and leaves @gamma_work->worker
+	 * bound to the stopped worker, so a flush would wait forever on a
+	 * completion in a list nothing drains.
+	 */
+	if (!IS_ERR_OR_NULL(spanel->thread))
+		kthread_flush_work(&spanel->gamma_work);
 
 	exynos_panel_disable(panel);
 
@@ -1096,13 +1103,21 @@ static void s6e3hc2_panel_remove(struct mipi_dsi_device *dsi)
 	struct s6e3hc2_panel *spanel = to_spanel(ctx);
 
 	/*
-	 * The gamma worker's kthread_worker is embedded in the devm_kzalloc'd
-	 * @spanel, which the device core frees once this callback returns.
-	 * Stop it before the common teardown so it cannot keep looping on
-	 * freed worker state.
+	 * Only this driver starts the gamma worker, and its kthread_worker is
+	 * embedded in the devm_kzalloc'd @spanel, which the device core frees
+	 * once this callback returns.  Drain the queue and clear @spanel->thread
+	 * before the stop: kthread_stop() leaves @gamma_work->worker pointing at
+	 * the stopped worker, so a flush racing with the stop would wait on a
+	 * completion no task can signal, whereas an empty queue returns at once
+	 * and a NULL thread is skipped outright.
 	 */
-	if (!IS_ERR_OR_NULL(spanel->thread))
-		kthread_stop(spanel->thread);
+	if (!IS_ERR_OR_NULL(spanel->thread)) {
+		struct task_struct *thread = spanel->thread;
+
+		kthread_flush_worker(&spanel->worker);
+		spanel->thread = NULL;
+		kthread_stop(thread);
+	}
 
 	exynos_panel_remove(dsi);
 }
