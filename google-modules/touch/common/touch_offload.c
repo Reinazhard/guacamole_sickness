@@ -24,6 +24,13 @@ static int touch_offload_open(struct inode *inode, struct file *file)
 	context->file_in_use = true;
 	mutex_unlock(&context->file_lock);
 
+	/*
+	 * The read path treats *offset as a cursor into the frame it built, so
+	 * the caller must not supply one: packed_frame_size - *offset is
+	 * signed, and a negative copy_size becomes a huge copy_to_user().
+	 */
+	nonseekable_open(inode, file);
+
 	/* Prepare context for consumer. E.g., event queue */
 	return 0;
 }
