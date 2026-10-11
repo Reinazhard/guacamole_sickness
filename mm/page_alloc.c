@@ -5438,7 +5438,14 @@ restart:
 			woke_kswapd = true;
 		}
 		if (!woke_kshrinkd) {
+			/*
+			 * Order this increment before the waitqueue_active()
+			 * check in wakeup_kswapd(); nothing else on this path
+			 * does, since vmpressure_inc_users() takes no lock for
+			 * order > PAGE_ALLOC_COSTLY_ORDER.
+			 */
 			atomic_long_inc(&kshrinkd_waiters);
+			smp_mb__after_atomic();
 			woke_kshrinkd = true;
 		}
 		if (!used_vmpressure)
