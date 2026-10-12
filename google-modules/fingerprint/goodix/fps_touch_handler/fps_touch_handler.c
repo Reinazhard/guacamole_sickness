@@ -95,6 +95,22 @@ static bool fth_in_aoi(const struct fth_touch_config_v6 *cfg,
 }
 
 /*
+ * Only the travel accumulators belong to the replaced area: they are
+ * compared against the old radius thresholds.  The cached tracking IDs
+ * must stay, because the input core drops an unchanged EV_ABS, so a
+ * cleared ID would report a finger that is still down as lifted.
+ */
+static void fth_reconfigure_fingers(struct fth_drvdata *d)
+{
+	int i;
+
+	for (i = 0; i < FTH_MAX_FINGERS; i++) {
+		d->fingers[i].dx = 0;
+		d->fingers[i].dy = 0;
+	}
+}
+
+/*
  * Accumulate a finger's travel and say whether it has moved far enough to be
  * worth reporting.  The accumulator is only cleared when an event is actually
  * reported, so slow drift still adds up.
@@ -548,8 +564,7 @@ static long fth_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		d->up_config.right += half_w;
 		d->up_config.top -= half_h;
 		d->up_config.bottom += half_h;
-		/* A fresh configuration starts with no fingers down. */
-		fth_reset_fingers(d);
+		fth_reconfigure_fingers(d);
 		spin_unlock_irqrestore(&d->lock, flags);
 		break;
 	}
@@ -645,6 +660,7 @@ static void fth_lptw_report_event(int state, int x, int y, int major, int minor,
 	};
 	struct fth_drvdata *d;
 	unsigned long flags;
+	bool queued = false;
 
 	/*
 	 * The notifier chain is walked under RCU and unregistering does not
@@ -655,9 +671,16 @@ static void fth_lptw_report_event(int state, int x, int y, int major, int minor,
 	d = rcu_dereference(fth_touch_handler.private);
 	if (d) {
 		spin_lock_irqsave(&d->lock, flags);
-		kfifo_put(&d->fifo, ev);
+		/*
+		 * The notifier outlives any one session, so a gesture that
+		 * arrives after fth_release() cleared the FIFO must not
+		 * refill it for the next open to drain.
+		 */
+		if (d->config.touch_fd_enable)
+			queued = !!kfifo_put(&d->fifo, ev);
 		spin_unlock_irqrestore(&d->lock, flags);
-		wake_up_interruptible(&d->wait);
+		if (queued)
+			wake_up_interruptible(&d->wait);
 	}
 	rcu_read_unlock();
 }
