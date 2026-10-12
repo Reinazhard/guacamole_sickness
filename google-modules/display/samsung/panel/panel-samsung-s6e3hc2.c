@@ -995,6 +995,12 @@ static ssize_t s6e3hc2_overwrite_gamma_data(struct exynos_panel *ctx,
 	 */
 	parse_payload_len(payload, len, &payload_len);
 
+	/*
+	 * The commit path and s6e3hc2_gamma_work() touch the same tables
+	 * under mode_lock; hold it across the rewrite and the transmit.
+	 */
+	rt_mutex_lock(&ctx->mode_lock);
+
 	/* FPS (1 byte) | gamma size (2 bytes) | gamma */
 	for (count = 0; count < num_of_fps; count++) {
 		const u8 cali_fps = *payload;
@@ -1024,6 +1030,8 @@ static ssize_t s6e3hc2_overwrite_gamma_data(struct exynos_panel *ctx,
 		dev_dbg(ctx->dev, "Finished overwriting gamma\n");
 	}
 
+	rt_mutex_unlock(&ctx->mode_lock);
+
 	return rc;
 }
 
@@ -1035,10 +1043,12 @@ static ssize_t s6e3hc2_restore_native_gamma(struct exynos_panel *ctx)
 	if (!spanel->num_of_cali_gamma)
 		return -EINVAL;
 
+	rt_mutex_lock(&ctx->mode_lock);
 	s6e3hc2_restore_gamma_data(ctx);
 
 	pmode = ctx->current_mode;
 	s6e3hc2_perform_switch(ctx, &pmode->mode);
+	rt_mutex_unlock(&ctx->mode_lock);
 
 	dev_dbg(ctx->dev, "Finished restore gamma\n");
 
