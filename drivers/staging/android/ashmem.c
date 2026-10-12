@@ -256,7 +256,12 @@ static int set_prot_mask(struct ashmem_area *asma, unsigned long prot)
 {
 	unsigned long old_prot;
 
-	/* does the application expect PROT_READ to imply PROT_EXEC? */
+	/*
+	 * The upgrade must precede the mask check below: the check and the
+	 * cmpxchg must compare and store the same value, or PROT_EXEC could
+	 * be re-added to a mask that had already dropped it.  A PROT_READ
+	 * request therefore fails once PROT_EXEC has been removed.
+	 */
 	if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
 		prot |= PROT_EXEC;
 
