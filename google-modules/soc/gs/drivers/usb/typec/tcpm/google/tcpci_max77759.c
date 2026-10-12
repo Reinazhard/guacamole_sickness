@@ -3951,6 +3951,15 @@ destroy_usb_bcl_worker:
 destroy_dp_worker:
 	kthread_destroy_worker(chip->dp_notification_wq);
 destroy_worker:
+	/*
+	 * Both alarm handlers queue work on chip->wq, so neither alarm may be
+	 * left armed across the destroy.  alarm_init() runs at :3553-3556,
+	 * before chip->wq is created at :3807, so the cancels are safe here.
+	 */
+	alarm_cancel(&chip->reenable_auto_ultra_low_power_mode_alarm);
+	kthread_cancel_work_sync(&chip->reenable_auto_ultra_low_power_mode_work);
+	alarm_cancel(&chip->aicl_check_alarm);
+	kthread_cancel_work_sync(&chip->aicl_check_alarm_work);
 	kthread_destroy_worker(chip->wq);
 teardown_data:
 	max77759_teardown_data_notifier(chip);
@@ -3995,6 +4004,16 @@ static void max77759_remove(struct i2c_client *client)
 		logbuffer_unregister(chip->log);
 	if (!IS_ERR_OR_NULL(chip->dp_notification_wq))
 		kthread_destroy_worker(chip->dp_notification_wq);
+	/*
+	 * aicl_check_alarm_handler() and
+	 * reenable_auto_ultra_low_power_mode_alarm_handler() both queue work on
+	 * chip->wq, and nothing else cancels them: a firing alarm would queue
+	 * onto the worker kthread_destroy_worker() is about to free.
+	 */
+	alarm_cancel(&chip->reenable_auto_ultra_low_power_mode_alarm);
+	kthread_cancel_work_sync(&chip->reenable_auto_ultra_low_power_mode_work);
+	alarm_cancel(&chip->aicl_check_alarm);
+	kthread_cancel_work_sync(&chip->aicl_check_alarm_work);
 	if (!IS_ERR_OR_NULL(chip->wq))
 		kthread_destroy_worker(chip->wq);
 	if (!IS_ERR_OR_NULL(chip->bcl_usb_wq))
