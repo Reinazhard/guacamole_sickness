@@ -972,6 +972,13 @@ static int g2d_remove(struct platform_device *pdev)
 {
 	struct g2d_device *g2d_dev = platform_get_drvdata(pdev);
 
+	/*
+	 * g2d_update_performance() arms this on system_percpu_wq, and the work
+	 * is embedded in g2d_dev, which devres frees once remove() returns.
+	 * Nothing else on the removal path cancels it.
+	 */
+	cancel_delayed_work_sync(&g2d_dev->dwork);
+
 	g2d_destroy_debug(g2d_dev);
 
 	g2d_shutdown(pdev);
