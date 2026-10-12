@@ -453,6 +453,13 @@ static int google_bcl_remove_thermal(struct bcl_device *bcl_dev)
 	}
 	if (bcl_dev->setup_sub_odpm_work.work.func != NULL)
 		cancel_delayed_work_sync(&bcl_dev->setup_sub_odpm_work);
+	/*
+	 * google_bcl_setup_main_odpm() re-arms this work every TIMEOUT_5S, so
+	 * it outlives the probe-error path and remove() unless cancelled here
+	 * with its sub-odpm sibling.
+	 */
+	if (bcl_dev->setup_main_odpm_work.work.func != NULL)
+		cancel_delayed_work_sync(&bcl_dev->setup_main_odpm_work);
 
 #if IS_ENABLED(CONFIG_REGULATOR_S2MPG14)
 	if (bcl_dev->main_pwr_irq_work.work.func != NULL)
