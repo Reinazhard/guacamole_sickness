@@ -1514,7 +1514,11 @@ static ssize_t __sysfs_store_eom_res(struct device *dev,
 	if (sscanf(buf, "%u %u", &value, &offset) != 2)
 		return -EINVAL;
 
-	if (value >= ufs->num_lanes) {
+	/*
+	 * num_lanes is a raw register value with no software cap; the lane
+	 * indexes cal_param.eom[MAX_LANE].
+	 */
+	if (value >= ufs->num_lanes || value >= MAX_LANE) {
 		dev_err(ufs->dev, "Fail set lane to %u. Its max is %u\n", value,
 				ufs->num_lanes);
 		return -EINVAL;
