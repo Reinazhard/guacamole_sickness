@@ -967,7 +967,7 @@ static int st21nfc_probe(struct i2c_client *client,
 					&dev_attr_power_stats.attr);
 		if (ret) {
 			dev_err(dev, "sysfs_create_file for power stats failed\n");
-			goto err_pidle_workqueue;
+			goto err_pidle_irq;
 		}
 	}
 
@@ -1075,6 +1075,14 @@ err_sysfs_power_stats:
 		sysfs_remove_file(&client->dev.kobj,
 				  &dev_attr_power_stats.attr);
 	}
+err_pidle_irq:
+	/*
+	 * The pidle handler queues st_p_work unconditionally, so the IRQ
+	 * must be gone before its workqueue is destroyed; devres would not
+	 * release it until after probe returns.
+	 */
+	devm_free_irq(dev, st21nfc_dev->irq_pw_stats_idle, st21nfc_dev);
+	cancel_work_sync(&st21nfc_dev->st_p_work);
 err_pidle_workqueue:
 	if (!IS_ERR(st21nfc_dev->gpiod_pidle)) {
 		mutex_destroy(&st21nfc_dev->pidle_mutex);
