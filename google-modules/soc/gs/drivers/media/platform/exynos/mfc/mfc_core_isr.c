@@ -1881,6 +1881,18 @@ static inline int __mfc_nal_q_irq(struct mfc_core *core,
 			break;
 		}
 
+		/*
+		 * The slot can be empty: mfc_core_instance_deinit() clears
+		 * core->core_ctx[num] while a queued entry still names it, and
+		 * core->core_ctx[ctx_num] is dereferenced below.
+		 */
+		if (!core->core_ctx[ctx_num]) {
+			mfc_core_err("[NALQ] no mfc context to run\n");
+			mfc_core_clear_int();
+			ret = 0;
+			break;
+		}
+
 		if (nal_q_handle->nal_q_exception)
 			mfc_set_bit(ctx_num, &core->work_bits);
 
