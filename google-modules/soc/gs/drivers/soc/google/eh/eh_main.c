@@ -1506,6 +1506,13 @@ static int eh_of_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_SOC_ZUMA
 deinit_ehdev:
+	/*
+	 * eh_sw_init() left the device on eh_dev_list, which eh_create() hands
+	 * out, so unlink it before the kfree() below.
+	 */
+	spin_lock(&eh_dev_list_lock);
+	list_del_init(&eh_dev->eh_dev_list);
+	spin_unlock(&eh_dev_list_lock);
 	wake_up(&eh_dev->comp_wq);
 	kthread_stop(eh_dev->comp_thread);
 	cpu_latency_qos_remove_request(&eh_dev->pm_qos_req);
