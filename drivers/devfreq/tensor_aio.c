@@ -2263,9 +2263,21 @@ static int exynos_devfreq_pm(struct device *dev, bool resume)
 			ppc_write_regs(ppc_exit_cmd, ARRAY_SIZE(ppc_exit_cmd));
 	}
 
-	if (data->cur_freq != data->suspend_freq)
-		cal_dfs_set_rate(data->dfs_id,
-				 resume ? data->cur_freq : data->suspend_freq);
+	if (data->cur_freq != data->suspend_freq) {
+		u32 target = resume ? data->cur_freq : data->suspend_freq;
+
+		if (cal_dfs_set_rate(data->dfs_id, target)) {
+			/*
+			 * Report what the domain is really running at, as
+			 * exynos_qos_notify() does when its own transition
+			 * fails: cur_freq is what the retry paths compare
+			 * against, and the suspend direction is accurate.
+			 */
+			if (resume)
+				WRITE_ONCE(data->cur_freq,
+					   data->suspend_freq);
+		}
+	}
 	data->suspended = !resume;
 unlock:
 	data->nb_unlock_fn(&data->nb_lock, flags);
