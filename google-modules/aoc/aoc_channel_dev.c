@@ -856,12 +856,13 @@ static int aocc_remove(struct aoc_service_dev *dev)
 				 *
 				 * The service device is tested because it is NOT
 				 * implied: sh_mem_doorbell_service_dev is assigned only
-				 * by the usf_sh_mem_doorbell probe (:740-742), while
+				 * by the usf_sh_mem_doorbell probe, while
 				 * sh_mem_doorbell_channel_device is assigned by EVERY
-				 * probe from the head of aocc_devices_list (:744-745).
-				 * So a channel probed before the service -- or after the
-				 * service was already removed at :821-823 -- can be the
-				 * one this branch matches with the service pointer NULL.
+				 * probe from the head of aocc_devices_list.  So a
+				 * channel probed before the service -- or after the
+				 * service was already removed at the top of
+				 * aocc_remove() -- can be the one this branch matches
+				 * with the service pointer NULL.
 				 */
 				sh_mem_doorbell_channel_device = NULL;
 				if (sh_mem_doorbell_service_dev) {
