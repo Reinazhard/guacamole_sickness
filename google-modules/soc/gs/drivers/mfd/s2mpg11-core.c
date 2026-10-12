@@ -345,10 +345,10 @@ static int s2mpg11_i2c_probe(struct i2c_client *i2c,
 		s2mpg11_get_rev_id(s2mpg11, reg_data & 0x7);
 	}
 
-	s2mpg11->pmic = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_PMIC);
-	s2mpg11->meter = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_METER);
-	s2mpg11->wlwp = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_WLWP);
-	s2mpg11->trim = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_TRIM);
+	s2mpg11->pmic = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_PMIC);
+	s2mpg11->meter = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_METER);
+	s2mpg11->wlwp = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_WLWP);
+	s2mpg11->trim = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_TRIM);
 
 	i2c_set_clientdata(s2mpg11->pmic, s2mpg11);
 	i2c_set_clientdata(s2mpg11->meter, s2mpg11);
