@@ -2253,6 +2253,12 @@ static ssize_t algorithm_params_store(struct device *dev,
 		}
 	}
 
+	/*
+	 * comp_algorithm_set() kfree()s the names this loop strcmp()s against
+	 * under init_lock, so the lookup must hold it too.
+	 */
+	down_write(&zram->init_lock);
+
 	/* Lookup priority by algorithm name */
 	if (algo) {
 		s32 p;
@@ -2269,8 +2275,10 @@ static ssize_t algorithm_params_store(struct device *dev,
 		}
 	}
 
-	if (prio < ZRAM_PRIMARY_COMP || prio >= ZRAM_MAX_COMPS)
+	if (prio < ZRAM_PRIMARY_COMP || prio >= ZRAM_MAX_COMPS) {
+		up_write(&zram->init_lock);
 		return -EINVAL;
+	}
 
 	/*
 	 * zram->params[prio] is handed to the backend by reference at
@@ -2280,7 +2288,6 @@ static ssize_t algorithm_params_store(struct device *dev,
 	 * the backend still reads. Refuse once the device is initialized,
 	 * like comp_algorithm_store() does.
 	 */
-	down_write(&zram->init_lock);
 	if (init_done(zram)) {
 		up_write(&zram->init_lock);
 		pr_info("Can't change algorithm params for initialized device\n");
