@@ -138,6 +138,13 @@ struct usb_psy_data {
 	bool update_sdp_enum_timeout;
 
 	/*
+	 * Set under usb->lock once usb_psy_teardown() has begun, so that a
+	 * re-arm of sdp_timeout_alarm cannot land after the cancel and fire
+	 * once usb_type_wq has been destroyed.  Protected by lock.
+	 */
+	bool teardown;
+
+	/*
 	 * Given a Type-C connection session, indicates if USB has entered USB
 	 * connect state in its typec lifecycle.
 	 */
@@ -516,6 +523,9 @@ static int usb_psy_data_set_prop(struct power_supply *psy,
 static void __usb_psy_start_sdp_timeout(struct usb_psy_data *usb)
 __must_hold(&usb->lock)
 {
+	if (usb->teardown)
+		return;
+
 	if (usb->usb_first_connected || usb->disable_sdp_enum_timeout)
 		return;
 
@@ -1190,6 +1200,7 @@ void usb_psy_teardown(void *usb_data)
 	 * rest of the file holds around the alarm.
 	 */
 	mutex_lock(&usb->lock);
+	usb->teardown = true;
 	alarm_cancel(&usb->sdp_timeout_alarm);
 	mutex_unlock(&usb->lock);
 
@@ -1200,6 +1211,15 @@ void usb_psy_teardown(void *usb_data)
 	kthread_cancel_delayed_work_sync(&usb->bc_icl_work);
 	kthread_cancel_delayed_work_sync(&usb->icl_work);
 	kthread_destroy_worker(usb->wq);
+
+	/*
+	 * Drain both usb_type_wq works before anything they dereference goes
+	 * away: they use usb->usb_psy, and sdp_timeout_work_item() is queued
+	 * by the alarm callback, so it can be on the worker right now.
+	 */
+	kthread_cancel_work_sync(&usb->bc_reset_work);
+	kthread_cancel_work_sync(&usb->sdp_timeout_work);
+
 	gvotable_destroy_election(usb->dead_battery_el);
 	gvotable_destroy_election(usb->usb_icl_proto_el);
 	gvotable_destroy_election(usb->usb_icl_combined_el);
@@ -1210,8 +1230,6 @@ void usb_psy_teardown(void *usb_data)
 		power_supply_put(usb->main_chg_psy);
 	if (!IS_ERR_OR_NULL(usb->usb_psy))
 		power_supply_unregister(usb->usb_psy);
-	kthread_cancel_work_sync(&usb->bc_reset_work);
-	kthread_cancel_work_sync(&usb->sdp_timeout_work);
 	kthread_destroy_worker(usb->usb_type_wq);
 }
 EXPORT_SYMBOL_GPL(usb_psy_teardown);
