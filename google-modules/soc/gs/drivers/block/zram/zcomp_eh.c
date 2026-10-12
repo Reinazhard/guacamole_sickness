@@ -78,16 +78,13 @@ static void zcomp_eh_drain(void *priv)
 	unsigned int noio_flag;
 
 	/*
-	 * This runs on behalf of a suspending/removing task, not the
-	 * submitter, so it does not hold PF_MEMALLOC the way the reclaim path
-	 * that owns these cookies does. eh_compress_page() and the backends
-	 * rely on that flag to make forward progress under memory pressure
-	 * (zstd_custom_alloc falls back to GFP_ATOMIC when !preemptible()),
-	 * so raise it here for the drain.
+	 * This runs on behalf of the suspending task, not the submitter, so it
+	 * does not carry the submitter's PF_MEMALLOC, which eh_compress_page()
+	 * and the backends need to make progress under memory pressure.
 	 */
-	noio_flag = memalloc_noio_save();
+	noio_flag = memalloc_noreclaim_save();
 	zcomp_flush(zcomp_eh);
-	memalloc_noio_restore(noio_flag);
+	memalloc_noreclaim_restore(noio_flag);
 }
 
 /*
