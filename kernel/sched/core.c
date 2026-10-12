@@ -8486,10 +8486,14 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 	 * therefore royally mucks up games' CPU affinities on CPUs which have
 	 * more than two performance domains.
 	 *
-	 * Only a task's own request is bypassed, after the permission checks
-	 * above, so the syscall cannot be used as a cross-UID Unity detector.
+	 * Only a request from inside the game's own thread group is bypassed,
+	 * after the permission checks above, so the syscall cannot be used as a
+	 * cross-UID Unity detector.  Gating on `p == current` alone would miss
+	 * the case the feature exists for - a Unity game restricting one of its
+	 * own worker threads - and same_thread_group() is the same-UID case a
+	 * caller could already observe through /proc/<pid>/comm.
 	 */
-	if (p == current && task_is_unity_game(p))
+	if ((p == current || same_thread_group(p, current)) && task_is_unity_game(p))
 		goto out_put_task;
 
 	retval = __sched_setaffinity(p, in_mask);
