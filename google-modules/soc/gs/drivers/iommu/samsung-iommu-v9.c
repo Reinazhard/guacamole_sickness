@@ -497,6 +497,8 @@ static int samsung_sysmmu_attach_dev(struct iommu_domain *dom, struct device *de
 			dev_err(dev, "%s is already attached to other domain\n",
 				dev_name(drvdata->dev));
 			spin_unlock_irqrestore(&drvdata->lock, flags);
+			/* The post-increment above already ran for this index. */
+			samsung_sysmmu_detach_drvdata(drvdata);
 			goto err_drvdata_add;
 		}
 		spin_unlock_irqrestore(&drvdata->lock, flags);
