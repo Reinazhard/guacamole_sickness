@@ -3630,6 +3630,8 @@ static int max77759_probe(struct i2c_client *client,
 		gvotable_create_bool_election(NULL, max77759_toggle_disable_votable_callback, chip);
 	if (IS_ERR_OR_NULL(chip->toggle_disable_votable)) {
 		ret = PTR_ERR(chip->toggle_disable_votable);
+		if (!ret)
+			ret = -ENOMEM;
 		dev_err(chip->dev, "no toggle_disable votable (%d)\n", ret);
 		return ret;
 	}
@@ -3640,6 +3642,8 @@ static int max77759_probe(struct i2c_client *client,
 		gvotable_create_bool_election(NULL, usb_throttle_votable_callback, chip);
 	if (IS_ERR_OR_NULL(chip->usb_throttle_votable)) {
 		ret = PTR_ERR(chip->usb_throttle_votable);
+		if (!ret)
+			ret = -ENOMEM;
 		dev_err(chip->dev, "USB throttle votable (%d) failed to create\n", ret);
 		return ret;
 	}
@@ -3863,6 +3867,8 @@ static int max77759_probe(struct i2c_client *client,
 		gvotable_create_bool_election(AICL_ACTIVE_EL, max77759_aicl_active_cb, chip);
 	if (IS_ERR_OR_NULL(chip->aicl_active_el)) {
 		ret = PTR_ERR(chip->aicl_active_el);
+		if (!ret)
+			ret = -ENOMEM;
 		dev_err(chip->dev, "Unable to create aicl_active_el(%d)\n", ret);
 		goto unreg_notifier;
 	}
