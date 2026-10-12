@@ -714,6 +714,15 @@ ptid_t pt_client_mutate_size(struct pt_handle *handle, int old_id, int new_id, s
 	struct pt_driver *driver;
 	unsigned long flags;
 
+	/*
+	 * Bound both ids before indexing: pt_handle_check() below panics after
+	 * handle->pts[] has already been dereferenced, so it cannot protect
+	 * the index.
+	 */
+	if ((old_id < 0) || (old_id >= handle->id_cnt) ||
+	    (new_id < 0) || (new_id >= handle->id_cnt))
+		return PT_PTID_INVALID;
+
 	driver = handle->pts[old_id].driver;
 	if (driver != handle->pts[new_id].driver)
 		return PT_PTID_INVALID;
@@ -1277,8 +1286,8 @@ static int pt_sysctl_command(struct ctl_table *ctl, int write,
 	case PT_FN_MUTATE:
 		if (retscanf < 4)
 			return -EINVAL;
-		if ((!handle) || (id >= handle->id_cnt)
-			|| (size_newid >= handle->id_cnt))
+		if ((!handle) || (id < 0) || (id >= handle->id_cnt)
+			|| (size_newid < 0) || (size_newid >= handle->id_cnt))
 			return -ENOENT;
 		pt_client_mutate(handle, id, size_newid);
 		break;
