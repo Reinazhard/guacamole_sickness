@@ -7132,8 +7132,15 @@ static void fts_remove(struct spi_device *client)
 	destroy_workqueue(info->event_wq);
 	wakeup_source_unregister(info->wakesrc);
 
-	if (info->fwu_workqueue)
+	if (info->fwu_workqueue) {
+		/*
+		 * fts_fw_update_auto() dereferences info and is queued for
+		 * EXP_FN_WORK_DELAY_MS, so drain it before the workqueue it runs
+		 * on goes away.
+		 */
+		cancel_delayed_work_sync(&info->fwu_work);
 		destroy_workqueue(info->fwu_workqueue);
+	}
 
 	fts_pinctrl_get(info, false);
 
