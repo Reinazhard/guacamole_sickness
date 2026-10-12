@@ -217,6 +217,7 @@ static int bigo_open(struct inode *inode, struct file *file)
 				kthread_stop(worker_to_stop);
 				mutex_lock(&core->lock);
 				core->worker_stopping = false;
+				wake_up_all(&core->worker_stop_wq);
 				mutex_unlock(&core->lock);
 			}
 			goto err_inst_open;
@@ -283,6 +284,7 @@ static int bigo_release(struct inode *inode, struct file *file)
 		mutex_lock(&core->lock);
 		core->worker_thread = NULL;
 		core->worker_stopping = false;
+		wake_up_all(&core->worker_stop_wq);
 		mutex_unlock(&core->lock);
 	}
 
@@ -888,6 +890,7 @@ static int bigo_probe(struct platform_device *pdev)
 	spin_lock_init(&core->status_lock);
 	init_completion(&core->frame_done);
 	init_waitqueue_head(&core->worker);
+	init_waitqueue_head(&core->worker_stop_wq);
 	core->dev = &pdev->dev;
 	platform_set_drvdata(pdev, core);
 
@@ -960,6 +963,7 @@ err:
 static int bigo_remove(struct platform_device *pdev)
 {
 	struct bigo_core *core = (struct bigo_core *)platform_get_drvdata(pdev);
+	struct task_struct *worker_to_stop = NULL;
 
 	/*
 	 * Unpublish first: bigo_open() starts a worker when the instance list
@@ -968,10 +972,31 @@ static int bigo_remove(struct platform_device *pdev)
 	 */
 	deinit_chardev(core);
 
-	if (core->worker_thread) {
-		kthread_stop(core->worker_thread);
-		core->worker_thread = NULL;
+	/*
+	 * worker_thread is kept set while a stop is in flight, and
+	 * kthread_stop() is not idempotent, so wait for that stop before
+	 * touching the pointer.  Returning without waiting would also let
+	 * devres free core while the worker is still exiting on it.
+	 */
+	mutex_lock(&core->lock);
+	while (READ_ONCE(core->worker_stopping)) {
+		mutex_unlock(&core->lock);
+		wait_event(core->worker_stop_wq,
+			   !READ_ONCE(core->worker_stopping));
+		mutex_lock(&core->lock);
 	}
+	worker_to_stop = core->worker_thread;
+	core->worker_thread = NULL;
+	/*
+	 * Keep the spawn path shut: an open already past the cdev lookup can
+	 * still reach on_first_instance_open() after deinit_chardev().
+	 */
+	core->worker_stopping = true;
+	mutex_unlock(&core->lock);
+
+	if (worker_to_stop)
+		kthread_stop(worker_to_stop);
+
 	bigo_uninit_debugfs(core);
 	platform_device_unregister(&bigo_sscd_dev);
 	bigo_pt_client_unregister(core);

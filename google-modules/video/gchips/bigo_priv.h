@@ -130,6 +130,11 @@ struct bigo_core {
 	 * rather than the pointer alone.
 	 */
 	bool worker_stopping;
+	/*
+	 * Signalled when worker_stopping is cleared.  bigo_remove() waits on
+	 * it so that it cannot free core underneath an in-flight stop.
+	 */
+	wait_queue_head_t worker_stop_wq;
 	wait_queue_head_t worker;
 	struct bigo_prio_array prioq;
 	u32 qos_dirty;
