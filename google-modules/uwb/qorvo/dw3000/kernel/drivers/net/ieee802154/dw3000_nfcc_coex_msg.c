@@ -267,7 +267,13 @@ dw3000_nfcc_coex_tlvs_check(struct dw3000 *dw,
 		if ((tlvs_len + sizeof(*tlv) + tlv->len) > tlvs_len_max)
 			return -EINVAL;
 
-		tlvs_len += tlv->len;
+		/*
+		 * tlv->len counts the payload only; stepping by it alone leaves
+		 * the cursor sizeof(*tlv) short and the next iteration parses a
+		 * TLV out of the previous one's payload.  The builder advances by
+		 * the same sum.
+		 */
+		tlvs_len += sizeof(*tlv) + tlv->len;
 
 		trace_dw3000_nfcc_coex_tlv_check(dw, tlv->type, tlv->len,
 						 tlv->tlv);
