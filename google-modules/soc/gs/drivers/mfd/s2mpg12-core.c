@@ -501,7 +501,7 @@ static int s2mpg12_i2c_probe(struct i2c_client *i2c,
 err_mfd:
 	mfd_remove_devices(s2mpg12->dev);
 err_irq_init:
-	i2c_unregister_device(s2mpg12->i2c);
+	s2mpg12_irq_exit(s2mpg12);
 err_w_lock:
 	mutex_destroy(&s2mpg12->i2c_lock);
 err:
@@ -514,7 +514,7 @@ static void s2mpg12_i2c_remove(struct i2c_client *i2c)
 	struct s2mpg12_dev *s2mpg12 = i2c_get_clientdata(i2c);
 
 	mfd_remove_devices(s2mpg12->dev);
-	i2c_unregister_device(s2mpg12->i2c);
+	s2mpg12_irq_exit(s2mpg12);
 	kfree(s2mpg12);
 }
 
