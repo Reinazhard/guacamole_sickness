@@ -264,6 +264,55 @@ int gbms_storage_register(struct gbms_storage_desc *desc, const char *name,
 }
 EXPORT_SYMBOL_GPL(gbms_storage_register);
 
+/*
+ * Withdraw a provider registered with gbms_storage_register().
+ *
+ * A provider slot holds the registering driver's opaque pointer for the
+ * lifetime of the kernel, and the tag cache stores the slot rather than the
+ * name, so a driver being torn down has no other way to stop its callbacks
+ * from being invoked with a pointer whose lifetime has ended.
+ *
+ * The offline flag is raised before the descriptor is cleared because
+ * gbms_cache_read() and gbms_cache_write() test that flag before they
+ * dereference the descriptor.
+ *
+ * Return: 0 on success, -ENOENT if no provider is registered under @name,
+ * -EINVAL if @name is NULL, -EPROBE_DEFER before the storage is initialized.
+ */
+int gbms_storage_unregister(const char *name)
+{
+	struct gbms_storage_provider *slot;
+	unsigned long flags;
+	int index, ret = -ENOENT;
+
+	if (!name)
+		return -EINVAL;
+	if (!gbms_storage_init_done)
+		return -EPROBE_DEFER;
+
+	spin_lock_irqsave(&providers_lock, flags);
+
+	for (index = 0; index < gbms_providers_count; index++) {
+		slot = &gbms_providers[index];
+		if (strncmp(slot->name, name, strlen(slot->name)) != 0)
+			continue;
+
+		if (!slot->dsc)
+			break;
+
+		slot->offline = true;
+		slot->dsc = NULL;
+		slot->ptr = NULL;
+		ret = 0;
+		break;
+	}
+
+	spin_unlock_irqrestore(&providers_lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gbms_storage_unregister);
+
 /* ------------------------------------------------------------------------- */
 
 static int gbms_cache_read(gbms_tag_t tag, void *data, size_t count)

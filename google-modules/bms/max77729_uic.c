@@ -697,6 +697,13 @@ static void max77729_uic_remove(struct i2c_client *client)
 {
 	struct max77729_uic_data *data = i2c_get_clientdata(client);
 
+	/*
+	 * Withdraw the provider first: gbms_storage holds the devm_kzalloc()'d
+	 * `data` in a global slot with no other release path, and devres frees
+	 * it as soon as this returns.
+	 */
+	gbms_storage_unregister("max77729uic");
+
 	data->probe_done = false;
 	/*
 	 * The threaded IRQ is devm-managed, so it is still live inside
