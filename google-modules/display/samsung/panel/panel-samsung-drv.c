@@ -4925,6 +4925,15 @@ static bool panel_update_local_hbm_notimeout_locked(struct exynos_panel *ctx)
 static void panel_update_local_hbm_locked(struct exynos_panel *ctx)
 {
 	if (ctx->hbm.local_hbm.requested_state) {
+		/*
+		 * hbm_data_init() leaves ctx->hbm.wq NULL when
+		 * create_singlethread_workqueue() fails; without a workqueue
+		 * there is no expiry to arm.
+		 */
+		if (!ctx->hbm.wq) {
+			panel_update_local_hbm_notimeout_locked(ctx);
+			return;
+		}
 		/* reset timeout timer if re-enabling lhbm */
 		if (!is_local_hbm_disabled(ctx)) {
 			mod_delayed_work(ctx->hbm.wq, &ctx->hbm.local_hbm.timeout_work,
@@ -5251,9 +5260,14 @@ static void hbm_data_init(struct exynos_panel *ctx)
 	ctx->hbm.wq = create_singlethread_workqueue("hbm_workq");
 	if (!ctx->hbm.wq)
 		dev_err(ctx->dev, "failed to create hbm workq!\n");
-	else {
-		INIT_DELAYED_WORK(&ctx->hbm.local_hbm.timeout_work, local_hbm_timeout_work);
-	}
+
+	/*
+	 * Initialise the work even when the workqueue was not created: queueing
+	 * an uninitialised delayed_work arms a timer whose function is NULL,
+	 * and expire_timers() then leaves WORK_STRUCT_PENDING_BIT set, which
+	 * makes every later queue a no-op or a spin.
+	 */
+	INIT_DELAYED_WORK(&ctx->hbm.local_hbm.timeout_work, local_hbm_timeout_work);
 
 	if (is_local_hbm_post_enabling_supported(ctx)) {
 		kthread_init_worker(&ctx->hbm.local_hbm.worker);
@@ -5700,9 +5714,8 @@ static void exynos_panel_quiesce(struct exynos_panel *ctx)
 	cancel_work_sync(&ctx->notify_brightness_changed_work);
 
 	/*
-	 * hbm_data_init() initialises the timeout work only when it created
-	 * @ctx->hbm.wq, so the cancel is gated on the same condition as the
-	 * destroy.
+	 * The work is uninitialised or never armed exactly when @ctx->hbm.wq
+	 * is NULL, so gate the cancel on the same condition as the destroy.
 	 */
 	if (ctx->hbm.wq) {
 		cancel_delayed_work_sync(&ctx->hbm.local_hbm.timeout_work);
