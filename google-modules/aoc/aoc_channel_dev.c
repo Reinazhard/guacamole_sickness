@@ -746,6 +746,13 @@ static void aocc_sh_mem_doorbell_probe(struct aoc_service_dev *dev)
 		sh_mem_doorbell_service_dev = dev;
 	}
 
+	/*
+	 * The entry taken from the head of the list is dereferenced below and
+	 * aocc_remove() drops its last reference under this lock, so hold
+	 * aocc_devices_lock across the lookup and the initialisation.
+	 */
+	mutex_lock(&aocc_devices_lock);
+
 	/* Use the first channel device with the shared memory doorbell. */
 	if (list_empty(&aocc_devices_list))
 		sh_mem_doorbell_channel_device = NULL;
@@ -772,6 +779,8 @@ static void aocc_sh_mem_doorbell_probe(struct aoc_service_dev *dev)
 		sh_mem_doorbell_channel_device->sh_mem_doorbell_count = 0;
 		sh_mem_doorbell_channel_device->sh_mem_doorbell_available = true;
 	}
+
+	mutex_unlock(&aocc_devices_lock);
 }
 
 static int aocc_probe(struct aoc_service_dev *dev)
