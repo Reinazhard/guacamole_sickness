@@ -2238,15 +2238,15 @@ static int bts_probe(struct platform_device *pdev)
 	if (strcmp(pdev->name, "exynos-bts")) {
 		dev_err(btsdev->dev,
 			"failed to get bts data from device tree\n");
-		return -ENOENT;
+		ret = -ENOENT;
+		goto err_free;
 	}
 
 	ret = bts_parse_data(btsdev->dev->of_node, btsdev);
 	if (ret) {
 		dev_err(btsdev->dev, "failed to parse data (err=%d)\n",
 			ret);
-		devm_kfree(btsdev->dev, btsdev);
-		return ret;
+		goto err_free;
 	}
 	spin_lock_init(&btsdev->lock);
 	mutex_init(&btsdev->scen_lock);
@@ -2260,8 +2260,7 @@ static int bts_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(btsdev->dev, "failed to initialize (err=%d)\n",
 			ret);
-		devm_kfree(btsdev->dev, btsdev);
-		return ret;
+		goto err_free;
 	}
 
 	platform_set_drvdata(pdev, btsdev);
@@ -2280,6 +2279,13 @@ static int bts_probe(struct platform_device *pdev)
 
 	pr_info("%s successfully done.\n", __func__);
 
+	return ret;
+
+err_free:
+	/* The exported APIs dereference btsdev without testing it, and the
+	 * driver core does not call bts_remove() for a failed probe. */
+	devm_kfree(btsdev->dev, btsdev);
+	btsdev = NULL;
 	return ret;
 }
 
