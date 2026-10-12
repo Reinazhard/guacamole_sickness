@@ -438,9 +438,19 @@ void g2d_destroy_tasks(struct g2d_device *g2d_dev)
 	 * kthread_destroy_worker() waits for a running work item, so a
 	 * pending completion_work or sched_work is guaranteed to run
 	 * against a task that is still allocated.
+	 *
+	 * Guarded and cleared because this is also the unwind for a
+	 * g2d_create_tasks() that failed before both workers existed, and
+	 * kthread_destroy_worker() dereferences worker->task unguarded.
 	 */
-	kthread_destroy_worker(g2d_dev->completion_workq);
-	kthread_destroy_worker(g2d_dev->schedule_workq);
+	if (g2d_dev->completion_workq) {
+		kthread_destroy_worker(g2d_dev->completion_workq);
+		g2d_dev->completion_workq = NULL;
+	}
+	if (g2d_dev->schedule_workq) {
+		kthread_destroy_worker(g2d_dev->schedule_workq);
+		g2d_dev->schedule_workq = NULL;
+	}
 
 	spin_lock_irqsave(&g2d_dev->lock_task, flags);
 
@@ -462,6 +472,8 @@ void g2d_destroy_tasks(struct g2d_device *g2d_dev)
 	}
 
 	spin_unlock_irqrestore(&g2d_dev->lock_task, flags);
+
+	g2d_dev->tasks = NULL;
 }
 
 static struct g2d_task *g2d_create_task(struct g2d_device *g2d_dev, int id)
@@ -539,8 +551,19 @@ int g2d_create_tasks(struct g2d_device *g2d_dev)
 	sched_setscheduler_nocheck(g2d_dev->completion_workq->task, SCHED_FIFO, &param[0]);
 
 	g2d_dev->schedule_workq = kthread_create_worker(0, "g2d_scheduler");
-	if (IS_ERR(g2d_dev->schedule_workq))
-		return PTR_ERR(g2d_dev->schedule_workq);
+	if (IS_ERR(g2d_dev->schedule_workq)) {
+		int err = PTR_ERR(g2d_dev->schedule_workq);
+
+		/*
+		 * The completion worker is already live - kthread_create_worker()
+		 * wakes the kthread before returning - and nothing else on the
+		 * probe unwind destroys it.
+		 */
+		g2d_dev->schedule_workq = NULL;
+		kthread_destroy_worker(g2d_dev->completion_workq);
+		g2d_dev->completion_workq = NULL;
+		return err;
+	}
 
 	sched_setscheduler_nocheck(g2d_dev->schedule_workq->task, SCHED_FIFO, &param[1]);
 
