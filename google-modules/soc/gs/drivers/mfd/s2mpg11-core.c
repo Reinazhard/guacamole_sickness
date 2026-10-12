@@ -379,6 +379,7 @@ static int s2mpg11_i2c_probe(struct i2c_client *i2c,
 	return ret;
 
 err_mfd:
+	s2mpg11_irq_exit(s2mpg11);
 	mfd_remove_devices(s2mpg11->dev);
 err_w_lock:
 	mutex_destroy(&s2mpg11->i2c_lock);
@@ -391,6 +392,7 @@ static void s2mpg11_i2c_remove(struct i2c_client *i2c)
 {
 	struct s2mpg11_dev *s2mpg11 = i2c_get_clientdata(i2c);
 
+	s2mpg11_irq_exit(s2mpg11);
 	mfd_remove_devices(s2mpg11->dev);
 	kfree(s2mpg11);
 }
