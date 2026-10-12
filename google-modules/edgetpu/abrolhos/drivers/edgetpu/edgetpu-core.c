@@ -519,12 +519,13 @@ void edgetpu_device_remove(struct edgetpu_dev *etdev)
 	edgetpu_chip_remove_mmu(etdev);
 	edgetpu_fs_remove(etdev);
 	/*
-	 * Every context that can reach edgetpu_watchdog_bite() is now
-	 * stopped: the caller released the IRQ before this function,
-	 * edgetpu_mailbox_remove_all() cancelled the KCI and
-	 * reverse-KCI workers, and edgetpu_fs_remove() took away the
-	 * ioctl path that reaches edgetpu_mailbox_activate_bulk().
-	 * Only now is it safe to free the watchdog.
+	 * The IRQ is released and edgetpu_mailbox_remove_all() cancelled the
+	 * KCI and reverse-KCI workers, so the firmware-crash and heartbeat
+	 * callers of edgetpu_watchdog_bite() are stopped.  The client ioctl
+	 * path stays away because an open file holds a module reference, the
+	 * same invariant edgetpu_kci_release() relies on -- not because
+	 * edgetpu_fs_remove() closed it: cdev_del() only unlinks the device
+	 * for future opens.
 	 */
 	edgetpu_sw_wdt_destroy(etdev);
 }
