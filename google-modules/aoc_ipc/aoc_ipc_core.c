@@ -72,7 +72,13 @@ static inline void _region_advance_rx(struct aoc_ipc_memory_region *r,
 	u32 rp = ioread32(&r->rp);
 
 	u32 updated_rx = (rx + amount);
-	u32 updated_rp = (rp + amount) % sz;
+	u32 updated_rp;
+
+	/* (x % 0) is undefined; a zero-sized region has nothing to advance */
+	if (sz == 0)
+		return;
+
+	updated_rp = (rp + amount) % sz;
 
 	iowrite32(updated_rx, &r->rx);
 	iowrite32(updated_rp, &r->rp);
@@ -145,6 +151,15 @@ static u32 _aoc_ring_read_buffer(const u8 *ring,
 	bytes_available = _read_write_delta(r);
 	sz = ioread32(&r->size);
 
+	/*
+	 * _region_advance_rx() would divide by zero and rewrite the shared
+	 * rx/rp registers, so reject a zero-sized region before the sync.
+	 */
+	if (sz == 0) {
+		*dest_size = 0;
+		return 0;
+	}
+
 	if (bytes_available > sz)
 		_aoc_ring_reader_sync_offset(r, sz);
 
@@ -153,7 +168,7 @@ static u32 _aoc_ring_read_buffer(const u8 *ring,
 	wp = ioread32(&r->wp);
 	rp = ioread32(&r->rp);
 
-	if (sz == 0 || rp >= sz || wp >= sz) {
+	if (rp >= sz || wp >= sz) {
 		/*
 		 * Every other return path writes *dest_size; leaving the caller's
 		 * requested length in place makes aoc_service_read() report a
