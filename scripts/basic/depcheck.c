@@ -346,6 +346,16 @@ static char *read_file(const char *path, size_t *len)
 			break;
 		nr_read += chunk;
 	}
+	/*
+	 * A short read must not be handed back as if it were the whole file: the
+	 * parser treats "ran out of buffer" as FRESH, so a truncated .cmd would
+	 * silently produce a no-rebuild decision and leave a stale object.
+	 */
+	if (ferror(file) || nr_read != (size_t)st.st_size) {
+		fclose(file);
+		free(buf);
+		return NULL;
+	}
 	fclose(file);
 
 	buf[nr_read] = '\0';
