@@ -383,7 +383,6 @@ static void s2mpg13_i2c_remove(struct i2c_client *i2c)
 	if (s2mpg13->pdata->wakeup)
 		device_init_wakeup(s2mpg13->dev, false);
 	mfd_remove_devices(s2mpg13->dev);
-	i2c_unregister_device(s2mpg13->i2c);
 	kfree(s2mpg13);
 }
 

@@ -363,7 +363,6 @@ static void s2mpg15_i2c_remove(struct i2c_client *i2c)
 	if (s2mpg15->pdata->wakeup)
 		device_init_wakeup(s2mpg15->dev, false);
 	mfd_remove_devices(s2mpg15->dev);
-	i2c_unregister_device(s2mpg15->i2c);
 }
 
 static const struct i2c_device_id s2mpg15_i2c_id[] = {
