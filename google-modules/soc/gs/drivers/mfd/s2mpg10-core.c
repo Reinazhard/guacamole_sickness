@@ -527,6 +527,7 @@ static int s2mpg10_i2c_probe(struct i2c_client *i2c,
 	return ret;
 
 err_mfd:
+	s2mpg10_irq_exit(s2mpg10);
 	mfd_remove_devices(s2mpg10->dev);
 err_w_lock:
 	mutex_destroy(&s2mpg10->i2c_lock);
@@ -539,6 +540,7 @@ static void s2mpg10_i2c_remove(struct i2c_client *i2c)
 {
 	struct s2mpg10_dev *s2mpg10 = i2c_get_clientdata(i2c);
 
+	s2mpg10_irq_exit(s2mpg10);
 	mfd_remove_devices(s2mpg10->dev);
 	kfree(s2mpg10);
 }
