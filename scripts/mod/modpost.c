@@ -1380,28 +1380,40 @@ static void extable_mismatch_handler(const char* modname, struct elf_info *elf,
  *   0 - uncached.
  *  -1 - no mismatch.
  *  >0 - mismatch index + 1.
+ *
+ * An entry is trusted only while mismatch_cache_gen[section index] ==
+ * mismatch_gen.
  */
 static int *mismatch_cache;
+static unsigned int *mismatch_cache_gen;
+static unsigned int mismatch_gen;
 
 static void init_mismatch_cache(unsigned int num_sections)
 {
 	mismatch_cache = NOFAIL(calloc(num_sections, sizeof(*mismatch_cache)));
+	mismatch_cache_gen = NOFAIL(calloc(num_sections,
+					   sizeof(*mismatch_cache_gen)));
+	mismatch_gen = 0;
 }
 
-static void reset_mismatch_cache(unsigned int num_sections)
+static void reset_mismatch_cache(void)
 {
-	memset(mismatch_cache, 0, num_sections * sizeof(*mismatch_cache));
+	mismatch_gen++;
 }
 
 static void free_mismatch_cache(void)
 {
 	free(mismatch_cache);
+	free(mismatch_cache_gen);
 	mismatch_cache = NULL;
+	mismatch_cache_gen = NULL;
 }
 
 static const struct sectioncheck
 *cache_mismatch(unsigned int secndx, const struct sectioncheck *mismatch)
 {
+	mismatch_cache_gen[secndx] = mismatch_gen;
+
 	if (!mismatch) {
 		mismatch_cache[secndx] = -1;
 		return NULL;
@@ -1419,7 +1431,8 @@ static const struct sectioncheck *get_section_mismatch(const char *fromsec,
 	if (secndx >= elf->num_sections)
 		return section_mismatch(fromsec, sec_name(elf, secndx));
 
-	cached = mismatch_cache[secndx];
+	cached = mismatch_cache_gen[secndx] == mismatch_gen ?
+		 mismatch_cache[secndx] : 0;
 	if (cached < 0)
 		return NULL;
 	if (cached > 0)
@@ -1579,7 +1592,7 @@ static void section_rela(const char *modname, struct elf_info *elf,
 	 * while section_mismatch() also depends on the referring section, so
 	 * it only holds within the one fromsec handled here.
 	 */
-	reset_mismatch_cache(elf->num_sections);
+	reset_mismatch_cache();
 
 	for (rela = start; rela < stop; rela++) {
 		r.r_offset = TO_NATIVE(rela->r_offset);
@@ -1636,7 +1649,7 @@ static void section_rel(const char *modname, struct elf_info *elf,
 	 * while section_mismatch() also depends on the referring section, so
 	 * it only holds within the one fromsec handled here.
 	 */
-	reset_mismatch_cache(elf->num_sections);
+	reset_mismatch_cache();
 
 	for (rel = start; rel < stop; rel++) {
 		r.r_offset = TO_NATIVE(rel->r_offset);
