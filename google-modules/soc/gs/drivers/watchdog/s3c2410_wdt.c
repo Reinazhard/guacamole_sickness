@@ -1942,8 +1942,6 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 
 	s3c2410wdt_cpufreq_deregister(wdt);
 
-	clk_disable_unprepare(wdt->gate_clock);
-
 	unregister_pm_notifier(&s3c2410wdt_pm_nb);
 
 	/*
@@ -1970,6 +1968,13 @@ static int s3c2410wdt_remove(struct platform_device *dev)
 		 */
 		synchronize_rcu();
 	}
+
+	/*
+	 * Gate the IP last: the callbacks unpublished above reach the register
+	 * window through s3c_wdt[], and a register access to a clock-gated
+	 * block stalls on the bus instead of returning.
+	 */
+	clk_disable_unprepare(wdt->gate_clock);
 
 	if (wdt->schedstat)
 		free_percpu(wdt->schedstat);
