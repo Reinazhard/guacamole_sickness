@@ -153,8 +153,15 @@ static u32 _aoc_ring_read_buffer(const u8 *ring,
 	wp = ioread32(&r->wp);
 	rp = ioread32(&r->rp);
 
-	if (sz == 0 || rp >= sz || wp >= sz)
+	if (sz == 0 || rp >= sz || wp >= sz) {
+		/*
+		 * Every other return path writes *dest_size; leaving the caller's
+		 * requested length in place makes aoc_service_read() report a
+		 * full-length successful read of a buffer nothing wrote.
+		 */
+		*dest_size = 0;
 		return 0;
+	}
 
 	if (wp > rp) {
 		bytes_available = wp - rp;
