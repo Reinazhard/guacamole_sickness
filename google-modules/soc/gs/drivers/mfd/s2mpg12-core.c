@@ -458,13 +458,13 @@ static int s2mpg12_i2c_probe(struct i2c_client *i2c,
 		s2mpg12_set_rev_id(s2mpg12, reg_data & 0x7);
 	}
 
-	s2mpg12->pmic = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_PMIC);
-	s2mpg12->rtc = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_RTC);
-	s2mpg12->meter = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_METER);
-	s2mpg12->wlwp = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_WLWP);
-	s2mpg12->gpio = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_GPIO);
-	s2mpg12->mt_trim = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_MT_TRIM);
-	s2mpg12->trim = i2c_new_dummy_device(i2c->adapter, I2C_ADDR_TRIM);
+	s2mpg12->pmic = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_PMIC);
+	s2mpg12->rtc = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_RTC);
+	s2mpg12->meter = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_METER);
+	s2mpg12->wlwp = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_WLWP);
+	s2mpg12->gpio = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_GPIO);
+	s2mpg12->mt_trim = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_MT_TRIM);
+	s2mpg12->trim = devm_i2c_new_dummy_device(&i2c->dev, i2c->adapter, I2C_ADDR_TRIM);
 	s2mpg12_pmic_rev = s2mpg12->pmic_rev;
 
 	i2c_set_clientdata(s2mpg12->pmic, s2mpg12);
