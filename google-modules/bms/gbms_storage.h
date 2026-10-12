@@ -226,6 +226,7 @@ static inline int gbee_storage_info(gbms_tag_t tag, size_t *addr, size_t *count,
 
 extern int gbms_storage_register(struct gbms_storage_desc *desc,
 				 const char *name, void *ptr);
+extern int gbms_storage_unregister(const char *name);
 extern int gbms_storage_offline(const char *name, bool flush);
 
 extern int gbms_storage_read(gbms_tag_t tag, void *data, size_t count);
