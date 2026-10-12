@@ -670,7 +670,9 @@ static void stmvl53l1_remove(struct i2c_client *client)
 	 * cannot interleave with a concurrent consumer.
 	 */
 	mutex_lock(&shared_i2c_mutex);
-	kref_put(&shared_i2c_data->refcount, shared_i2c_data_release);
+	/* The release callback clears the global, so this deref can see NULL. */
+	if (shared_i2c_data)
+		kref_put(&shared_i2c_data->refcount, shared_i2c_data_release);
 	mutex_unlock(&shared_i2c_mutex);
 }
 
