@@ -773,10 +773,14 @@ static int gf_remove(struct platform_device *pdev)
 	/*
 	 * free_irq() waits for the threaded handler to finish, so the IRQ must
 	 * go away before the wakeup source that gf_irq() reports to is freed.
-	 * gf_dev->users is non-zero only while the IRQ is registered.
+	 * gf_dev->users is non-zero only while the IRQ is registered, so it has
+	 * to be reset here: gf_open() requests the IRQ only when it is zero, and
+	 * leaving it set would keep the IRQ unregistered after a rebind.
 	 */
-	if (gf_dev->users)
+	if (gf_dev->users) {
 		irq_cleanup(gf_dev);
+		gf_dev->users = 0;
+	}
 
 	wakeup_source_unregister(fp_wakeup_source);
 	fp_wakeup_source = NULL;
