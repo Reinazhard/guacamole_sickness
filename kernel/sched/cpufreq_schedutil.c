@@ -48,6 +48,8 @@ struct sugov_cpu {
 	bool			iowait_boost_pending;
 	unsigned int		iowait_boost;
 	u64			last_update;
+	/* Time the boost was last raised, used to pace its decay */
+	u64			iowait_boost_ts;
 
 	unsigned long		util;
 	unsigned long		bw_min;
@@ -335,6 +337,8 @@ static void sugov_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
 		return;
 	sg_cpu->iowait_boost_pending = true;
 
+	sg_cpu->iowait_boost_ts = time;
+
 	/* Double the boost at each request */
 	if (sg_cpu->iowait_boost) {
 		sg_cpu->iowait_boost =
@@ -377,12 +381,13 @@ static unsigned long sugov_iowait_apply(struct sugov_cpu *sg_cpu, u64 time,
 
 	if (!sg_cpu->iowait_boost_pending) {
 		/*
-		 * No boost pending; reduce the boost value only if at least
-		 * one tick has elapsed since the last update on this CPU,
-		 * preventing rapid sibling core wakeups in shared policies
-		 * from prematurely eroding the boost.
+		 * No boost pending; reduce the boost value, at most once per
+		 * tick. sg_cpu->last_update cannot pace this: the reset above
+		 * has already consumed every case where more than a tick
+		 * elapsed since it, leaving only exact equality.
 		 */
-		if (time - sg_cpu->last_update >= TICK_NSEC) {
+		if (time - sg_cpu->iowait_boost_ts >= TICK_NSEC) {
+			sg_cpu->iowait_boost_ts = time;
 			sg_cpu->iowait_boost >>= 1;
 			if (sg_cpu->iowait_boost < IOWAIT_BOOST_MIN) {
 				sg_cpu->iowait_boost = 0;
