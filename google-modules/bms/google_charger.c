@@ -6502,6 +6502,7 @@ static int google_charger_probe(struct platform_device *pdev)
 static int google_charger_remove(struct platform_device *pdev)
 {
 	struct chg_drv *chg_drv = (struct chg_drv *)platform_get_drvdata(pdev);
+	int i;
 
 	if (chg_drv) {
 		/*
@@ -6540,6 +6541,18 @@ static int google_charger_remove(struct platform_device *pdev)
 		}
 
 		chg_destroy_votables(chg_drv);
+
+		/*
+		 * Non-devm registrar, and the devdata points at
+		 * &chg_drv->thermal_devices[i], which devres frees on return.
+		 */
+		for (i = 0; i < CHG_TERMAL_DEVICES_COUNT; i++) {
+			if (chg_drv->thermal_devices[i].tcd) {
+				thermal_cooling_device_unregister(
+					chg_drv->thermal_devices[i].tcd);
+				chg_drv->thermal_devices[i].tcd = NULL;
+			}
+		}
 
 		if (chg_drv->chg_psy)
 			power_supply_put(chg_drv->chg_psy);
