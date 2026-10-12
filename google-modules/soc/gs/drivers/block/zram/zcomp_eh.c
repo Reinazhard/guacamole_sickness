@@ -209,6 +209,30 @@ static void free_zcomp_cookie(struct zcomp_eh *zcomp_eh, struct zcomp_cookie *co
 	}
 }
 
+/*
+ * Retire batched cookies the device refused. zcomp_flush() hands such a
+ * cookie back to request_list for a later flush that cannot come once
+ * this object is gone, so the BIO reference zcomp_eh_compress() took
+ * would never be dropped and the cookie would never return to the pool.
+ */
+static void zcomp_abandon_requests(struct zcomp_eh *zcomp_eh)
+{
+	LIST_HEAD(req_list);
+	struct zcomp_cookie *cookie;
+
+	spin_lock(&zcomp_eh->request_lock);
+	list_splice_init(&zcomp_eh->request_list, &req_list);
+	zcomp_eh->pend_request = 0;
+	spin_unlock(&zcomp_eh->request_lock);
+
+	while ((cookie = list_first_entry_or_null(&req_list,
+						  struct zcomp_cookie, list))) {
+		list_del(&cookie->list);
+		bio_io_error(cookie->bio);
+		free_zcomp_cookie(zcomp_eh, cookie);
+	}
+}
+
 static void init_zcomp_cookie_pool(struct zcomp_eh *zcomp_eh)
 {
 	INIT_LIST_HEAD(&zcomp_eh->cookie_pool.head);
@@ -403,12 +427,16 @@ static void zcomp_eh_destroy(struct zcomp *comp)
 
 	/*
 	 * Flush anything still batched on the block plug. zcomp_eh_compress()
-	 * appends cookies to the shared request_list and takes a bio reference
-	 * for each but does not count them in nr_inflight, so nothing else
-	 * retires them: leaving them here abandons the bios and lets a later
-	 * zcomp_unplug() run against the zcomp_eh we are about to free.
+	 * appends cookies to request_list and takes a bio reference for each
+	 * without counting them in nr_inflight, so nothing else retires them,
+	 * and a later zcomp_unplug() would run against the freed zcomp_eh.
+	 * A refusal is reachable here -- eh_of_remove() leaves a claimed
+	 * device alive for the upper layer to destroy, and eh_compress_page()
+	 * refuses everything once removed is set -- and zcomp_flush() returns
+	 * a refused cookie to that list for a flush that cannot come.
 	 */
-	zcomp_flush(zcomp_eh);
+	if (zcomp_flush(zcomp_eh))
+		zcomp_abandon_requests(zcomp_eh);
 
 	/*
 	 * Quiesce the device before destroying the workqueue it feeds.
