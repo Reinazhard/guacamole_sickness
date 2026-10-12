@@ -7256,9 +7256,12 @@ int dw3000_disable(struct dw3000 *dw)
 	atomic_set(&dw->iface_is_started, false);
 	/* Handle DEEP-SLEEP active case early */
 	if (dw->current_operational_state < DW3000_OP_STATE_INIT_RC) {
-		/* Seems chip is sleeping or already power-off. Just ensure
-		   wake-up timer will not fire since not required anymore. */
-		dw3000_idle_cancel_timer(dw);
+		/*
+		 * hrtimer_cancel() and not dw3000_idle_cancel_timer(): this is
+		 * a teardown path, so a running dw3000_idle_timeout() must be
+		 * waited for, the same way the awake branch below does it.
+		 */
+		hrtimer_cancel(&dw->idle_timer);
 		/* No need to call disable_irq() since already called and this
 		   will require calling two times enable_irq() later because
 		   enable/disable_irq are nested! */
