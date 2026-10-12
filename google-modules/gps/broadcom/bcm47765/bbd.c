@@ -263,8 +263,15 @@ static ssize_t bbd_control(struct bbd_device *bbd, const char *buf, ssize_t len)
 		pwrstats->gps_on_cnt++;
 		pwrstats->gps_on_entry = now;
 		pwrstats->gps_off_exit = now;
-		pwrstats->gps_off_duration +=
-		pwrstats->gps_off_exit - pwrstats->gps_off_entry;
+		/*
+		 * Only meaningful once a GPSD:CORE_OFF has been seen; the entry
+		 * timestamp is zero until then, and ktime_get_boottime() is the
+		 * whole uptime, so an unguarded subtraction would bill all of it
+		 * to GPS-off.
+		 */
+		if (pwrstats->gps_off_entry)
+			pwrstats->gps_off_duration +=
+				pwrstats->gps_off_exit - pwrstats->gps_off_entry;
 
 		mutex_unlock(&bbd->priv[BBD_MINOR_PWRSTAT].lock);
 	} else if (!strcmp(buf, GPSD_CORE_OFF)) {
@@ -278,8 +285,10 @@ static ssize_t bbd_control(struct bbd_device *bbd, const char *buf, ssize_t len)
 		pwrstats->gps_off_cnt++;
 		pwrstats->gps_off_entry = now;
 		pwrstats->gps_on_exit = now;
-		pwrstats->gps_on_duration +=
-		pwrstats->gps_on_exit - pwrstats->gps_on_entry;
+		/* Symmetrically, only once a GPSD:CORE_ON has been seen. */
+		if (pwrstats->gps_on_entry)
+			pwrstats->gps_on_duration +=
+				pwrstats->gps_on_exit - pwrstats->gps_on_entry;
 
 		mutex_unlock(&bbd->priv[BBD_MINOR_PWRSTAT].lock);
 #endif /* BBD_PWR_STATUS */
