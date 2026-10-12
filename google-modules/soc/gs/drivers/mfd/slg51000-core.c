@@ -718,8 +718,12 @@ static int slg51000_i2c_probe(struct i2c_client *client,
 	if (ret)
 		dev_err(&client->dev, "Failed to create attribute group: %d\n", ret);
 
-	return devm_mfd_add_devices(slg51000->dev, -1, slg51000_devs,
+	ret = devm_mfd_add_devices(slg51000->dev, -1, slg51000_devs,
 			ARRAY_SIZE(slg51000_devs), NULL, 0, NULL);
+	if (ret)
+		goto out;
+
+	return 0;
 
 out:
 	del_timer_sync(&slg51000->timer);
