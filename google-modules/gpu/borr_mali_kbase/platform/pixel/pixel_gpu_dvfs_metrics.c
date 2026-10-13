@@ -341,16 +341,23 @@ int gpu_dvfs_metrics_init(struct kbase_device *kbdev)
 	struct pixel_context *pc = kbdev->platform_context;
 	int c;
 
+	/*
+	 * Allocate before taking the lock: the failure path below would otherwise
+	 * return with pc->dvfs.lock held, and the only unlock in this file is the
+	 * one at the end of this function.  The caller's unwind cannot release it
+	 * either - gpu_dvfs_term() is dev_init[1].term and the caller unwinds only
+	 * entries [0, i-1], so it never runs for this entry.
+	 */
+	pc->dvfs.metrics.transtab = kzalloc(sizeof(int) * gpu_dvfs_metrics_transtab_size(pc),
+		GFP_KERNEL);
+	if (pc->dvfs.metrics.transtab == NULL)
+		return -ENOMEM;
+
 	mutex_lock(&pc->dvfs.lock);
 	spin_lock_init(&pc->dvfs.metrics.lock);
 
 	pc->dvfs.metrics.last_time = ktime_get_ns();
 	pc->dvfs.metrics.last_power_state = gpu_pm_get_power_state(kbdev);
-
-	pc->dvfs.metrics.transtab = kzalloc(sizeof(int) * gpu_dvfs_metrics_transtab_size(pc),
-		GFP_KERNEL);
-	if (pc->dvfs.metrics.transtab == NULL)
-		return -ENOMEM;
 
 	pc->dvfs.table[pc->dvfs.level].metrics.entry_count++;
 	pc->dvfs.table[pc->dvfs.level].metrics.time_last_entry =
