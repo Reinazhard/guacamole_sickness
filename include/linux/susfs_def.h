@@ -170,12 +170,12 @@ static inline void susfs_clear_current_proc_no_su(void)
 		susfs_is_current_proc_umounted_app()
 
 #define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
-	inode && inode->i_mapping &&unlikely(test_bit(        \
-			 AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags))
+	((inode) && (inode)->i_mapping && unlikely(test_bit(   \
+			 AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)))
 
-#define SUSFS_IS_INODE_OPEN_REDIRECT(inode)                                   \
-	inode &&                                                              \
-		inode->i_mapping &&unlikely(test_bit(                         \
-			AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags)) && \
-		susfs_is_current_proc_umounted_app()
+#define SUSFS_IS_INODE_OPEN_REDIRECT(inode)                                     \
+	((inode) &&                                                             \
+		(inode)->i_mapping && unlikely(test_bit(                        \
+			AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)) && \
+		susfs_is_current_proc_umounted_app())
 #endif // #ifndef KSU_SUSFS_DEF_H
