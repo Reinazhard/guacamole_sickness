@@ -81,6 +81,11 @@ struct selinux_policy_convert_data {
 	struct sidtab_convert_params sidtab_params;
 };
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running __read_mostly;
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 /* Forward declaration. */
 static int context_struct_to_string(struct policydb *policydb,
 				    struct context *context,
@@ -1611,6 +1616,77 @@ out:
 	return rc;
 }
 
+#ifdef CONFIG_KSU_SUSFS
+static int my_security_context_to_sid_core(struct selinux_state *state,
+					   const char *scontext,
+					   u32 scontext_len, u32 *sid,
+					   u32 def_sid, gfp_t gfp_flags,
+					   int force)
+{
+	struct selinux_policy *policy, *fake_policy;
+	struct policydb *policydb, *fake_policydb;
+	struct sidtab *sidtab, *fake_sidtab;
+	char *scontext2, *fake_scontext2;
+	struct context context, fake_context;
+	int rc = 0, fake_rc = 0;
+	u32 fake_sid;
+
+	/* An empty security context is never valid. */
+	if (!scontext_len)
+		return -EINVAL;
+
+	/* Copy the string to allow changes and ensure a NUL terminator */
+	scontext2 = kmemdup_nul(scontext, scontext_len, gfp_flags);
+	if (!scontext2)
+		return -ENOMEM;
+
+	fake_scontext2 = kmemdup_nul(scontext, scontext_len, gfp_flags);
+	if (!fake_scontext2) {
+		kfree(scontext2);
+		return -ENOMEM;
+	}
+
+	*sid = SECSID_NULL;
+
+	rcu_read_lock();
+	policy = rcu_dereference(state->policy);
+	fake_policy = rcu_dereference((&fake_state)->policy);
+	policydb = &policy->policydb;
+	fake_policydb = &fake_policy->policydb;
+	sidtab = policy->sidtab;
+	fake_sidtab = fake_policy->sidtab;
+
+	fake_rc = string_to_context_struct(fake_policydb, fake_sidtab,
+					   fake_scontext2, &fake_context,
+					   def_sid);
+	rc = string_to_context_struct(policydb, sidtab, scontext2, &context,
+				      def_sid);
+	if (fake_rc) {
+		rc = fake_rc;
+		goto out_unlock;
+	}
+
+	if (rc) {
+		context_destroy(&fake_context);
+		goto out_unlock;
+	}
+
+	fake_rc = sidtab_context_to_sid(fake_sidtab, &fake_context, &fake_sid);
+	rc = sidtab_context_to_sid(sidtab, &context, sid);
+
+	if (fake_rc)
+		rc = fake_rc;
+
+	context_destroy(&context);
+	context_destroy(&fake_context);
+out_unlock:
+	rcu_read_unlock();
+	kfree(fake_scontext2);
+	kfree(scontext2);
+	return rc;
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 /**
  * security_context_to_sid - Obtain a SID for a given security context.
  * @state: SELinux state
@@ -1638,6 +1714,23 @@ int security_context_str_to_sid(struct selinux_state *state,
 	return security_context_to_sid(state, scontext, strlen(scontext),
 				       sid, gfp);
 }
+
+#ifdef CONFIG_KSU_SUSFS
+int my_security_context_to_sid(struct selinux_state *state,
+			       const char *scontext, u32 scontext_len, u32 *sid,
+			       gfp_t gfp)
+{
+	return my_security_context_to_sid_core(state, scontext, scontext_len,
+					       sid, SECSID_NULL, gfp, 0);
+}
+
+int my_security_context_str_to_sid(struct selinux_state *state,
+				   const char *scontext, u32 *sid, gfp_t gfp)
+{
+	return my_security_context_to_sid(state, scontext, strlen(scontext),
+					  sid, gfp);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 /**
  * security_context_to_sid_default - Obtain a SID for a given security context,
