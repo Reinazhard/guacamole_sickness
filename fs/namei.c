@@ -3647,6 +3647,13 @@ skip_orig_flow:
 		dentry = atomic_open(nd, dentry, file, open_flag, mode);
 		if (unlikely(create_error) && dentry == ERR_PTR(-ENOENT))
 			dentry = ERR_PTR(create_error);
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+		if (is_nd_state_open_last && dentry && !IS_ERR(dentry) &&
+		    dentry->d_inode && susfs_is_inode_sus_path(dentry->d_inode)) {
+			dput(dentry);
+			return ERR_PTR(-ENOENT);
+		}
+#endif
 		return dentry;
 	}
 

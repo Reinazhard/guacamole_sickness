@@ -163,11 +163,11 @@ static inline void susfs_clear_current_proc_no_su(void)
 	clear_thread_flag(TIF_PROC_NO_SU);
 }
 
-#define SUSFS_IS_INODE_SUS_MAP(inode)                                   \
-	inode &&                                                        \
-		inode->i_mapping &&unlikely(test_bit(                   \
-			AS_FLAGS_SUS_MAP, &inode->i_mapping->flags)) && \
-		susfs_is_current_proc_umounted_app()
+#define SUSFS_IS_INODE_SUS_MAP(inode)                                     \
+	((inode) &&                                                       \
+		(inode)->i_mapping && unlikely(test_bit(                  \
+			AS_FLAGS_SUS_MAP, &(inode)->i_mapping->flags)) && \
+		susfs_is_current_proc_umounted_app())
 
 #define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
 	((inode) && (inode)->i_mapping && unlikely(test_bit(   \

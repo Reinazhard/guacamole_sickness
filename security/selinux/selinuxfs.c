@@ -749,10 +749,8 @@ out:
 #ifdef CONFIG_KSU_SUSFS
 static ssize_t __my_sel_write_context(struct file *file, char *buf, size_t size)
 {
-	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
-	struct selinux_state *state = fsi->state;
 	char *canon = NULL;
-	u32 sid, len;
+	u32 fake_sid, len;
 	ssize_t length;
 
 	length = avc_has_perm(&selinux_state, current_sid(),
@@ -761,11 +759,11 @@ static ssize_t __my_sel_write_context(struct file *file, char *buf, size_t size)
 	if (length)
 		goto out;
 
-	length = my_security_context_to_sid(state, buf, size, &sid, GFP_KERNEL);
+	length = security_context_to_sid(&fake_state, buf, size, &fake_sid, GFP_KERNEL);
 	if (length)
 		goto out;
 
-	length = security_sid_to_context(&fake_state, sid, &canon, &len);
+	length = security_sid_to_context(&fake_state, fake_sid, &canon, &len);
 	if (length)
 		goto out;
 

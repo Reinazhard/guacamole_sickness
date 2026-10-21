@@ -140,7 +140,7 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 				}
 				dpath = d_path(&file->f_path, pathname,
 					       PAGE_SIZE);
-				if (!dpath) {
+				if (IS_ERR_OR_NULL(dpath)) {
 					goto out_kfree;
 				}
 				if (kern_path(dpath, 0, &path)) {
