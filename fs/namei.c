@@ -3662,6 +3662,13 @@ skip_orig_flow:
 			dput(dentry);
 			dentry = res;
 		}
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+		if (is_nd_state_open_last && dentry && !IS_ERR(dentry) &&
+		    dentry->d_inode && susfs_is_inode_sus_path(dentry->d_inode)) {
+			error = -ENOENT;
+			goto out_dput;
+		}
+#endif
 	}
 
 	/* Negative dentry, just create the file */

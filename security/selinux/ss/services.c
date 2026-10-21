@@ -1651,6 +1651,13 @@ static int my_security_context_to_sid_core(struct selinux_state *state,
 	rcu_read_lock();
 	policy = rcu_dereference(state->policy);
 	fake_policy = rcu_dereference((&fake_state)->policy);
+	if (!fake_policy) {
+		rcu_read_unlock();
+		kfree(fake_scontext2);
+		kfree(scontext2);
+		return security_context_to_sid_core(state, scontext, scontext_len,
+						    sid, def_sid, gfp_flags, force);
+	}
 	policydb = &policy->policydb;
 	fake_policydb = &fake_policy->policydb;
 	sidtab = policy->sidtab;
