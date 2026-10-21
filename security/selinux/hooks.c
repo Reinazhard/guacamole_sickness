@@ -105,6 +105,13 @@
 #include "avc_ss.h"
 
 struct selinux_state selinux_state;
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running __read_mostly;
+extern int my_security_context_to_sid(struct selinux_state *state,
+				      const char *scontext, u32 scontext_len,
+				      u32 *sid, gfp_t gfp);
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 /* SECMARK reference count */
 static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);
@@ -6488,6 +6495,18 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 			str[size-1] = 0;
 			size--;
 		}
+#ifdef CONFIG_KSU_SUSFS
+		if ((likely(!strcmp(name, "current") &&
+			    current_uid().val >= 10000 &&
+			    ksu_selinux_hide_running))) {
+			error = my_security_context_to_sid(
+				&selinux_state, value, size, &sid, GFP_KERNEL);
+			if (error)
+				return error;
+			goto bypass_orig_flow;
+		}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 		error = security_context_to_sid(&selinux_state, value, size,
 						&sid, GFP_KERNEL);
 		if (error == -EINVAL && !strcmp(name, "fscreate")) {
@@ -6520,6 +6539,9 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 			return error;
 	}
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow:
+#endif // #ifdef CONFIG_KSU_SUSFS
 	new = prepare_creds();
 	if (!new)
 		return -ENOMEM;
