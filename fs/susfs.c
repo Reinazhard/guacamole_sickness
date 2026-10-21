@@ -223,6 +223,8 @@ bool susfs_is_inode_sus_path(struct inode *inode)
 #endif
 {
 	struct fuse_inode *fi = NULL;
+	if (!inode)
+		return false;
 	if (!susfs_is_current_proc_umounted_app()) {
 		return false;
 	}
@@ -898,6 +900,8 @@ void susfs_set_uname(void __user **user_info)
 		info.err = -EFAULT;
 		goto out_copy_to_user;
 	}
+	info.release[__NEW_UTS_LEN] = '\0';
+	info.version[__NEW_UTS_LEN] = '\0';
 
 	if (*info.release == '\0' || *info.version == '\0') {
 		info.err = -EFAULT;
@@ -1010,6 +1014,7 @@ void susfs_set_cmdline_or_bootconfig(void __user **user_info)
 		info->err = -EFAULT;
 		goto out_copy_to_user;
 	}
+	info->fake_cmdline_or_bootconfig[SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE - 1] = '\0';
 
 	if (*info->fake_cmdline_or_bootconfig == '\0') {
 		info->err = -EINVAL;
